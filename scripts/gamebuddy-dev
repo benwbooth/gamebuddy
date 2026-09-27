@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-exec nix develop "$project_dir" --command cargo run --manifest-path "$project_dir/Cargo.toml" --quiet --bin gamebuddy -- "$@"
+binary="$project_dir/target/debug/gamebuddy"
+# Lunchpail can itself run inside a different Nix development shell. Running
+# Cargo here inherits its compiler flags, triggers rebuilds/build-lock waits,
+# and can exceed the compositor handshake deadline. Build separately; a game
+# launch only needs GameBuddy's runtime environment and existing executable.
+if [[ ! -x "$binary" ]]; then
+    printf 'GameBuddy has not been built. Run: nix develop %q --command cargo build --manifest-path %q --bin gamebuddy\n' \
+        "$project_dir" "$project_dir/Cargo.toml" >&2
+    exit 1
+fi
+exec nix develop "$project_dir" --command "$binary" "$@"
