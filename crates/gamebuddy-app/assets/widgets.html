@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data:; frame-src https://www.youtube-nocookie.com; connect-src 'none'">
+<title>GameBuddy widgets</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color:#e8f1f7;font:14px/1.5 system-ui,sans-serif}.widget{position:absolute;min-width:230px;min-height:130px;width:350px;height:260px;border:1px solid #86decb80;background:#142130f5;border-radius:13px;box-shadow:0 8px 28px #0005;overflow:hidden;display:flex;flex-direction:column}.widget header{padding:12px 16px;border-bottom:1px solid #ffffff18;display:flex;gap:14px;align-items:center;cursor:grab;touch-action:none;user-select:none}.brand{font-size:9px;letter-spacing:1.8px;color:#86decb}.title{font-weight:650;font-size:16px;line-height:1.25}.body{padding:14px 16px;overflow:auto;flex:1;white-space:pre-wrap}.resize{position:absolute;bottom:0;right:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,#86decb80 55%,#86decb80 60%,transparent 60%)}.locked .resize{display:none}.locked header{cursor:default}table{border-collapse:collapse;white-space:normal;width:100%;font-size:12px}td,th{padding:7px;text-align:left;border-bottom:1px solid #ffffff20}th{color:#86decb}ul{padding-left:18px;margin:0;white-space:normal}li{margin-bottom:9px}img{width:100%;height:auto;object-fit:contain}iframe{border:0;width:100%;min-height:200px}.source{color:#91a3b6;font-size:10px;padding-top:10px}.empty{position:absolute;top:28px;left:28px;width:320px;background:#142130ed;padding:22px;border-radius:13px;color:#b8cadd}.empty strong{color:#86decb;display:block;font-size:17px;margin-bottom:8px}
+</style></head><body><div id="widgets"></div><script>
+(() => {
+  const host=document.getElementById('widgets');
+  let layouts={}, last='', locked=true, active=null;
+  const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts))}
+  function place(node,box){node.style.left=box.x+'px';node.style.top=box.y+'px';node.style.width=box.width+'px';node.style.height=box.height+'px'}
+  function begin(event,node,id,resize){if(locked)return;event.preventDefault();const b=node.getBoundingClientRect();active={node,id,resize,x:event.clientX,y:event.clientY,box:{x:b.x,y:b.y,width:b.width,height:b.height}};event.currentTarget.setPointerCapture(event.pointerId)}
+  document.addEventListener('pointermove',e=>{if(!active)return;const a=active,dx=e.clientX-a.x,dy=e.clientY-a.y;let box={...a.box};if(a.resize){box.width=clamp(box.width+dx,230,innerWidth-box.x);box.height=clamp(box.height+dy,130,innerHeight-box.y)}else{box.x=clamp(box.x+dx,0,innerWidth-80);box.y=clamp(box.y+dy,0,innerHeight-50)}layouts[a.id]=box;place(a.node,box)});
+  document.addEventListener('pointerup',()=>{if(active){active=null;save()}});
+  window.gamebuddy={render(state){
+    locked=!!state.locked;document.body.classList.toggle('locked',locked);
+    if(active)return;
+    if(state.layouts)layouts={...state.layouts,...layouts};
+    const items=[...(state.widgets||[])];
+    if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
+    const signature=JSON.stringify(items);if(signature===last)return;last=signature;host.replaceChildren();
+    if(!items.length){const empty=text('div','','empty');empty.append(text('strong','GameBuddy'),text('div','Ask for a strategy, table, or checklist. Your assistant can place it here.'));host.append(empty);return}
+    items.forEach((item,i)=>{
+      const node=text('section','','widget');node.dataset.widgetId=item.id;
+      const header=text('header',''),titles=text('div','');titles.append(text('div','GAMEBUDDY','brand'),text('div',item.title,'title'));header.append(titles);
+      header.addEventListener('pointerdown',e=>begin(e,node,item.id,false));node.append(header);
+      const body=text('div','','body'),c=item.content||{};
+      if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach(row=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));table.append(tr)});body.append(table)}
+      else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach(v=>ul.append(text('li',v)));body.append(ul)}
+      else if(c.kind==='image'){const img=document.createElement('img');if(new URL(c.url).protocol==='https:')img.src=c.url;img.alt=c.caption||item.title;body.append(img,text('div',c.caption||''))}
+      else if(c.kind==='video'){const u=new URL(c.url),id=u.hostname==='youtu.be'?u.pathname.slice(1):u.searchParams.get('v');if(/^[A-Za-z0-9_-]{11}$/.test(id)){const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/'+id+'?start='+Math.floor(c.start_seconds||0);frame.allow='fullscreen';frame.title=item.title;body.append(frame)}}
+      else body.append(text('div',c.body||''));
+      if(item.source_step_ids?.length)body.append(text('div','Guide: '+item.source_step_ids.join(', '),'source'));node.append(body);
+      const handle=text('div','','resize');handle.addEventListener('pointerdown',e=>begin(e,node,item.id,true));node.append(handle);
+      const box=layouts[item.id]||{x:28+(i%3)*375,y:30+Math.floor(i/3)*290,width:350,height:260};place(node,box);host.append(node);
+    });
+  }};
+})();
+</script></body></html>

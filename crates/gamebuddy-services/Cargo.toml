@@ -1,0 +1,23 @@
+[package]
+name = "gamebuddy-services"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gamebuddy-core = { path = "../gamebuddy-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+uuid.workspace = true
+url.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+directories = "6"
+base64 = "0.22"
+tempfile = "3"
+sha2 = "0.10"
+schemars.workspace = true
+
+[dev-dependencies]
+tiny_http = "0.12"

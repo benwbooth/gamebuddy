@@ -1,0 +1,23 @@
+[package]
+name = "gamebuddy-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gamebuddy-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rmcp = { version = "3.4.1", features = ["server", "macros", "transport-io", "schemars"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+serde.workspace = true
+gamebuddy-core = { path = "../gamebuddy-core" }
+gamebuddy-services = { path = "../gamebuddy-services" }
+anyhow.workspace = true
+serde_json.workspace = true
+image.workspace = true
+
+[[bin]]
+name = "gamebuddy-mcp"
+path = "src/mcp.rs"

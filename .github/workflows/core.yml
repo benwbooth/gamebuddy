@@ -1,0 +1,16 @@
+name: Rust core and services
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo test --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli
+      - run: cargo clippy --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli --all-targets -- -D warnings
+      - run: cargo fmt --all --check
