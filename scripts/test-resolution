@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run inside nix develop; all game/data state is a disposable fixture.
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd -- "$project_dir"
+cargo build -p gamebuddy-app -p gamebuddy-overlay --bin gamebuddy --example resolution_probe
+runtime_dir="$(mktemp -d -t gamebuddy-resolution-test-XXXXXXXX)"
+read -r width height < <(./target/debug/examples/resolution_probe --host)
+./target/debug/gamebuddy --launch --no-prepare --data-dir "$runtime_dir/data" -- \
+    ./target/debug/examples/resolution_probe "$runtime_dir/proof" "$width" "$height"
+printf 'Resolution test artifacts: %s\n' "$runtime_dir/proof"

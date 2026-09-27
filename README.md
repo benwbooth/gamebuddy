@@ -27,7 +27,7 @@ cargo build --workspace
 ./target/debug/gamebuddy --workbench
 ```
 
-On Linux, `--launch` starts Gamescope fullscreen (1280×720 game canvas by default); use `--windowed`, `--width` and `--height` to override. Click the icon to expand, drag to move, or hold to talk. **Shift+Tab** toggles interaction, **Ctrl+Shift+Tab** hides/restores everything, and **Escape** returns input to the game. **Arrange** enables HTML widget editing; **Lock** restores passthrough. **Options** opens inside the same overlay. Game-only synchronization is enabled automatically when references are available. `--no-prepare` skips automatic reference preparation for offline tests.
+On Linux, `--launch` starts Gamescope fullscreen at the host display's physical resolution, including ultrawide aspect ratios and fractional desktop scaling. Gamescope uses nearest filtering if additional scaling is needed; the game's own shaders and aspect-ratio settings still apply. `--windowed` defaults to 1280×720. `--width` and `--height` override the game resolution; specifying only one preserves the display aspect ratio. Click the icon to expand, drag to move, or hold to talk. **Shift+Tab** toggles interaction, **Ctrl+Shift+Tab** hides/restores everything, and **Escape** returns input to the game. **Arrange** enables HTML widget editing; **Lock** restores passthrough. **Options** opens inside the same overlay. Game-only synchronization is enabled automatically when references are available. `--no-prepare` skips automatic reference preparation for offline tests.
 
 Without `--launch`, the desktop companion uses **Share game** for OS screen sharing and opens Options in a separate workbench. Whole-desktop capture can include GameBuddy itself. Physical gamepad bindings remain to be connected; the session command interface is documented in [overlay backends](docs/overlay-backends.md).
 
@@ -58,6 +58,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./target/debug/gamebuddy --expanded --smoke-test /tmp/gamebuddy-companion.png
 scripts/test-gamescope
+scripts/test-resolution
 scripts/test-voice
 ```
 

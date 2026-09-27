@@ -6,6 +6,8 @@ September 27, 2026. The Linux Gamescope backend is implemented. Windows and macO
 
 GameBuddy starts a nested Gamescope compositor with one private Xwayland server. The game and a single transparent Qt Quick/WebEngine canvas are composed there. The canvas contains the companion icon, HTML widgets and the optional workbench. No graphics library is injected into the game, and the host desktop is not reconfigured.
 
+Fullscreen launches (including the Lunchpail bridge) query the host's physical display mode before starting Gamescope and set both its game and output dimensions. Wayland uses `wl_output` current modes and rotation, not scaled desktop coordinates; X11 uses the primary RandR monitor. Wayland has no primary-output flag, so detection prefers the output at the desktop origin, then the first active output. Other monitor arrangements and moving a running session between monitors still need validation. Explicit `--width`/`--height` override the game canvas; a single override preserves the detected aspect ratio. Windowed/headless sessions retain a 1280×720 default. Discovery failure is reported instead of silently falling back to a blurry fullscreen 720p canvas; supplying both dimensions permits an explicit fallback. Nearest filtering avoids extra compositor blur without changing the game's own shader, bezel or aspect ratio.
+
 The development flake currently supplies **Gamescope 3.16.29**. The adapter uses `STEAM_OVERLAY` and `STEAM_INPUT_FOCUS` from [Gamescope's compositor](https://github.com/ValveSoftware/gamescope/blob/3.16.29/src/steamcompmgr.cpp). These are version-sensitive interfaces, not a stable public overlay SDK.
 
 | State | Visible surfaces | Input |
@@ -60,8 +62,11 @@ Hudhook renders Dear ImGui, so using it does not by itself solve HTML rendering.
 
 ```sh
 nix develop --command scripts/test-gamescope
+nix develop --command scripts/test-resolution
 ```
 
 This launches a dedicated X11 fixture and the real Qt/WebEngine UI in a private Gamescope session. It checks game keyboard delivery, focus transfer/restoration, icon clicking/dragging, HTML widget drag/resize persistence, clean game-only capture, Escape, visibility shortcuts and session commands. Screenshots remain in the printed temporary directory. Run these diagnostics serially: Gamescope's legacy X11 screenshot request writes `/tmp/gamescope.png`.
 
 The separate `capture_probe` example captures the launched game's pixmap and Gamescope's composed output on a supplied `DISPLAY`. Native runtime evidence and remaining gates are tracked in [validation](validation.md).
+
+`test-resolution` checks native game dimensions, full output coverage at all four corners, and preservation of alternating one-pixel stripes through the real compositor. It uses a disposable fullscreen fixture and a separate data directory.

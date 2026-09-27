@@ -12,4 +12,6 @@ This is a local Linux launch contract between independent GameBuddy and Lunchpai
 
 The GameBuddy supervisor owns Gamescope, the UI and overlay input handling. Lunchpail owns the emulator launch and supplies configuration/arguments; it does not intercept keypresses. GameBuddy does not proxy emulator stdin/stdout, so existing emulator communication remains direct. Compositor preparation has a bounded wait and must observe launch cancellation. An overlay-only crash does not deliberately terminate the game.
 
+The bridge defaults to fullscreen at the host monitor's physical pixel dimensions, queried before entering the private display. It preserves Lunchpail's original emulator arguments, including RetroArch appendconfigs and shader selections. The launcher can pass `--width` and `--height` to override the game canvas; no resolution fields are required in the v1 handshake.
+
 Keyboard bindings are session-local defaults: Shift+Tab for interaction, Ctrl+Shift+Tab for visibility, Escape for release. A GameBuddy-owned gamepad adapter and acknowledgement/status feedback are future protocol consumers/extensions.

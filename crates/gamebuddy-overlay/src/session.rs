@@ -182,14 +182,39 @@ fn outer(opts: Options) -> Result<i32> {
         .tempdir()?;
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
     let result_path = runtime.path().join("exit.json");
+    let output = if opts.windowed
+        || opts.backend.as_deref() == Some(std::ffi::OsStr::new("headless"))
+    {
+        crate::display::Size::WINDOWED.with_overrides(opts.width, opts.height)
+    } else {
+        crate::display::native_size().or_else(|error| match (opts.width, opts.height) {
+            (Some(width), Some(height)) => {
+                eprintln!("GAMEBUDDY_DISPLAY_WARNING {error:#}; using explicit {width}x{height}");
+                Ok(crate::display::Size { width, height })
+            }
+            _ => Err(error
+                .context("Cannot determine fullscreen resolution; specify --width and --height")),
+        })?
+    };
+    let render = output.with_overrides(opts.width, opts.height);
+    eprintln!(
+        "GAMEBUDDY_DISPLAY render={}x{} output={}x{} fullscreen={}",
+        render.width, render.height, output.width, output.height, !opts.windowed
+    );
     let mut cmd = Command::new(
         std::env::var_os("GAMEBUDDY_GAMESCOPE_BIN").unwrap_or_else(|| "gamescope".into()),
     );
     cmd.args([
         "-w",
-        &opts.width.unwrap_or(1280).to_string(),
+        &render.width.to_string(),
         "-h",
-        &opts.height.unwrap_or(720).to_string(),
+        &render.height.to_string(),
+        "-W",
+        &output.width.to_string(),
+        "-H",
+        &output.height.to_string(),
+        "--filter",
+        "nearest",
         "--xwayland-count",
         "1",
     ]);

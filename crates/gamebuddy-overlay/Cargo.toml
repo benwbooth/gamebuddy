@@ -11,7 +11,8 @@ image.workspace = true
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["composite", "xtest", "xfixes", "res"] }
+x11rb = { version = "0.13", features = ["composite", "xtest", "xfixes", "res", "randr"] }
+wayland-client = "0.31"
 libc = "0.2"
 
 [dev-dependencies]
