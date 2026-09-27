@@ -1,11 +1,33 @@
 mod controller;
+mod overlay;
 mod webengine;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};
 
 fn main() {
+    #[cfg(not(target_os = "linux"))]
+    if std::env::args().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--launch" | "--gamescope-bridge" | "--overlay-action"
+        )
+    }) {
+        eprintln!(
+            "GameBuddy's Gamescope launcher is Linux-only; use --workbench for the desktop companion."
+        );
+        std::process::exit(1);
+    }
+    #[cfg(target_os = "linux")]
+    match gamebuddy_overlay::session::dispatch() {
+        Ok(Some(code)) => std::process::exit(code),
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("GameBuddy: {error:#}");
+            std::process::exit(1);
+        }
+    }
     webengine::initialize();
     QQuickStyle::set_style(&QString::from("Basic"));
-    let mut app = QGuiApplication::new();
+    let mut app = webengine::application();
     if let Some(mut app) = app.as_mut() {
         app.as_mut()
             .set_application_name(&QString::from("GameBuddy"));

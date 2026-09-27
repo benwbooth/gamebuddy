@@ -12,19 +12,24 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - A stdio MCP server exposing the same game tools to external agents.
 - Draggable compact companion, hold-to-talk via whisper.cpp, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
 - Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and optional VLM comparison. Similarity never completes objectives.
-- Lunchpail integration adds an optional executable setting and forwards game/title/platform/process/session arguments after a successful launch.
+- Linux Gamescope session launcher with a compositor overlay, session shortcuts, HTML interaction and game-only XComposite capture.
+- Lunchpail prepares the compositor before the emulator and retains its real game process/controller pipes; other platforms use the desktop companion.
 
-**Development prototype:** the current OSD uses Qt desktop windows. Gamescope composition and native graphics-hook overlays are not implemented. Windows/macOS runtime behavior, full-duplex voice, complete source-wide walkthrough compilation, automatic browser text discovery and independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
+**Development prototype:** the Linux compositor backend works with games on Gamescope’s private Xwayland server. Native Wayland game clients and Windows/macOS graphics-hook overlays are not implemented. Windows/macOS runtime behavior, full-duplex voice, complete source-wide walkthrough compilation, automatic browser text discovery and independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
 
 ## Run
 
 ```sh
 nix develop
 cargo build --workspace
-./target/debug/gamebuddy --game Faxanadu --platform NES
+./target/debug/gamebuddy --launch --game Faxanadu --platform NES -- /path/to/emulator /path/to/game.nes
+# Desktop companion / development workbench:
+./target/debug/gamebuddy --workbench
 ```
 
-Click the icon to expand, drag to move, or hold to talk. **Share game** starts OS screen sharing. **Arrange** enables widget editing; **Lock** restores click-through mode. **Options** opens the development workbench; `--workbench` opens it at startup. Capturing the whole desktop can include GameBuddy itself; select the game surface where supported.
+On Linux, `--launch` starts Gamescope fullscreen (1280×720 game canvas by default); use `--windowed`, `--width` and `--height` to override. Click the icon to expand, drag to move, or hold to talk. **Shift+Tab** toggles interaction, **Ctrl+Shift+Tab** hides/restores everything, and **Escape** returns input to the game. **Arrange** enables HTML widget editing; **Lock** restores passthrough. **Options** opens inside the same overlay. Game-only synchronization is enabled automatically when references are available. `--no-prepare` skips automatic reference preparation for offline tests.
+
+Without `--launch`, the desktop companion uses **Share game** for OS screen sharing and opens Options in a separate workbench. Whole-desktop capture can include GameBuddy itself. Physical gamepad bindings remain to be connected; the session command interface is documented in [overlay backends](docs/overlay-backends.md).
 
 Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. The first speech turn downloads the English whisper.cpp base model (~142 MB). Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. Voice currently uses composed push-to-talk turns.
 
@@ -40,16 +45,17 @@ Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.
 
 Point an MCP client's stdio configuration at the absolute `gamebuddy-mcp` executable and pass the app's `--data-dir`. Its environment needs the media tools for imports. Keep shell startup messages off protocol stdout.
 
-For Lunchpail development, set **GameBuddy executable** to the absolute `scripts/gamebuddy-dev` path and enable **Launch with GameBuddy**. The script builds/runs this project in its Nix shell. It is a development launcher, not an installed package or Gamescope session launcher.
+For Lunchpail development, set **GameBuddy executable** to the absolute `scripts/gamebuddy-dev` path and enable **Launch with GameBuddy**. The script builds/runs this project in its Nix shell. On Linux, Lunchpail uses the Gamescope session handshake automatically when enabled. The script supplies the development runtime; it is not an installed package. The game command, working directory and controller pipes remain owned by Lunchpail.
 
 For non-Nix builds, install Rust plus Qt 6 Core/Gui/Qml/Quick/QuickControls2/Multimedia/TextToSpeech/WebEngineQuick, expose `qmake` and Qt runtime plugins, then build with Cargo. Windows requires the MSVC Qt build for WebEngine. Native Windows/macOS verification is outstanding.
 
 ## Validate
 
 ```sh
-cargo test -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./target/debug/gamebuddy --expanded --smoke-test /tmp/gamebuddy-companion.png
+scripts/test-gamescope
 ```
 
 The initial live source test imported RetroNate's [Faxanadu walkthrough](https://www.youtube.com/watch?v=P05edoxsWQg): ten author chapters and 603 sampled reference frames. A held-out source frame matched its chapter. This is a same-video retrieval check, not proof of tracking a different player. The local 4B VLM abstained on the first comparison; accuracy and game coverage are not established.

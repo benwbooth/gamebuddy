@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
 
-Window {
+Item {
     id: companion
     required property var buddy
     required property var session
@@ -20,16 +20,18 @@ Window {
     signal stopSpeaking()
     signal widgetsToggled(bool shown)
     signal arrangementChanged(bool active)
-    transientParent: null
-    title: "GameBuddy companion"
-    visible: true
+    property var hostWindow
+    property bool embedded: false
+    property bool syncActive: false
     width: expanded ? 410 : 80
     height: expanded ? 480 : 80
-    x: 36
-    y: 90
-    color: "transparent"
-    flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
+    onExpandedChanged: {
+        if (embedded) {
+            x = Math.max(0, Math.min(parent.width-width, x))
+            y = Math.max(0, Math.min(parent.height-height, y))
+        }
+    }
     function startTalking() {
         if (buddy.busy || recording) return
         microphoneError = ""
@@ -97,13 +99,22 @@ Window {
             anchors.fill: parent
             hoverEnabled: true
             property point pressedAt
+            property point scenePress
+            property point startPosition
             property bool moved: false
             property bool held: false
-            onPressed: mouse => { pressedAt = Qt.point(mouse.x,mouse.y); moved = false; held = false }
+            onPressed: mouse => { pressedAt = Qt.point(mouse.x,mouse.y); scenePress = mapToItem(companion.parent, mouse.x, mouse.y); startPosition = Qt.point(companion.x, companion.y); moved = false; held = false }
             onPositionChanged: mouse => {
-                if (pressed && !held && !moved && Math.hypot(mouse.x-pressedAt.x,mouse.y-pressedAt.y)>8) {
-                    moved = true
-                    companion.startSystemMove()
+                if (pressed && !held) {
+                    const p = mapToItem(companion.parent, mouse.x, mouse.y)
+                    if (Math.hypot(p.x-scenePress.x,p.y-scenePress.y)>8) {
+                        if (!moved && !companion.embedded) companion.hostWindow.startSystemMove()
+                        moved = true
+                    }
+                    if (moved && companion.embedded) {
+                        companion.x = Math.max(0, Math.min(companion.parent.width-companion.width, startPosition.x+p.x-scenePress.x))
+                        companion.y = Math.max(0, Math.min(companion.parent.height-companion.height, startPosition.y+p.y-scenePress.y))
+                    }
                 }
             }
             onPressAndHold: { if (!moved) { held = true; companion.startTalking() } }
@@ -152,7 +163,7 @@ Window {
         }
         RowLayout {
             Layout.fillWidth: true
-            GbButton { text: "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
+            GbButton { text: companion.embedded ? (companion.syncActive ? "Pause sync" : "Resume sync") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
             GbButton { text: companion.spokenReplies ? "Voice on" : "Voice off"; onClicked: { companion.spokenReplies = !companion.spokenReplies; if (!companion.spokenReplies) companion.stopSpeaking() } }
             GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
         }
@@ -164,5 +175,5 @@ Window {
         }
     }
     }
-    Shortcut { sequence: "Escape"; onActivated: { companion.stopTalking(); companion.arranging = false; companion.arrangementChanged(false); companion.expanded = false } }
+    Shortcut { sequence: "Escape"; enabled: !companion.embedded; onActivated: { companion.stopTalking(); companion.arranging = false; companion.arrangementChanged(false); companion.expanded = false } }
 }

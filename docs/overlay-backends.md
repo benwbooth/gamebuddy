@@ -1,33 +1,67 @@
-# Overlay backend decision
+# Overlay backends
 
-September 27, 2026. Shared Rust host and HTML UI, separate compositor/render integration per platform. Current code is a desktop-window interaction prototype; the native backends below are not implemented.
+September 27, 2026. The Linux Gamescope backend is implemented. Windows and macOS currently retain the Qt desktop companion; graphics-hook backends remain separate work.
 
-## Steam and Gamescope
+## Linux implementation
 
-Valve documents that the [Steam overlay hooks graphics device creation](https://partner.steamgames.com/doc/features/overlay), supports DirectX 7–12, OpenGL, Metal and Vulkan, and is injected into the game. Steamworks opens Steam's own UI; it is not an arbitrary GameBuddy widget renderer. Reproduce the integration approach using reusable components rather than treating Steam's proprietary overlay as an SDK.
+GameBuddy starts a nested Gamescope compositor with one private Xwayland server. The game and a single transparent Qt Quick/WebEngine canvas are composed there. The canvas contains the companion icon, HTML widgets and the optional workbench. No graphics library is injected into the game, and the host desktop is not reconfigured.
 
-[Gamescope](https://github.com/ValveSoftware/gamescope) is a Linux compositor that runs nested on a desktop or as a dedicated session. It can compose game and overlay surfaces without depending on the host desktop's always-on-top policy. It is not Steam's Windows/macOS overlay renderer.
+The development flake currently supplies **Gamescope 3.16.29**. The adapter uses `STEAM_OVERLAY` and `STEAM_INPUT_FOCUS` from [Gamescope's compositor](https://github.com/ValveSoftware/gamescope/blob/3.16.29/src/steamcompmgr.cpp). These are version-sensitive interfaces, not a stable public overlay SDK.
 
-| Platform | Backend to develop | Boundary |
+| State | Visible surfaces | Input |
 | --- | --- | --- |
-| Linux | Game and GameBuddy overlay in one Gamescope session | Composition, input routing and capture need integration |
-| Windows | Thin graphics-hook DLL plus out-of-process Rust host | Evaluate [hudhook](https://github.com/veeenu/hudhook) for D3D9/11/12 and OpenGL3; Vulkan needs separate work |
-| macOS | Metal/OpenGL presentation adapter with native capture/input | Signing, hardened-runtime compatibility and supported games need native verification |
+| Hidden | None | Game |
+| Passive | Icon and enabled widgets | Game; hovering the icon gives GameBuddy pointer-only focus |
+| Interactive | Expanded companion, editable widgets or options | GameBuddy keyboard/pointer focus |
 
-Hudhook renders Dear ImGui. HTML needs an offscreen browser texture and input bridge. Retain Qt/CXX-Qt for the host/settings while proving an offscreen HTML producer for injected backends; [Qt WebEngine constraints](https://doc.qt.io/qt-6/qtwebengine-platform-notes.html) need consideration. Do not assume a QML scene can simply be transplanted into a game swapchain.
+Shift+Tab toggles interaction. Ctrl+Shift+Tab hides/restores all GameBuddy surfaces. Escape releases interaction. Grabs exist only on this session's Xwayland root, so they do not intercept typing in other desktop applications. The icon can also be clicked, dragged, or held for speech. Hidden game cursors do not activate hover focus; use the shortcut in games that lock/hide their pointer.
 
-## Linux contract
+A private Unix datagram socket accepts `toggle`, `toggle-visibility`, `show`, `hide`, `focus` and `release`. The supervisor prints its path as `GAMEBUDDY_CONTROL_SOCKET`; in Lunchpail it is `control.sock` in the private session directory. Controller adapters should send these actions instead of synthesizing keyboard keys:
 
-Intended launch: Lunchpail → GameBuddy session coordinator → Gamescope → game and overlay clients. Preserve executable/argv/environment/current directory, report actual game process identity and retain Lunchpail's controller/save/session ownership. The current post-launch companion hook cannot retroactively put a game into a new compositor session.
+```sh
+gamebuddy --overlay-action toggle /path/to/session/control.sock
+```
 
-Gamescope's [compositor source](https://github.com/ValveSoftware/gamescope/blob/master/src/steamcompmgr.cpp) contains `STEAM_OVERLAY`, `GAMESCOPE_EXTERNAL_OVERLAY` and `STEAM_INPUT_FOCUS`. These are implementation details, not a guaranteed independent interactive-overlay SDK. Displaying an external overlay does not establish correct input routing. [MangoHud recommends mangoapp for Gamescope](https://github.com/flightlessmango/MangoHud#gamescope); use it as a composition reference, not a complete conversational UI.
+Physical gamepad bindings are **not installed yet**. Prefer a configurable button/held chord in Lunchpail's controller router. Guide-button ownership, suppressing chord events from the game, debounce, disconnects, and navigation inside the UI need controller-specific tests. Keyboard visibility/focus and the socket command path have runtime coverage.
 
-Prototype a version-pinned adapter and test coexistence with Steam/Mangoapp. A small maintained Gamescope extension may be necessary for interactive regions and game-only capture; decide from measured behavior. Do not globally reconfigure the user's compositor.
+### Wayland versus Xwayland
 
-## Frames and input
+Gamescope itself is a Wayland compositor and can run nested on a Wayland desktop. This backend currently puts **both the game and the Qt overlay on its private Xwayland server**. That is a choice for the first interactive/capture adapter, not a limitation of Wayland as a display system.
 
-The host produces alpha widget textures with surface IDs, dimensions, scale, dirty regions, session ID and sequence number. The backend uses the latest available texture without waiting on a model. Route pointer events only for the icon/activated widgets; closing the UI releases grabs and restores game focus. Speech should not steal game controls.
+Native Wayland game surfaces are not supported by this adapter yet. They need another capture path and verified focus/surface integration. Gamescope has native-client support and PipeWire capture facilities, but their existence alone does not prove a usable interactive GameBuddy backend. Keep native Wayland support as a separate adapter, rather than claiming that ordinary `xdg_toplevel` always-on-top windows solve the problem.
 
-Capture game frames before GameBuddy composition, attach timestamps/epochs and drop obsolete frames under load. The synchronizer must not identify its own walkthrough video or text as gameplay. Inference/browser work stays outside the game process; model failure must not stall presentation.
+Flatpak launches explicitly receive `--socket=x11 --nosocket=wayland` for this session; otherwise `fallback-x11` can suppress the required X11 socket on a Wayland host. These are per-launch arguments, not persistent Flatpak permission changes.
 
-The first proof is Faxanadu in an emulator: fullscreen composition, icon movement, widget resize, passthrough, focus restoration, game-only capture, compositor resize and clean exit. Repeat native acceptance per platform before advertising broad compatibility. Unsupported graphics APIs and protected-game restrictions must be explicit per backend.
+### Capture
+
+The synchronizer reads the game's XComposite named pixmap before overlay composition. Window selection requires the launched process or a descendant and excludes overlay-marked windows. XRes resolves host process IDs for Flatpak clients whose `_NET_WM_PID` is namespace-local. There is no desktop/root capture fallback.
+
+Capture excludes **GameBuddy**; a game's own HUD or an emulator's built-in OSD is naturally part of its rendered frame. Current readback accepts 32-bit X image storage with the server's visual masks and byte order. Broader HDR, multi-window and native Wayland capture need further testing. Capture runs in the existing background job path; continuous perception while another model job runs remains separate work.
+
+### Lunchpail lifecycle
+
+Lunchpail asks `gamebuddy --gamescope-bridge PRIVATE_DIRECTORY` to prepare the compositor before spawning the emulator. GameBuddy publishes `ready.json` (`version: 1`, `display`). Lunchpail changes only the display environment (plus Flatpak socket arguments), then spawns the **original emulator executable** through its existing launch function. It keeps the real `Child`, process ID and controller stdin/stdout/stderr pipes. After successful startup, `game.json` supplies the actual game PID and GameBuddy starts the UI.
+
+Dropping the launch session writes a stop marker and reaps the supervisor. GameBuddy-owned children have parent-death signals. Normal game exit tears down the overlay/compositor; losing the overlay alone leaves the game running. Standalone launches return the actual game exit code through a private result file. If compositor preparation fails, Lunchpail reports a warning and uses the desktop companion fallback.
+
+## Other platforms
+
+Valve documents that the [Steam overlay hooks graphics device creation](https://partner.steamgames.com/doc/features/overlay), supporting DirectX, OpenGL, Metal and Vulkan. Steamworks opens Steam's own UI; it is not an arbitrary GameBuddy HTML renderer.
+
+| Platform | Next backend | Remaining boundary |
+| --- | --- | --- |
+| Windows | Thin graphics-hook DLL and out-of-process Rust host | Evaluate [hudhook](https://github.com/veeenu/hudhook) for D3D9/11/12 and OpenGL3; HTML texture/input bridge and Vulkan need work |
+| macOS | Metal/OpenGL presentation adapter with native capture/input | Signing, hardened-runtime compatibility and native game tests |
+| Linux native Wayland clients | Separate Gamescope adapter | Surface classification, focus/hotkey routing and game-only capture |
+
+Hudhook renders Dear ImGui, so using it does not by itself solve HTML rendering. Qt/CXX-Qt remains the shared host and UI. Steam/Mangoapp coexistence, display resizing, non-default scaling, protected games and broad game coverage are not certified by the initial Faxanadu test.
+
+## Reproduce the compositor test
+
+```sh
+nix develop --command scripts/test-gamescope
+```
+
+This launches a dedicated X11 fixture and the real Qt/WebEngine UI in a private Gamescope session. It checks game keyboard delivery, focus transfer/restoration, icon clicking/dragging, HTML widget drag/resize persistence, clean game-only capture, Escape, visibility shortcuts and session commands. Screenshots remain in the printed temporary directory. Run these diagnostics serially: Gamescope's legacy X11 screenshot request writes `/tmp/gamescope.png`.
+
+The separate `capture_probe` example captures the launched game's pixmap and Gamescope's composed output on a supplied `DISPLAY`. Native runtime evidence and remaining gates are tracked in [validation](validation.md).

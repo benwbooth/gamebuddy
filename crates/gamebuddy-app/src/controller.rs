@@ -21,6 +21,8 @@ pub mod ffi {
         #[qinvokable]
         fn initialize(self: Pin<&mut Buddy>);
         #[qinvokable]
+        fn launch_arguments(self: &Buddy) -> QString;
+        #[qinvokable]
         fn prepare_game(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn select_guide(self: Pin<&mut Buddy>, id: QString);
@@ -44,6 +46,8 @@ pub mod ffi {
         fn compile_selected(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn match_frame(self: Pin<&mut Buddy>, path: QString);
+        #[qinvokable]
+        fn match_game_frame(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn compare_vision(self: Pin<&mut Buddy>);
         #[qinvokable]
@@ -139,6 +143,14 @@ enum Outcome {
     Match(Box<(Synchronizer, SyncEstimate, PathBuf)>),
 }
 impl ffi::Buddy {
+    pub fn launch_arguments(&self) -> QString {
+        q(serde_json::to_string(
+            &std::env::args_os()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()))
+    }
     pub fn initialize(mut self: Pin<&mut Self>) {
         let result = (|| -> Result<(PathBuf, Settings, Option<Guide>, String)> {
             let root = argument("--data-dir")
@@ -171,7 +183,9 @@ impl ffi::Buddy {
                 self.as_mut().set_message(q(
                     "Ready. Load a game to prepare its walkthrough automatically.",
                 ));
-                if argument("--game").is_some() {
+                if argument("--game").is_some()
+                    && !std::env::args().any(|arg| arg == "--no-prepare")
+                {
                     self.prepare_game();
                 }
             }
@@ -433,6 +447,15 @@ impl ffi::Buddy {
         );
     }
     pub fn match_frame(self: Pin<&mut Self>, path: QString) {
+        self.match_input(path, None);
+    }
+    pub fn match_game_frame(self: Pin<&mut Self>) {
+        let pid = argument("--game-pid").and_then(|value| value.parse::<u32>().ok());
+        if let Some(pid) = pid {
+            self.match_input(QString::default(), Some(pid));
+        }
+    }
+    fn match_input(self: Pin<&mut Self>, path: QString, game_pid: Option<u32>) {
         let Some(guide) = self.rust().guide.clone() else {
             return;
         };
@@ -442,7 +465,16 @@ impl ffi::Buddy {
             let index = store
                 .index(&guide)?
                 .context("Build the guide's visual index first")?;
-            let path = services::local_path(&path.to_string())?;
+            let path = if let Some(pid) = game_pid {
+                let path = root.join("captures").join(format!("game-{pid}.png"));
+                #[cfg(target_os = "linux")]
+                gamebuddy_overlay::x11::capture_game(pid, &path)?;
+                #[cfg(not(target_os = "linux"))]
+                anyhow::bail!("Gamescope capture is only available on Linux");
+                path
+            } else {
+                services::local_path(&path.to_string())?
+            };
             let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
             let time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?

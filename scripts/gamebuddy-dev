@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd -- "$project_dir"
-exec nix develop --command cargo run --quiet --bin gamebuddy -- "$@"
+exec nix develop "$project_dir" --command cargo run --manifest-path "$project_dir/Cargo.toml" --quiet --bin gamebuddy -- "$@"

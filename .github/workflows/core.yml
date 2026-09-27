@@ -11,6 +11,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo test --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli
-      - run: cargo clippy --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli --all-targets -- -D warnings
+      - run: cargo test --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli -p gamebuddy-overlay
+      - run: cargo clippy --locked -p gamebuddy-core -p gamebuddy-services -p gamebuddy-cli -p gamebuddy-overlay --all-targets -- -D warnings
       - run: cargo fmt --all --check

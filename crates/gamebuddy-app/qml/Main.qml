@@ -9,18 +9,21 @@ import GameBuddy
 
 ApplicationWindow {
     id: root
+    property var appArguments: JSON.parse(buddy.launch_arguments())
     width: 1240
     height: 860
     minimumWidth: 980
     minimumHeight: 680
-    visible: Qt.application.arguments.indexOf("--workbench") >= 0
+    visible: !compositor.active && root.appArguments.indexOf("--workbench") >= 0
     title: "GameBuddy"
     color: "#0e1520"
     property var session: ({})
     property alias buddyObject: buddy
     property int page: 0
     property bool grabbing: false
-    property bool autoSync: false
+    property bool autoSync: compositor.active
+    property bool overlayOptions: false
+    property bool overlayHidden: false
     property string captureError: ""
     property string smokePath: arg("--smoke-test")
     property string replayPath: arg("--replay")
@@ -32,9 +35,26 @@ ApplicationWindow {
     property var steps: session.guide ? session.guide.steps : []
     property var candidates: session.estimate ? session.estimate.candidates : []
     function arg(name) {
-        let args = Qt.application.arguments
+        let args = root.appArguments
         let i = args.indexOf(name)
         return i >= 0 && i + 1 < args.length ? args[i + 1] : ""
+    }
+    function releaseOverlay() {
+        companion.stopTalking(); companion.expanded = false; companion.arranging = false
+        root.overlayOptions = false; root.editOverlay = false
+    }
+    function overlayAction(action) {
+        if (action === 1) {
+            if (overlayHidden) { overlayHidden = false; companion.expanded = true }
+            else if (companion.expanded || editOverlay || overlayOptions) releaseOverlay()
+            else companion.expanded = true
+        } else if (action === 2) {
+            overlayHidden = !overlayHidden
+            releaseOverlay()
+        } else if (action === 3) { overlayHidden = false }
+        else if (action === 4) { overlayHidden = true; releaseOverlay() }
+        else if (action === 5) { overlayHidden = false; companion.expanded = true }
+        else if (action === 6) releaseOverlay()
     }
     function stepTitle(id) {
         for (let step of steps) if (step.id === id) return step.title
@@ -45,6 +65,7 @@ ApplicationWindow {
     }
     function grabFrame() {
         if (buddy.busy || grabbing || !session.reference_count) return
+        if (compositor.active && replay.source.toString().length === 0) { buddy.match_game_frame(); return }
         let output = replay.source.toString().length > 0 ? replayOutput : liveOutput
         if (output.contentRect.width <= 0 || output.contentRect.height <= 0) return
         buddy.match_sink(output.videoSink)
@@ -55,13 +76,31 @@ ApplicationWindow {
         Component.onCompleted: initialize()
         onAnswerChanged: { if (companion.spokenReplies && answer.length > 0) speech.say(answer) }
     }
+    Compositor { id: compositor }
+    Window {
+        id: companionWindow
+        transientParent: null
+        visible: !compositor.active
+        title: "GameBuddy companion"
+        color: "transparent"
+        x: 36; y: 90
+        width: companion.width; height: companion.height
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    }
     Companion {
         id: companion
+        parent: compositor.active ? overlayScene : companionWindow.contentItem
+        hostWindow: companionWindow
+        embedded: compositor.active
+        syncActive: root.autoSync
+        x: compositor.active ? 36 : 0
+        y: compositor.active ? 90 : 0
+        z: 10
         buddy: root.buddyObject
         session: root.session
-        expanded: Qt.application.arguments.indexOf("--expanded") >= 0
-        onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; capture.active = !capture.active; root.autoSync = capture.active }
-        onWorkbenchRequested: { root.visible = true; root.raise(); root.requestActivate() }
+        expanded: root.appArguments.indexOf("--expanded") >= 0
+        onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
+        onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
         onStopSpeaking: speech.stop()
         onWidgetsToggled: shown => root.widgetsEnabled = shown
         onArrangementChanged: active => { root.editOverlay = active; root.widgetsEnabled = true }
@@ -83,7 +122,7 @@ ApplicationWindow {
     Timer {
         interval: 3000
         repeat: true
-        running: root.autoSync && (capture.active || replay.playbackState === MediaPlayer.PlayingState)
+        running: root.autoSync && (compositor.active || capture.active || replay.playbackState === MediaPlayer.PlayingState)
         onTriggered: root.grabFrame()
     }
     FileDialog {
@@ -143,15 +182,21 @@ ApplicationWindow {
     }
     Window {
         id: osd
+        opacity: root.overlayHidden ? 0 : 1
         transientParent: null
         width: Screen.width
         height: Screen.height
         x: 0; y: 0
-        visible: root.widgetsEnabled && (!!root.session.current || (root.session.widgets || []).length > 0 || root.editOverlay)
+        visible: compositor.active || (root.widgetsEnabled && (!!root.session.current || (root.session.widgets || []).length > 0 || root.editOverlay))
         color: "transparent"
-        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
+        Item { id: overlayScene; anchors.fill: parent }
         WebEngineView {
             id: widgetView
+            parent: overlayScene
+            visible: root.widgetsEnabled && (!!root.session.current || (root.session.widgets || []).length > 0 || root.editOverlay)
+            enabled: root.editOverlay || (compositor.active && companion.expanded)
             anchors.fill: parent
             backgroundColor: "transparent"
             settings.localContentCanAccessRemoteUrls: true
@@ -168,8 +213,38 @@ ApplicationWindow {
         }
         Connections { target: root; function onSessionChanged() { widgetView.updateWidgets() } function onEditOverlayChanged() { widgetView.updateWidgets() } }
     }
+    Timer {
+        interval: 32; repeat: true; running: compositor.active
+        onTriggered: {
+            root.overlayAction(compositor.poll(!root.overlayHidden,
+                                companion.expanded || root.editOverlay || root.overlayOptions,
+                                Qt.rect(companion.x, companion.y, companion.width, companion.height)))
+        }
+    }
+    Shortcut {
+        sequence: "Escape"; context: Qt.ApplicationShortcut
+        enabled: compositor.active && (root.overlayOptions || companion.expanded || root.editOverlay)
+        onActivated: root.releaseOverlay()
+    }
+    Text {
+        parent: overlayScene
+        visible: compositor.active && compositor.error.length > 0
+        x: 24; y: parent.height-height-20; z: 30
+        text: compositor.error; color: "#ffb4a8"; font.pixelSize: 14
+    }
+    Item {
+        id: workbenchScene
+        parent: compositor.active ? overlayScene : root.contentItem
+        visible: !compositor.active || root.overlayOptions
+        anchors.fill: parent
+        z: 20
+        Rectangle { anchors.fill: parent; color: "#0e1520" }
+    }
     ColumnLayout {
         id: workbenchContent
+        parent: workbenchScene
+        visible: !compositor.active || root.overlayOptions
+        z: 20
         anchors.fill: parent
         spacing: 0
         Rectangle {
@@ -189,6 +264,7 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 Text { text: root.session.launch_context && root.session.launch_context.game_pid ? "LUNCHPAIL · PID " + root.session.launch_context.game_pid : "STANDALONE SESSION"; color: root.muted; font.pixelSize: 10; font.letterSpacing: 1 }
+                GbButton { visible: compositor.active; text: "Back to game"; onClicked: { root.overlayOptions = false; companion.expanded = false; root.editOverlay = false } }
                 GbButton { id: overlayButton; text: checked ? "Hide overlay" : "Show overlay"; checkable: true }
                 GbButton { text: checked ? "Lock widgets" : "Arrange widgets"; checkable: true; onToggled: { root.editOverlay = checked; if (checked) overlayButton.checked = true } }
             }
@@ -252,8 +328,8 @@ ApplicationWindow {
                                     Column {
                                         anchors.centerIn: parent; spacing: 14
                                         visible: !capture.active && !replay.source.toString().length && !root.session.frame_url
-                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Connect your game"; color: root.ink; font.pixelSize: 21 }
-                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Share a screen or compare a screenshot"; color: root.muted; font.pixelSize: 12 }
+                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: compositor.active ? "Game connected" : "Connect your game"; color: root.ink; font.pixelSize: 21 }
+                                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: compositor.active ? (root.session.reference_count ? "Waiting for a game frame" : "Add a walkthrough to enable synchronization") : "Share a screen or compare a screenshot"; color: root.muted; font.pixelSize: 12 }
                                     }
                                 }
                             }
@@ -271,11 +347,11 @@ ApplicationWindow {
                         }
                         Flow {
                             Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; spacing: 8
-                            GbButton { text: capture.active ? "Stop sharing" : "Share screen"; onClicked: { replay.stop(); replay.source = ""; root.captureError = ""; capture.active = !capture.active } }
+                            GbButton { visible: !compositor.active; text: capture.active ? "Stop sharing" : "Share screen"; onClicked: { replay.stop(); replay.source = ""; root.captureError = ""; capture.active = !capture.active } }
                             GbButton { text: "Replay video"; onClicked: replayDialog.open() }
                             GbButton { text: "Compare screenshot"; enabled: !buddy.busy && root.session.reference_count > 0; onClicked: frameDialog.open() }
-                            GbButton { text: "Match frame"; enabled: !buddy.busy && root.session.reference_count > 0 && (capture.active || replay.source.toString().length > 0); onClicked: root.grabFrame() }
-                            GbButton { text: checked ? "Auto sync on" : "Auto sync off"; checkable: true; onToggled: root.autoSync = checked }
+                            GbButton { text: "Match frame"; enabled: !buddy.busy && root.session.reference_count > 0 && (compositor.active || capture.active || replay.source.toString().length > 0); onClicked: root.grabFrame() }
+                            GbButton { text: checked ? "Auto sync on" : "Auto sync off"; checkable: true; checked: root.autoSync; onClicked: root.autoSync = checked }
                             GbButton { text: "Ask vision model"; enabled: !buddy.busy && root.candidates.length > 0; onClicked: buddy.compare_vision() }
                         }
                         Text { visible: root.captureError.length > 0; text: root.captureError; color: "#efbca6"; wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24 }
@@ -387,7 +463,7 @@ ApplicationWindow {
         interval: 1800
         running: root.smokePath.length > 0
         onTriggered: {
-            const target = root.visible ? workbenchContent : companion.snapshotItem
+            const target = compositor.active ? overlayScene : root.visible ? workbenchScene : companion.snapshotItem
             const accepted = target.grabToImage(function(result) {
                 console.warn("GAMEBUDDY_SMOKE saved=" + result.saveToFile(root.smokePath) + " guides=" + (root.session.guides || []).length)
                 Qt.quit()

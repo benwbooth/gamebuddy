@@ -8,6 +8,7 @@ name = "gamebuddy"
 path = "src/main.rs"
 
 [dependencies]
+gamebuddy-overlay = { path = "../gamebuddy-overlay" }
 gamebuddy-core = { path = "../gamebuddy-core" }
 gamebuddy-services = { path = "../gamebuddy-services" }
 anyhow.workspace = true

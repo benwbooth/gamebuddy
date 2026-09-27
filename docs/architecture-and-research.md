@@ -21,7 +21,7 @@ The player can ask to use a different video, ignore a guide, skip collectibles, 
 | Agent access | `gamebuddy-mcp` | Stdio MCP tools shared with the in-app coach |
 | App | `gamebuddy-app` | CXX-Qt controller, compact QML companion, capture, HTML widgets, workbench |
 | Launcher | Lunchpail | Game identity and process/session context; future pre-launch overlay handshake |
-| Native overlay | Planned adapters | Gamescope composition or graphics hooks, input routing, clean frame capture |
+| Native overlay | Linux Gamescope adapter implemented | Private Xwayland game/overlay composition, focus routing and game-only capture; native Wayland and Windows/macOS graphics hooks remain |
 
 The Rust host owns models, internet access, speech, compilation and state. A future injected shim handles only frame presentation/capture and input forwarding over bounded IPC. Models cannot execute OS commands through the game tools.
 

@@ -1,0 +1,19 @@
+[package]
+name = "gamebuddy-overlay"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["composite", "xtest", "xfixes", "res"] }
+libc = "0.2"
+
+[dev-dependencies]
+gamebuddy-core = { path = "../gamebuddy-core" }
+gamebuddy-services = { path = "../gamebuddy-services" }
