@@ -16,13 +16,13 @@ The development flake currently supplies **Gamescope 3.16.29**. The adapter uses
 
 Shift+Tab toggles interaction. Ctrl+Shift+Tab hides/restores all GameBuddy surfaces. Escape releases interaction. Grabs exist only on this session's Xwayland root, so they do not intercept typing in other desktop applications. The icon can also be clicked, dragged, or held for speech. Hidden game cursors do not activate hover focus; use the shortcut in games that lock/hide their pointer.
 
-A private Unix datagram socket accepts `toggle`, `toggle-visibility`, `show`, `hide`, `focus` and `release`. The supervisor prints its path as `GAMEBUDDY_CONTROL_SOCKET`; in Lunchpail it is `control.sock` in the private session directory. Controller adapters should send these actions instead of synthesizing keyboard keys:
+A private Unix datagram socket accepts `toggle`, `toggle-visibility`, `show`, `hide`, `focus` and `release`. The supervisor prints its path as `GAMEBUDDY_CONTROL_SOCKET`; in Lunchpail it is `control.sock` in the private session directory. GameBuddy's controller adapter should send these actions instead of synthesizing keyboard keys:
 
 ```sh
 gamebuddy --overlay-action toggle /path/to/session/control.sock
 ```
 
-Physical gamepad bindings are **not installed yet**. Prefer a configurable button/held chord in Lunchpail's controller router. Guide-button ownership, suppressing chord events from the game, debounce, disconnects, and navigation inside the UI need controller-specific tests. Keyboard visibility/focus and the socket command path have runtime coverage.
+Physical gamepad bindings are **not installed yet**. GameBuddy should own a configurable button/held chord and its device listener. Lunchpail supplies launch context and emulator configuration/arguments; it does not intercept keypresses. Preventing a chord from also reaching the game requires input routing in GameBuddy's compositor adapter; a device listener alone does not consume game input. Guide-button ownership, debounce, disconnects, and navigation inside the UI need controller-specific tests. Keyboard visibility/focus and the socket command path have runtime coverage.
 
 ### Wayland versus Xwayland
 
