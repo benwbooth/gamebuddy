@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Run inside nix develop. Uses a virtual mic; never changes the user's default.
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd -- "$project_dir"
+cargo build -p gamebuddy-app -p gamebuddy-overlay --bin gamebuddy --examples
+runtime_dir="$(mktemp -d -t gamebuddy-voice-test-XXXXXXXX)"
+printf 'Voice test directory: %s\n' "$runtime_dir"
+export GAMEBUDDY_TEST_DATA="$runtime_dir/data"
+export GAMEBUDDY_TEST_MIC_SINK="gamebuddy_test_sink_$$"
+export GAMEBUDDY_TEST_MIC_SOURCE="gamebuddy_test_mic_$$"
+export GAMEBUDDY_AUDIO_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE"
+export GAMEBUDDY_TEST_VOICE_WAV="$runtime_dir/guide.wav"
+export GAMEBUDDY_TEST_QUESTION_WAV="$runtime_dir/question.wav"
+sink_module=""; source_module=""
+cleanup() {
+    if [[ -n "$source_module" ]]; then pactl unload-module "$source_module"; fi
+    if [[ -n "$sink_module" ]]; then pactl unload-module "$sink_module"; fi
+}
+trap cleanup EXIT
+sink_module="$(pactl load-module module-null-sink sink_name="$GAMEBUDDY_TEST_MIC_SINK" sink_properties=device.description=GameBuddyTestSink)"
+source_module="$(pactl load-module module-remap-source master="$GAMEBUDDY_TEST_MIC_SINK.monitor" source_name="$GAMEBUDDY_TEST_MIC_SOURCE" source_properties=device.description=GameBuddyTestMic)"
+pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 1
+nix run nixpkgs#espeak-ng -- -v en-us -s 135 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please open the guide.'
+nix run nixpkgs#espeak-ng -- -v en-us -s 135 -w "$GAMEBUDDY_TEST_QUESTION_WAV" 'What should I do next?'
+./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
+./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+    ./target/debug/examples/compositor_probe "$runtime_dir/proof"
+printf 'Voice test artifacts: %s\n' "$runtime_dir/proof"

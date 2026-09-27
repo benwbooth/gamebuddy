@@ -5,7 +5,7 @@ September 27, 2026, NixOS/KDE Wayland, RX 7900 XTX. This is evidence for the dev
 | Check | Result |
 | --- | --- |
 | Rust workspace build | Passed locally with Qt 6.11.2 |
-| Rust tests | 26 passed: existing 21 domain/service cases plus overlay launch parsing, focus policy, pixel decoding and session command transport |
+| Rust tests | 31 passed: existing 26 cases plus microphone activation/device-loss policy, mute-state parsing, speech segmentation/bounds/WAV output, and explicit voice-command recognition |
 | Strict workspace Clippy | Passed from the final Rust tree |
 | MCP | Real stdio handshake and all 11 tools listed; goal edit, text reference attachment, widget creation and outline restore exercised on a fixture |
 | Qt UI | Actual compact icon, expanded companion and workbench rendered on Wayland; image captures inspected |
@@ -14,6 +14,8 @@ September 27, 2026, NixOS/KDE Wayland, RX 7900 XTX. This is evidence for the dev
 | Capture isolation | Pixel-identical game-only frames with overlay closed/open; fullscreen RetroArch Flatpak capture excluded GameBuddy using XRes PID selection and XComposite readback |
 | Real game | Faxanadu/FCEUmm rendered fullscreen beneath the overlay on KDE Wayland. A copied auto-save loaded successfully; test saves/config stayed in a separate temporary directory. Session exited cleanly |
 | Local speech | whisper.cpp transcribed a synthesized request about the next tower; “Faxanadu” was transcribed as “Faksanadu” |
+| Mic activation | Virtual-source runtime test passed mute/unmute capture, passive focus, silence rejection, a real VAD/Whisper “open the guide” command, a question through a delayed local provider fixture, resumption and ephemeral recording cleanup. Qt entered Speaking then Ready while capture stayed closed. Physical MV7+ mute-button behavior remains unverified |
+| Voice UI | Expanded companion rendered and inspected with Qt's offscreen backend; live Gamescope captures show the listening icon and spoken guide command. The latest standalone Wayland `grabToImage` smoke timed out waiting for its callback; the smoke command now has a bounded timeout |
 | Video import | RetroNate Faxanadu video downloaded; ten author chapters imported; 603 timestamped reference frames indexed |
 | Captions | Live request was rate-limited by YouTube (HTTP 429); video/chapters retained with an explicit coverage note. Caption parsing tested with timed JSON3 data |
 | Visual synchronization | Held-out frame from the reference video matched its chapter. No independent-player accuracy measurement yet; 4B VLM initially abstained |
@@ -24,6 +26,8 @@ Local reasoning tests revealed both malformed widgets and incorrect goal interpr
 The final 9B trial applied a structurally valid outline edit but represented the player's goal as unsourced steps, repeated edits, and exhausted its budget after returning an invalid widget. Its response was rejected. Neither tested local model is validated for reliable autonomous planning; use the MCP harness or configure a stronger reasoner and evaluate its behavior. The goal/edit tools passed deterministic and MCP tests, which does not establish natural-language agent reliability.
 
 Downloaded models: Qwen3.5 4B and 9B through Ollama, and whisper.cpp base English. Ollama reported GPU allocation for both Qwen models. Larger local reasoning is an experiment, not a benchmark-backed default. Other existing Ollama models were not explicitly stopped.
+
+Voice activation uses composed local speech turns. One fast synthesized command was misheard by Whisper as “open the knives” and correctly took the ordinary question path without stealing focus. The slower US-English fixture passed; this is not a recognition-accuracy benchmark. Exact focus commands intentionally avoid fuzzy matching. See [voice input](voice-input.md) for controls and platform boundaries.
 
 Outstanding runtime gates: native Wayland game clients, Windows/macOS overlays and packaging, physical controller bindings/navigation, Steam/Mangoapp coexistence, display/DPI changes, broader game compatibility, actual microphone and spoken audio conversation, reliable progress adaptation, continuous perception while reasoning, and complete reference-wide walkthrough compilation. See the [overlay decision](overlay-backends.md).
 

@@ -1,5 +1,6 @@
 mod controller;
 mod overlay;
+mod voice;
 mod webengine;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QQuickStyle, QString, QUrl};
 

@@ -1,4 +1,6 @@
 //! Serialize diagnostics using Gamescope's fixed legacy screenshot filename.
+#[allow(dead_code)]
+pub mod voice_probe;
 use std::{
     fs::{File, OpenOptions},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},

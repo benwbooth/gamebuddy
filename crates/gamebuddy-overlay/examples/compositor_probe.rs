@@ -217,6 +217,10 @@ fn main() -> anyhow::Result<()> {
         image.pixels().all(|p| p.0 == [20, 40, 80]),
         "Overlay contaminated game-only capture"
     );
+    if std::env::var_os("GAMEBUDDY_TEST_MIC_SOURCE").is_some() {
+        support::voice_probe::run(&conn, overlay, focus, &directory, screenshot)?;
+        return Ok(());
+    }
     toggle()?;
     ensure!(
         cardinal(&conn, overlay, focus)? == 1,

@@ -24,6 +24,8 @@ ApplicationWindow {
     property bool autoSync: compositor.active
     property bool overlayOptions: false
     property bool overlayHidden: false
+    property string queuedVoice: ""
+    property bool voiceTurnRunning: false
     property string captureError: ""
     property string smokePath: arg("--smoke-test")
     property string replayPath: arg("--replay")
@@ -42,6 +44,7 @@ ApplicationWindow {
     function releaseOverlay() {
         companion.stopTalking(); companion.expanded = false; companion.arranging = false
         root.overlayOptions = false; root.editOverlay = false
+        if (!compositor.active) root.visible = false
     }
     function overlayAction(action) {
         if (action === 1) {
@@ -55,6 +58,15 @@ ApplicationWindow {
         else if (action === 4) { overlayHidden = true; releaseOverlay() }
         else if (action === 5) { overlayHidden = false; companion.expanded = true }
         else if (action === 6) releaseOverlay()
+        else if (action === 7) {
+            overlayHidden = false; root.page = 1
+            if (compositor.active) root.overlayOptions = true
+            else { root.visible = true; root.raise(); root.requestActivate() }
+        } else if (action === 8) {
+            overlayHidden = false; companion.expanded = true
+            root.overlayOptions = false
+            companion.arranging = true; root.editOverlay = true; root.widgetsEnabled = true
+        }
     }
     function stepTitle(id) {
         for (let step of steps) if (step.id === id) return step.title
@@ -64,7 +76,7 @@ ApplicationWindow {
         return Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0")
     }
     function grabFrame() {
-        if (buddy.busy || grabbing || !session.reference_count) return
+        if (buddy.busy || grabbing || root.queuedVoice.length || root.voiceTurnRunning || companion.recording || companion.pendingRecording || !session.reference_count) return
         if (compositor.active && replay.source.toString().length === 0) { buddy.match_game_frame(); return }
         let output = replay.source.toString().length > 0 ? replayOutput : liveOutput
         if (output.contentRect.width <= 0 || output.contentRect.height <= 0) return
@@ -75,12 +87,33 @@ ApplicationWindow {
         onState_jsonChanged: root.session = JSON.parse(state_json)
         Component.onCompleted: initialize()
         onAnswerChanged: { if (companion.spokenReplies && answer.length > 0) speech.say(answer) }
+        onVoice_command: action => root.overlayAction(action)
+        onBusyChanged: if (!busy) root.voiceTurnRunning = false
     }
     Compositor { id: compositor }
+    VoiceInput {
+        id: voice
+        onActiveChanged: if (active) root.overlayHidden = false
+        onListeningChanged: if (root.appArguments.indexOf("--voice-trace") >= 0) console.warn("GAMEBUDDY_MIC_CAPTURE " + listening)
+    }
+    Timer {
+        interval: 40; repeat: true; running: true
+        onTriggered: {
+            const path = voice.poll(buddy.voice_directory(), root.voiceTurnRunning || root.queuedVoice.length > 0,
+                speech.state !== TextToSpeech.Ready && speech.state !== TextToSpeech.Error,
+                companion.recording || companion.pendingRecording)
+            if (path.length) root.queuedVoice = path
+            if (root.queuedVoice.length && !buddy.busy) {
+                const ready = root.queuedVoice
+                root.queuedVoice = ""; root.voiceTurnRunning = true
+                buddy.voice_turn(ready)
+            }
+        }
+    }
     Window {
         id: companionWindow
         transientParent: null
-        visible: !compositor.active
+        visible: !compositor.active && !root.overlayHidden
         title: "GameBuddy companion"
         color: "transparent"
         x: 36; y: 90
@@ -97,6 +130,9 @@ ApplicationWindow {
         y: compositor.active ? 90 : 0
         z: 10
         buddy: root.buddyObject
+        voice: voice
+        voiceTurnPending: root.queuedVoice.length > 0 || root.voiceTurnRunning
+        onUtteranceReady: path => root.queuedVoice = path
         session: root.session
         expanded: root.appArguments.indexOf("--expanded") >= 0
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
@@ -117,7 +153,10 @@ ApplicationWindow {
         source: root.replayPath.length > 0 ? "file://" + root.replayPath : ""
         onErrorOccurred: (error, errorString) => root.captureError = errorString
     }
-    TextToSpeech { id: speech }
+    TextToSpeech {
+        id: speech
+        onStateChanged: state => { if (root.appArguments.indexOf("--voice-trace") >= 0) console.warn("GAMEBUDDY_SPEECH_STATE " + state) }
+    }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
     Timer {
         interval: 3000
@@ -464,6 +503,7 @@ ApplicationWindow {
         running: root.smokePath.length > 0
         onTriggered: {
             const target = compositor.active ? overlayScene : root.visible ? workbenchScene : companion.snapshotItem
+            console.warn("GAMEBUDDY_SMOKE target=" + target.width + "x" + target.height + " visible=" + target.visible + " companion=" + companionWindow.visible)
             const accepted = target.grabToImage(function(result) {
                 console.warn("GAMEBUDDY_SMOKE saved=" + result.saveToFile(root.smokePath) + " guides=" + (root.session.guides || []).length)
                 Qt.quit()
@@ -471,8 +511,10 @@ ApplicationWindow {
             if (!accepted) { console.warn("GAMEBUDDY_SMOKE capture rejected"); Qt.exit(1) }
         }
     }
+    Timer { interval: 8000; running: root.smokePath.length > 0; onTriggered: { console.warn("GAMEBUDDY_SMOKE timed out waiting for a rendered frame"); Qt.exit(1) } }
     Component.onCompleted: {
         console.warn("GAMEBUDDY_READY game=" + (session.game || "") + " smoke=" + smokePath)
         if (replayPath.length > 0) replay.play()
     }
+    Component.onDestruction: if (root.queuedVoice.length) buddy.discard_voice(root.queuedVoice)
 }

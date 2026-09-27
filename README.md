@@ -10,7 +10,7 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - Independent reasoning/vision provider settings: Ollama, OpenAI-compatible chat, OpenAI Responses and Gemini. Default local model: `qwen3.5:4b` via Ollama.
 - AI tools to add text/YouTube references, enable/disable sources, edit goals and steps, inspect history and restore outlines. Changes are atomic and revision checked. Confirmed progress survives unchanged steps; altered tasks need new confirmation.
 - A stdio MCP server exposing the same game tools to external agents.
-- Draggable compact companion, hold-to-talk via whisper.cpp, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
+- Draggable compact companion, Linux mic-unmute activation, local speech-turn detection and whisper.cpp transcription, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
 - Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and optional VLM comparison. Similarity never completes objectives.
 - Linux Gamescope session launcher with a compositor overlay, session shortcuts, HTML interaction and game-only XComposite capture.
 - Lunchpail prepares the compositor before the emulator and retains its real game process/controller pipes; other platforms use the desktop companion.
@@ -31,7 +31,9 @@ On Linux, `--launch` starts Gamescope fullscreen (1280×720 game canvas by defau
 
 Without `--launch`, the desktop companion uses **Share game** for OS screen sharing and opens Options in a separate workbench. Whole-desktop capture can include GameBuddy itself. Physical gamepad bindings remain to be connected; the session command interface is documented in [overlay backends](docs/overlay-backends.md).
 
-Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. The first speech turn downloads the English whisper.cpp base model (~142 MB). Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. Voice currently uses composed push-to-talk turns.
+With **On unmute** enabled, mute/unmute your system microphone to start listening without taking game focus. If it is already unmuted, choose **Listen**. Pause to submit a speech turn; mute to stop capture. Say **“Open the guide”** or **“Arrange widgets”** to interact with the overlay. Hold-to-talk remains available. See [voice controls and platform coverage](docs/voice-input.md).
+
+Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. The first speech turn downloads the English whisper.cpp base model (~142 MB). Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. Voice uses composed turns and pauses capture during spoken replies.
 
 Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.local/share/GameBuddy`). Override with `--data-dir` or `GAMEBUDDY_DATA_DIR`. Configure models in Options; keys are read from named environment variables.
 
@@ -56,6 +58,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./target/debug/gamebuddy --expanded --smoke-test /tmp/gamebuddy-companion.png
 scripts/test-gamescope
+scripts/test-voice
 ```
 
 The initial live source test imported RetroNate's [Faxanadu walkthrough](https://www.youtube.com/watch?v=P05edoxsWQg): ten author chapters and 603 sampled reference frames. A held-out source frame matched its chapter. This is a same-video retrieval check, not proof of tracking a different player. The local 4B VLM abstained on the first comparison; accuracy and game coverage are not established.

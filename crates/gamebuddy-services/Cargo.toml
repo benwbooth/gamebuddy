@@ -18,6 +18,8 @@ base64 = "0.22"
 tempfile = "3"
 sha2 = "0.10"
 schemars.workspace = true
+webrtc-vad = "0.4"
+hound = "3.5"
 
 [dev-dependencies]
 tiny_http = "0.12"

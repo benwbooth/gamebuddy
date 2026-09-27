@@ -17,3 +17,4 @@ libc = "0.2"
 [dev-dependencies]
 gamebuddy-core = { path = "../gamebuddy-core" }
 gamebuddy-services = { path = "../gamebuddy-services" }
+tiny_http = "0.12"

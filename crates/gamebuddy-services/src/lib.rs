@@ -2,6 +2,7 @@ pub mod media;
 pub mod providers;
 pub mod speech;
 pub mod store;
+pub mod voice;
 
 pub use media::*;
 pub use providers::*;

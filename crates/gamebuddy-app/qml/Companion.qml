@@ -6,6 +6,7 @@ import QtMultimedia
 Item {
     id: companion
     required property var buddy
+    required property var voice
     required property var session
     property bool expanded: false
     property bool recording: false
@@ -23,6 +24,8 @@ Item {
     property var hostWindow
     property bool embedded: false
     property bool syncActive: false
+    property bool voiceTurnPending: false
+    signal utteranceReady(string path)
     width: expanded ? 410 : 80
     height: expanded ? 480 : 80
 
@@ -33,9 +36,10 @@ Item {
         }
     }
     function startTalking() {
-        if (buddy.busy || recording) return
+        if (buddy.busy || recording || voiceTurnPending) return
         microphoneError = ""
         stopSpeaking()
+        voice.suspend_capture()
         recorder.outputLocation = buddy.voice_path()
         pendingRecording = true
         recorder.record()
@@ -54,7 +58,7 @@ Item {
             companion.recording = recorderState === MediaRecorder.RecordingState
             if (recorderState === MediaRecorder.StoppedState && companion.pendingRecording) {
                 companion.pendingRecording = false
-                if (error === MediaRecorder.NoError) buddy.voice_turn(actualLocation.toString())
+                if (error === MediaRecorder.NoError) companion.utteranceReady(actualLocation.toString())
             }
         }
         onErrorOccurred: (error, errorString) => { companion.pendingRecording = false; companion.microphoneError = errorString }
@@ -75,8 +79,8 @@ Item {
     Rectangle {
         id: orb
         x: 8; y: 8; width: 64; height: 64; radius: 32
-        color: companion.recording ? "#bf665c" : "#162c35"
-        border { width: 2; color: companion.recording ? "#ffc4b9" : "#86decb" }
+        color: companion.recording || voice.listening ? "#bf665c" : "#162c35"
+        border { width: 2; color: companion.recording || voice.listening ? "#ffc4b9" : "#86decb" }
         Rectangle {
             anchors.centerIn: parent
             width: 45; height: 45; radius: 22
@@ -89,7 +93,7 @@ Item {
                         required property int index
                         width: 4; height: index === 1 || index === 2 ? 21 : 11; radius: 2
                         y: (21-height)/2; color: "#a5f2dd"
-                        SequentialAnimation on opacity { running: companion.recording || buddy.busy || buddy.preparing; loops: Animation.Infinite; NumberAnimation { to: 0.35; duration: 350 + index*90 } NumberAnimation { to: 1; duration: 350 + index*90 } }
+                        SequentialAnimation on opacity { running: companion.recording || voice.listening || buddy.busy || buddy.preparing; loops: Animation.Infinite; NumberAnimation { to: 0.35; duration: 350 + index*90 } NumberAnimation { to: 1; duration: 350 + index*90 } }
                     }
                 }
             }
@@ -121,9 +125,10 @@ Item {
             onReleased: { if (held) companion.stopTalking(); else if (!moved) companion.expanded = !companion.expanded }
             onCanceled: companion.stopTalking()
             ToolTip.visible: containsMouse && !pressed
-            ToolTip.text: "Click to expand · Drag to move · Hold to talk"
+            ToolTip.text: voice.status + "\nClick to expand · Drag to move · Hold to talk"
         }
         Rectangle { visible: buddy.preparing; width: 10; height: 10; radius: 5; x: 49; y: 51; color: "#efc783"; border.color: "#132230"; border.width: 2 }
+        Rectangle { visible: voice.active; width: 12; height: 12; radius: 6; x: 2; y: 49; color: voice.listening ? "#ffbdad" : "#efc783"; border.color: "#132230"; border.width: 2; Accessible.name: voice.status }
     }
     ColumnLayout {
         visible: companion.expanded
@@ -140,8 +145,8 @@ Item {
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
         }
         Text {
-            Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || buddy.message
-            color: companion.microphoneError ? "#f6b7a5" : "#a9c0cf"; font.pixelSize: 12; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
+            Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || voice.error || voice.status
+            color: companion.microphoneError || voice.error ? "#f6b7a5" : "#a9c0cf"; font.pixelSize: 12; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
         }
         Rectangle {
             Layout.fillWidth: true; Layout.preferredHeight: 62; radius: 13
@@ -151,8 +156,18 @@ Item {
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.recording ? "Listening" : buddy.busy ? "Thinking…" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
             }
-            MouseArea { anchors.fill: parent; enabled: !buddy.busy; onPressed: companion.startTalking(); onReleased: companion.stopTalking(); onCanceled: companion.stopTalking() }
+            MouseArea { anchors.fill: parent; enabled: !buddy.busy && !companion.voiceTurnPending; onPressed: companion.startTalking(); onReleased: companion.stopTalking(); onCanceled: companion.stopTalking() }
         }
+        RowLayout {
+            Layout.fillWidth: true
+            GbButton { text: voice.active ? "Stop listening" : "Listen"; Layout.fillWidth: true; onClicked: voice.toggle_listening() }
+            CheckBox {
+                text: "On unmute"; checked: voice.armed; onToggled: voice.armed = checked
+                palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
+                ToolTip.visible: hovered; ToolTip.text: "Start listening when this microphone is unmuted in the system."
+            }
+        }
+        Text { Layout.fillWidth: true; text: buddy.message; color: "#a9c0cf"; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight }
         ScrollView {
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             Column {

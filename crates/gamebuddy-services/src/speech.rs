@@ -1,4 +1,4 @@
-//! Local push-to-talk speech recognition. The inference runtime is reused from
+//! Local speech recognition for automatic and push-to-talk turns. Reuses
 //! whisper.cpp; orchestration, model caching and the coaching loop stay in Rust.
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -83,7 +83,7 @@ pub fn transcribe(root: &Path, recording: &Path) -> Result<String> {
         .to_owned();
     ensure!(
         !text.is_empty(),
-        "No speech was detected. Hold the microphone button while speaking."
+        "No speech was detected. Try speaking again."
     );
     Ok(text)
 }

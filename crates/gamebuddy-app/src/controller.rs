@@ -73,7 +73,13 @@ pub mod ffi {
         #[qinvokable]
         fn voice_path(self: &Buddy) -> QString;
         #[qinvokable]
+        fn voice_directory(self: &Buddy) -> QString;
+        #[qinvokable]
         fn voice_turn(self: Pin<&mut Buddy>, path: QString);
+        #[qinvokable]
+        fn discard_voice(self: &Buddy, path: QString);
+        #[qsignal]
+        fn voice_command(self: Pin<&mut Buddy>, action: i32);
         #[qinvokable]
         unsafe fn match_sink(self: Pin<&mut Buddy>, sink: *mut QObject);
     }
@@ -140,6 +146,7 @@ enum Outcome {
     Answer(String),
     Vision(String),
     Voice(String, String),
+    VoiceCommand(String, i32),
     Match(Box<(Synchronizer, SyncEstimate, PathBuf)>),
 }
 impl ffi::Buddy {
@@ -314,6 +321,7 @@ impl ffi::Buddy {
                 Ok(Outcome::Answer(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Answer ready"));},
                 Ok(Outcome::Vision(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Visual comparison ready. Confirm a location when the evidence is sufficient."));},
                 Ok(Outcome::Voice(transcript,answer))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().set_answer(q(answer));object.as_mut().set_message(q("Ready to listen"));},
+                Ok(Outcome::VoiceCommand(transcript,action))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().voice_command(action);object.as_mut().set_message(q("Voice command applied"));},
                 Ok(Outcome::Match(data))=>{let (sync,estimate,path)=*data;object.as_mut().set_message(q(&estimate.detail));object.as_mut().rust_mut().sync=sync;object.as_mut().rust_mut().estimate=estimate;object.as_mut().rust_mut().last_frame=Some(path);},
                 Err(e)=>object.as_mut().set_message(q(format!("{e:#}"))),
             }
@@ -635,12 +643,31 @@ impl ffi::Buddy {
                 .unwrap_or_default(),
         )
     }
+    pub fn voice_directory(&self) -> QString {
+        q(self.rust().root.join("voice").to_string_lossy())
+    }
+    pub fn discard_voice(&self, path: QString) {
+        if let Ok(path) = services::local_path(&path.to_string())
+            && path.parent() == Some(self.rust().root.join("voice").as_path())
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     pub fn voice_turn(self: Pin<&mut Self>, path: QString) {
         self.background(
             "Listening to your recording… (first use downloads the local speech model)",
             move |root| {
                 let path = services::local_path(&path.to_string())?;
-                let transcript = services::speech::transcribe(&root, &path)?;
+                let transcript = services::speech::transcribe(&root, &path);
+                // Captured audio is ephemeral, including failed recognition or
+                // provider calls. Never delete a user-supplied external file.
+                if path.parent() == Some(root.join("voice").as_path()) {
+                    let _ = std::fs::remove_file(&path);
+                }
+                let transcript = transcript?;
+                if let Some(action) = services::voice::overlay_command(&transcript) {
+                    return Ok(Outcome::VoiceCommand(transcript, action));
+                }
                 let store = Store::open(root)?;
                 let settings = store.get::<Settings>("settings")?.unwrap_or_default();
                 let provider = HttpProvider::new(settings.reasoning)?;
@@ -649,10 +676,6 @@ impl ffi::Buddy {
                 } else {
                     services::ask(&provider, None, &Progress::default(), &transcript)?
                 };
-                // Only remove recordings made by this app, after a successful turn.
-                if path.parent() == Some(store.root.join("voice").as_path()) {
-                    let _ = std::fs::remove_file(path);
-                }
                 Ok(Outcome::Voice(transcript, answer))
             },
         );
