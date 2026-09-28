@@ -17,6 +17,7 @@ Item {
     property string microphoneError: ""
     property alias snapshotItem: visualRoot
     signal captureRequested()
+    signal cropRequested()
     signal workbenchRequested()
     signal stopSpeaking()
     signal widgetsToggled(bool shown)
@@ -175,10 +176,14 @@ Item {
                 ToolTip.visible: hovered; ToolTip.text: "Start listening when this microphone is unmuted in the system."
             }
         }
-        Text {
+        RowLayout {
+            Layout.fillWidth: true
+            Text {
             Layout.fillWidth: true
             text: companion.session.screen?.status === "live" ? "Watching game · " + (companion.session.screen.scene_error ? "visual analysis unavailable; screenshots ready" : companion.session.screen.scene?.fresh ? companion.session.screen.scene.summary : "interpreting the scene…") : "Screen " + (companion.session.screen?.status || "waiting") + " · " + (companion.session.screen?.error || buddy.message)
             color: "#a9c0cf"; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+            }
+            GbButton {text:"Crop…";enabled:!!companion.session.frame_url;onClicked:companion.cropRequested()}
         }
         ScrollView {
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth

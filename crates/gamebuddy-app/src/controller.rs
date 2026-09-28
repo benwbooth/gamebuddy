@@ -54,6 +54,10 @@ pub mod ffi {
         #[qinvokable]
         fn set_screen_capture(self: Pin<&mut Buddy>, enabled: bool);
         #[qinvokable]
+        fn crop_preview(self: &Buddy) -> QString;
+        #[qinvokable]
+        fn save_game_crop(self: Pin<&mut Buddy>, edit: QString) -> QString;
+        #[qinvokable]
         fn compare_vision(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn ask(self: Pin<&mut Buddy>, question: QString);
@@ -182,7 +186,7 @@ enum Outcome {
     Guide(Guide),
     Message(String),
     Answer(String),
-    Vision(String),
+    Vision(String, services::screen::Ticket),
     Voice(String, String),
     VoiceCommand(String, i32),
 }
@@ -420,7 +424,11 @@ impl ffi::Buddy {
                 Ok(Outcome::Guide(g))=>{let count=g.steps.len();object.as_mut().use_guide(g);object.as_mut().set_message(q(format!("Imported {count} guide nodes. Source coverage is shown in the guide.")));},
                 Ok(Outcome::Message(m))=>object.as_mut().set_message(q(m)),
                 Ok(Outcome::Answer(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Answer ready"));},
-                Ok(Outcome::Vision(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Visual comparison ready. Confirm a location when the evidence is sufficient."));},
+                Ok(Outcome::Vision(a,ticket))=>{
+                    if Store::open(&object.rust().root).and_then(|s|services::screen::capture_ticket(&s,&ticket.session)).is_ok_and(|current|current==ticket){
+                        object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Visual comparison ready. Confirm a location when the evidence is sufficient."));
+                    }else{object.as_mut().set_message(q("Screen settings changed; discarded the earlier comparison."));}
+                },
                 Ok(Outcome::Voice(transcript,answer))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().set_answer(q(answer));object.as_mut().set_message(q("Ready to listen"));},
                 Ok(Outcome::VoiceCommand(transcript,action))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().voice_command(action);object.as_mut().set_message(q("Voice command applied"));},
                 Err(e)=>object.as_mut().set_message(q(format!("{e:#}"))),
@@ -586,6 +594,57 @@ impl ffi::Buddy {
         }
         self.refresh();
     }
+    pub fn crop_preview(&self) -> QString {
+        let result = (|| -> Result<serde_json::Value> {
+            let data = self.rust();
+            let store = Store::open(&data.root)?;
+            let ticket = services::screen::capture_ticket(&store, &data.screen_session)?;
+            let path = data
+                .last_frame
+                .as_ref()
+                .context("Wait for a game frame, or share the game first")?;
+            let image = image::open(path)?;
+            let (width, height) = (image.width(), image.height());
+            let preview = image.thumbnail(width.min(1600), height.min(1000)).to_rgb8();
+            std::fs::create_dir_all(data.root.join("captures"))?;
+            let path = data.root.join("captures/crop-preview.jpg");
+            preview.save(&path)?;
+            Ok(
+                json!({"ticket":ticket,"width":width,"height":height,"preview_width":preview.width(),"preview_height":preview.height(),"url":format!("{}?v={}",url::Url::from_file_path(path).map_err(|_|anyhow::anyhow!("Invalid preview path"))?,services::screen::now_ms())}),
+            )
+        })();
+        q(result
+            .unwrap_or_else(|e| json!({"error":format!("{e:#}")}))
+            .to_string())
+    }
+    pub fn save_game_crop(mut self: Pin<&mut Self>, edit: QString) -> QString {
+        let result = (|| -> Result<()> {
+            let edit: serde_json::Value = serde_json::from_str(&edit.to_string())?;
+            let ticket: services::screen::Ticket = serde_json::from_value(edit["ticket"].clone())?;
+            anyhow::ensure!(
+                ticket.session == self.rust().screen_session && ticket.game == self.rust().game,
+                "Game changed; reopen the crop editor"
+            );
+            let crop: Crop = serde_json::from_value(edit["crop"].clone())?;
+            services::screen::set_crop(&Store::open(&self.rust().root)?, &ticket, crop)
+        })();
+        if let Err(e) = result {
+            return q(format!("{e:#}"));
+        }
+        let progress = self.rust().sync.progress.clone();
+        self.as_mut().rust_mut().sync = Synchronizer::new(progress);
+        self.as_mut().rust_mut().estimate = SyncEstimate::default();
+        self.as_mut().rust_mut().vision_votes = None;
+        self.as_mut().rust_mut().vision_evidence = None;
+        self.as_mut().rust_mut().last_vision_at = 0;
+        self.as_mut().rust_mut().last_scene_at = 0;
+        self.as_mut().rust_mut().last_scene_image.clear();
+        self.as_mut().set_message(q(
+            "Game crop saved. The next captured frame uses your selection.",
+        ));
+        self.refresh();
+        QString::default()
+    }
     pub fn match_frame(mut self: Pin<&mut Self>, path: QString) {
         self.as_mut().set_screen_capture(true);
         self.match_input(path, None);
@@ -618,7 +677,11 @@ impl ffi::Buddy {
                     if let Some(pid) = game_pid {
                         let path = root.join("captures").join(format!("game-{pid}.png"));
                         #[cfg(target_os = "linux")]
-                        gamebuddy_overlay::x11::capture_game(pid, &path)?;
+                        {
+                            let pending = path.with_extension("pending.png");
+                            gamebuddy_overlay::x11::capture_game(pid, &pending)?;
+                            std::fs::rename(pending, &path)?;
+                        }
                         #[cfg(not(target_os = "linux"))]
                         anyhow::bail!("Gamescope capture is only available on Linux");
                         Ok(path)
@@ -643,7 +706,7 @@ impl ffi::Buddy {
                 )?;
                 let matching = if let Some(guide) = &guide {
                     if let Some(index) = store.index(guide)? {
-                        let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
+                        let vector = fingerprint(&image::open(&path)?, ticket.crop)?;
                         let estimate = sync.observe(
                             guide,
                             &index,
@@ -777,8 +840,7 @@ impl ffi::Buddy {
         {
             return;
         }
-        let (Some(guide), Some(path)) = (self.rust().guide.clone(), self.rust().last_frame.clone())
-        else {
+        let Some(guide) = self.rust().guide.clone() else {
             return;
         };
         let candidates = self.rust().estimate.candidates.clone();
@@ -802,9 +864,13 @@ impl ffi::Buddy {
             return;
         }
         let initial = self.rust().sync.progress.clone();
-        let Ok(live_image) = services::image_base64(path) else {
+        let Ok(snapshot) = Store::open(&root).and_then(|s| services::screen::snapshot(&s)) else {
             return;
         };
+        if snapshot.ticket != capture_ticket {
+            return;
+        }
+        let live_image = snapshot.jpeg;
         self.as_mut().rust_mut().vision_inflight = true;
         self.as_mut().rust_mut().last_vision_at = at;
         let thread = self.qt_thread();
@@ -848,21 +914,24 @@ impl ffi::Buddy {
         });
     }
     pub fn compare_vision(self: Pin<&mut Self>) {
-        let (Some(guide), Some(path)) = (self.rust().guide.clone(), self.rust().last_frame.clone())
-        else {
+        let Some(guide) = self.rust().guide.clone() else {
             return;
         };
         let candidates = self.rust().estimate.candidates.clone();
         self.background(
             "Comparing the live frame with the local vision model…",
             move |root| {
-                let settings = Store::open(root)?
-                    .get::<Settings>("settings")?
-                    .unwrap_or_default();
-                let v = services::compare_candidates(
+                let store = Store::open(root)?;
+                let settings = store.get::<Settings>("settings")?.unwrap_or_default();
+                let snapshot = services::screen::snapshot(&store)?;
+                anyhow::ensure!(
+                    snapshot.ticket.game.eq_ignore_ascii_case(&guide.game),
+                    "Capture belongs to a different game"
+                );
+                let v = services::compare_candidate_images(
                     &HttpProvider::new(settings.vision)?,
                     &guide,
-                    path,
+                    snapshot.jpeg,
                     &candidates,
                 )?;
                 let matched = v
@@ -871,11 +940,14 @@ impl ffi::Buddy {
                     .and_then(|id| guide.step(id))
                     .map(|s| s.title.as_str())
                     .unwrap_or("No verified match");
-                Ok(Outcome::Vision(format!(
-                    "Visual comparison: {matched}\n\nVisible evidence:\n{}\n\nUncertain:\n{}",
-                    v.visible_evidence.join("\n"),
-                    v.uncertainties.join("\n")
-                )))
+                Ok(Outcome::Vision(
+                    format!(
+                        "Visual comparison: {matched}\n\nVisible evidence:\n{}\n\nUncertain:\n{}",
+                        v.visible_evidence.join("\n"),
+                        v.uncertainties.join("\n")
+                    ),
+                    snapshot.ticket,
+                ))
             },
         );
     }

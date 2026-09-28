@@ -6,7 +6,8 @@ cd -- "$project_dir"
 cargo build -p gamebuddy-app -p gamebuddy-overlay --bin gamebuddy --examples
 runtime_dir="$(mktemp -d /tmp/gamebuddy-overlay-test-XXXXXXXX)"
 export GAMEBUDDY_TEST_DATA="$runtime_dir/data"
+export GAMEBUDDY_TEST_LOG="$runtime_dir/runtime.log"
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
-./target/debug/gamebuddy --launch --windowed --no-prepare --quiet --data-dir "$GAMEBUDDY_TEST_DATA" -- \
-    ./target/debug/examples/compositor_probe "$runtime_dir/proof"
+./target/debug/gamebuddy --launch --windowed --no-prepare --quiet --crop-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+    ./target/debug/examples/compositor_probe "$runtime_dir/proof" 2>&1 | tee "$GAMEBUDDY_TEST_LOG"
 printf 'Overlay test artifacts: %s\n' "$runtime_dir/proof"

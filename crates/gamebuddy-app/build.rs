@@ -7,6 +7,7 @@ fn main() {
         "qml/GbField.qml",
         "qml/Companion.qml",
         "qml/RealtimePanel.qml",
+        "qml/CropEditor.qml",
     ]))
     .file("src/controller.rs")
     .file("src/overlay.rs")

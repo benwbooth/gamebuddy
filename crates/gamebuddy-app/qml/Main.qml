@@ -24,6 +24,7 @@ ApplicationWindow {
     property bool autoSync: compositor.active
     onAutoSyncChanged: if(session.data_dir)buddy.set_screen_capture(autoSync)
     property bool overlayOptions: false
+    property bool cropOpen: false
     property bool overlayHidden: false
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
@@ -54,12 +55,13 @@ ApplicationWindow {
     function releaseOverlay() {
         companion.stopTalking(); companion.expanded = false; companion.arranging = false
         root.overlayOptions = false; root.editOverlay = false
+        root.cropOpen = false
         if (!compositor.active) root.visible = false
     }
     function overlayAction(action) {
         if (action === 1) {
             if (overlayHidden) { overlayHidden = false; companion.expanded = true }
-            else if (companion.expanded || editOverlay || overlayOptions) releaseOverlay()
+            else if (companion.expanded || editOverlay || overlayOptions || cropOpen) releaseOverlay()
             else companion.expanded = true
         } else if (action === 2) {
             overlayHidden = !overlayHidden
@@ -92,6 +94,12 @@ ApplicationWindow {
         let output = replay.source.toString().length > 0 ? replayOutput : liveOutput
         if (output.contentRect.width <= 0 || output.contentRect.height <= 0) return
         buddy.match_sink(output.videoSink)
+    }
+    function openCrop() {
+        const preview=JSON.parse(buddy.crop_preview())
+        if(preview.error){buddy.message=preview.error;return}
+        cropEditor.configure(preview);root.overlayHidden=false;root.cropOpen=true
+        if(!compositor.active){osd.raise();osd.requestActivate()}
     }
     Buddy {
         id: buddy
@@ -163,6 +171,7 @@ ApplicationWindow {
         session: root.session
         expanded: root.appArguments.indexOf("--expanded") >= 0
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
+        onCropRequested: root.openCrop()
         onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
         onStopSpeaking: { speech.stop(); realtimeVoice.stopSpeaking() }
         onWidgetsToggled: shown => root.widgetsEnabled = shown
@@ -253,9 +262,9 @@ ApplicationWindow {
         width: Screen.width
         height: Screen.height
         x: 0; y: 0
-        visible: compositor.active || (root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay))
+        visible: root.cropOpen || compositor.active || (root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay))
         color: "transparent"
-        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay || companion.expanded || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.cropOpen || root.editOverlay || companion.expanded || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
         Item { id: overlayScene; anchors.fill: parent }
         WebEngineView {
@@ -289,14 +298,14 @@ ApplicationWindow {
         interval: 32; repeat: true; running: compositor.active
         onTriggered: {
             root.overlayAction(compositor.poll(!root.overlayHidden,
-                                companion.expanded || root.editOverlay || root.overlayOptions,
+                                companion.expanded || root.editOverlay || root.overlayOptions || root.cropOpen,
                                 Qt.rect(companion.x, companion.y, companion.width, companion.height),
                                 widgetView.visible ? root.widgetRegions : "[]"))
         }
     }
     Shortcut {
         sequence: "Escape"; context: Qt.ApplicationShortcut
-        enabled: compositor.active && (root.overlayOptions || companion.expanded || root.editOverlay)
+        enabled: root.cropOpen || (compositor.active && (root.overlayOptions || companion.expanded || root.editOverlay))
         onActivated: root.releaseOverlay()
     }
     Text {
@@ -304,6 +313,12 @@ ApplicationWindow {
         visible: compositor.active && compositor.error.length > 0
         x: 24; y: parent.height-height-20; z: 30
         text: compositor.error; color: "#ffb4a8"; font.pixelSize: 14
+    }
+    CropEditor {
+        id: cropEditor;parent:overlayScene;anchors.fill:parent;z:40
+        visible:root.cropOpen;buddy:root.buddyObject
+        trace:root.appArguments.indexOf("--crop-trace")>=0
+        onClosed:root.cropOpen=false
     }
     Item {
         id: workbenchScene
@@ -424,6 +439,7 @@ ApplicationWindow {
                             GbButton { text: "Replay video"; onClicked: replayDialog.open() }
                             GbButton { text: "Compare screenshot"; enabled: !buddy.busy && root.session.reference_count > 0; onClicked: frameDialog.open() }
                             GbButton { text: "Observe frame"; enabled: !buddy.matching && (compositor.active || capture.active || replay.source.toString().length > 0); onClicked: root.grabFrame() }
+                            GbButton { text: "Crop game view"; enabled:!!root.session.frame_url;onClicked:root.openCrop() }
                             GbButton { text: checked ? "Auto sync on" : "Auto sync off"; checkable: true; checked: root.autoSync; onClicked: root.autoSync = checked }
                             GbButton { text: "Ask vision model"; enabled: !buddy.busy && root.candidates.length > 0; onClicked: buddy.compare_vision() }
                         }
@@ -490,7 +506,7 @@ ApplicationWindow {
                                 }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3949" }
                                 Text { text: "VISUAL REFERENCES"; color: "#86decb"; font.pixelSize: 11 }
-                                Text { text: "Sample the walkthrough, then compare live gameplay. Crop coordinates select the gameplay region in the reference video; share a tightly cropped game view for live matching."; color: root.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 12 }
+                                Text { text: "Sample the walkthrough, then compare live gameplay. Coordinates below crop the reference video. Use Crop game view to select the play area in your own game capture."; color: root.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true; font.pixelSize: 12 }
                                 GbField { id: crop; Layout.fillWidth: true; text: '{"x":0,"y":0,"width":1,"height":1}' }
                                 RowLayout {
                                     GbButton { text: "Build visual index"; enabled: !!root.session.guide && !buddy.busy; onClicked: buddy.build_index(10, crop.text) }

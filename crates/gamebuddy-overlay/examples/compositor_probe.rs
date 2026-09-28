@@ -263,6 +263,10 @@ fn main() -> anyhow::Result<()> {
         support::voice_probe::run(&conn, window, overlay, focus, &directory, screenshot)?;
         return Ok(());
     }
+    if std::env::var_os("GAMEBUDDY_TEST_CROP").is_some() {
+        support::crop_probe::run(&conn, window, overlay, focus, root, toggle, screenshot)?;
+        return Ok(());
+    }
     toggle()?;
     ensure!(
         cardinal(&conn, overlay, focus)? == 1,
