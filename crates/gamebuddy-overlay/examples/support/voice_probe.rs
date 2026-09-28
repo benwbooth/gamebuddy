@@ -33,6 +33,9 @@ pub fn run(
     directory: &Path,
     screenshot: impl Fn(&str) -> Result<()>,
 ) -> Result<()> {
+    if std::env::var_os("GAMEBUDDY_TEST_REALTIME").is_some() {
+        return realtime(conn, overlay, focus, screenshot);
+    }
     // All reasoning requests stay in this local fixture, including a misheard command.
     let server =
         tiny_http::Server::http("127.0.0.1:0").map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -160,6 +163,86 @@ pub fn run(
     );
     println!(
         "GAMEBUDDY_VOICE_TEST_PASS unmute/capture, passive focus, silence, mute/close, real VAD/Whisper guide command, delayed provider question/reply, resume, ephemeral audio"
+    );
+    Ok(())
+}
+
+fn realtime(
+    conn: &RustConnection,
+    overlay: u32,
+    focus: u32,
+    screenshot: impl Fn(&str) -> Result<()>,
+) -> Result<()> {
+    let source = std::env::var("GAMEBUDDY_TEST_MIC_SOURCE")?;
+    let sink = std::env::var("GAMEBUDDY_TEST_MIC_SINK")?;
+    ensure!(
+        source.starts_with("gamebuddy_test_") && sink.starts_with("gamebuddy_test_"),
+        "Only use dedicated test devices"
+    );
+    let log = std::env::var("GAMEBUDDY_TEST_LOG")?;
+    let sources: serde_json::Value =
+        serde_json::from_str(&pactl(&["-f", "json", "list", "sources"])?)?;
+    let source_index = sources
+        .as_array()
+        .context("sources")?
+        .iter()
+        .find(|s| s["name"] == source)
+        .context("test source")?["index"]
+        .as_u64()
+        .context("source index")?;
+    let capturing = || -> Result<bool> {
+        let streams: serde_json::Value =
+            serde_json::from_str(&pactl(&["-f", "json", "list", "source-outputs"])?)?;
+        Ok(streams
+            .as_array()
+            .context("source outputs")?
+            .iter()
+            .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
+    };
+    let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+    pactl(&["set-source-mute", &source, "0"])?;
+    wait("subscription WebRTC connects", || {
+        Ok(std::fs::read_to_string(&log)?.contains("Live voice · speak naturally"))
+    })?;
+    ensure!(
+        capturing()?,
+        "WebRTC did not capture the selected virtual microphone"
+    );
+    ensure!(
+        cardinal(conn, overlay, focus)? == 0,
+        "Live voice stole game focus"
+    );
+    let wave = std::env::var("GAMEBUDDY_TEST_VOICE_WAV")?;
+    ensure!(
+        Command::new("paplay")
+            .args(["--device", &sink, &wave])
+            .status()?
+            .success(),
+        "Synthetic speech playback failed"
+    );
+    let started = Instant::now();
+    wait("spoken request reaches GameBuddy widget tool", || {
+        let id: String = store.get("active_guide")?.context("active guide")?;
+        Ok(
+            gamebuddy_services::harness::widgets(&store, &store.guide(&id)?)?
+                .iter()
+                .any(|w| w.title.to_lowercase().contains("voice works")),
+        )
+    })?;
+    println!(
+        "GAMEBUDDY_REALTIME_TOOL latency_seconds={:.1}",
+        started.elapsed().as_secs_f32()
+    );
+    thread::sleep(Duration::from_secs(3)); // allow the OSD's regular store poll
+    screenshot("realtime-widget.png")?;
+    thread::sleep(Duration::from_secs(10)); // include the complete streamed reply
+    pactl(&["set-source-mute", &source, "1"])?;
+    wait("mute ends realtime session", || {
+        Ok(std::fs::read_to_string(&log)?.contains("GAMEBUDDY_REALTIME_STATUS Voice stopped"))
+    })?;
+    wait("mute closes the WebRTC microphone", || Ok(!capturing()?))?;
+    println!(
+        "GAMEBUDDY_REALTIME_TEST_PASS subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute disconnect"
     );
     Ok(())
 }

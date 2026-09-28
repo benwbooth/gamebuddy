@@ -26,6 +26,7 @@ ApplicationWindow {
     property bool overlayHidden: false
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
+    property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
     property string captureError: ""
     property string smokePath: arg("--smoke-test")
     property string replayPath: arg("--replay")
@@ -76,7 +77,7 @@ ApplicationWindow {
         return Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0")
     }
     function grabFrame() {
-        if (buddy.busy || grabbing || root.queuedVoice.length || root.voiceTurnRunning || companion.recording || companion.pendingRecording || !session.reference_count) return
+        if (buddy.matching || grabbing || !session.reference_count) return
         if (compositor.active && replay.source.toString().length === 0) { buddy.match_game_frame(); return }
         let output = replay.source.toString().length > 0 ? replayOutput : liveOutput
         if (output.contentRect.width <= 0 || output.contentRect.height <= 0) return
@@ -86,11 +87,20 @@ ApplicationWindow {
         id: buddy
         onState_jsonChanged: root.session = JSON.parse(state_json)
         Component.onCompleted: initialize()
-        onAnswerChanged: { if (companion.spokenReplies && answer.length > 0) speech.say(answer) }
+        onAnswerChanged: { if (!root.realtimeEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
         onVoice_command: action => root.overlayAction(action)
         onBusyChanged: if (!busy) root.voiceTurnRunning = false
     }
     Compositor { id: compositor }
+    RealtimePanel {
+        id: realtimeVoice
+        parent: compositor.active ? overlayScene : companionWindow.contentItem
+        buddy: root.buddyObject; voice: voice; session: root.session
+        enabledBackend: root.realtimeEnabled; spokenReplies: companion.spokenReplies
+        trace: root.appArguments.indexOf("--voice-trace") >= 0
+        onTranscript: text => buddy.realtime_transcript(text)
+        onAnswer: text => buddy.answer = text
+    }
     VoiceInput {
         id: voice
         onActiveChanged: if (active) root.overlayHidden = false
@@ -101,7 +111,7 @@ ApplicationWindow {
         onTriggered: {
             const path = voice.poll(buddy.voice_directory(), root.voiceTurnRunning || root.queuedVoice.length > 0,
                 speech.state !== TextToSpeech.Ready && speech.state !== TextToSpeech.Error,
-                companion.recording || companion.pendingRecording)
+                companion.recording || companion.pendingRecording, root.realtimeEnabled)
             if (path.length) root.queuedVoice = path
             if (root.queuedVoice.length && !buddy.busy) {
                 const ready = root.queuedVoice
@@ -131,13 +141,15 @@ ApplicationWindow {
         z: 10
         buddy: root.buddyObject
         voice: voice
+        realtimeEnabled: root.realtimeEnabled
+        realtimeStatus: realtimeVoice.status
         voiceTurnPending: root.queuedVoice.length > 0 || root.voiceTurnRunning
         onUtteranceReady: path => root.queuedVoice = path
         session: root.session
         expanded: root.appArguments.indexOf("--expanded") >= 0
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
         onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
-        onStopSpeaking: speech.stop()
+        onStopSpeaking: { speech.stop(); if(root.realtimeEnabled && voice.active)voice.toggle_listening() }
         onWidgetsToggled: shown => root.widgetsEnabled = shown
         onArrangementChanged: active => { root.editOverlay = active; root.widgetsEnabled = true }
     }
@@ -242,11 +254,14 @@ ApplicationWindow {
             settings.localContentCanAccessFileUrls: false
             settings.javascriptCanOpenWindows: false
             function updateWidgets() {
-                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, layouts: root.session.layouts || {}, locked: !root.editOverlay}) + ")")
+                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, locked: !root.editOverlay}) + ")")
             }
             Component.onCompleted: loadHtml(buddy.widget_html())
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }
-            onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => { if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17)) }
+            onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
+                if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17))
+                else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
+            }
             onPermissionRequested: permission => permission.deny()
             onNavigationRequested: request => { if (request.url.toString() !== "about:blank" && !request.url.toString().startsWith("data:")) request.action = WebEngineView.IgnoreRequest }
         }
@@ -451,6 +466,7 @@ ApplicationWindow {
                                     GbButton { text: "I'm here"; accent: true; enabled: !!root.selected && !buddy.busy; onClicked: buddy.confirm_location() }
                                     GbButton { text: "Mark complete"; enabled: !!root.selected && !buddy.busy; onClicked: buddy.complete_step() }
                                     GbButton { text: "Open source"; enabled: !!root.selected; onClicked: Qt.openUrlExternally(buddy.source_url()) }
+                                    GbButton { text: root.session.book_url ? "Open illustrated guide" : "Build illustrated guide"; enabled: !!root.session.guide && !buddy.busy; onClicked: { if(root.session.book_url)Qt.openUrlExternally(root.session.book_url);else buddy.export_illustrated() } }
                                     GbButton { text: "Compile substeps"; enabled: !!root.selected && !buddy.busy; onClicked: buddy.compile_selected() }
                                 }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: "#2b3949" }
@@ -474,7 +490,18 @@ ApplicationWindow {
                         width: parent.width; spacing: 16
                         Text { text: "Choose the minds behind the guide"; color: root.ink; font.pixelSize: 26; Layout.leftMargin: 24; Layout.topMargin: 24 }
                         Text { text: "Reasoning and visual comparison are independent. Both default to your local Ollama model."; color: root.muted; font.pixelSize: 13; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; wrapMode: Text.WordWrap }
-                        Text { text: "Providers: ollama · open_ai_compatible · open_ai_responses · gemini"; color: "#86decb"; font.pixelSize: 12; Layout.leftMargin: 24 }
+                        Text { text: "Providers: codex · claude_code · ollama · open_ai_compatible · open_ai_responses · gemini"; color: "#86decb"; font.pixelSize: 12; Layout.leftMargin: 24 }
+                        RowLayout {
+                            Layout.leftMargin: 24
+                            GbButton { text: "Use Codex subscription + live voice"; onClicked: {
+                                const s=JSON.parse(buddy.settings_json);s.reasoning={kind:"codex",endpoint:"",model:"",api_key_env:""};s.speech="codex_realtime"
+                                settingsEditor.text=JSON.stringify(s,null,2);buddy.save_settings(settingsEditor.text)
+                            } }
+                            GbButton { text: "Use Claude subscription + Codex voice"; onClicked: {
+                                const s=JSON.parse(buddy.settings_json);s.reasoning={kind:"claude_code",endpoint:"",model:"sonnet",api_key_env:""};s.speech="codex_realtime"
+                                settingsEditor.text=JSON.stringify(s,null,2);buddy.save_settings(settingsEditor.text)
+                            } }
+                        }
                         TextArea {
                             id: settingsEditor
                             Layout.fillWidth: true; Layout.preferredHeight: 355; Layout.leftMargin: 24; Layout.rightMargin: 24

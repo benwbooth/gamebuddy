@@ -7,15 +7,16 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - SQLite guide graphs with nested steps, prerequisites, routes, source timestamps and coverage notes.
 - Automatic first-launch YouTube discovery, model-assisted selection, cached download, chapter import and visual reference indexing. English captions are requested when available.
 - Text/Markdown, guide JSON, local video and YouTube imports. Model compilation of text and bounded video sections; sparse samples remain incomplete evidence.
-- Independent reasoning/vision provider settings: Ollama, OpenAI-compatible chat, OpenAI Responses and Gemini. Default local model: `qwen3.5:4b` via Ollama.
+- Source-wide task/substep compilation with screenshot evidence, visible checks and ordering links. [Illustrated walkthroughs](docs/illustrated-walkthroughs.md) provide a searchable chapter reader, filmstrip, task graph and JSON exports.
+- Independent reasoning/vision providers: signed-in Codex and Claude Code subscriptions, Ollama, OpenAI-compatible chat, OpenAI Responses and Gemini. Default local model: `qwen3.5:4b` via Ollama. [Subscription and live voice setup](docs/subscription-providers.md).
 - AI tools to add text/YouTube references, enable/disable sources, edit goals and steps, inspect history and restore outlines. Changes are atomic and revision checked. Confirmed progress survives unchanged steps; altered tasks need new confirmation.
 - A stdio MCP server exposing the same game tools to external agents.
 - Draggable compact companion, Linux mic-unmute activation, local speech-turn detection and whisper.cpp transcription, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
-- Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and optional VLM comparison. Similarity never completes objectives.
+- Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and conservative local VLM comparison. Similarity never completes objectives. [Spatial localization design and remaining work](docs/visual-localization.md).
 - Linux Gamescope session launcher with a compositor overlay, session shortcuts, HTML interaction and game-only XComposite capture.
 - Lunchpail prepares the compositor before the emulator and retains its real game process/controller pipes; other platforms use the desktop companion.
 
-**Development prototype:** the Linux compositor backend works with games on Gamescope’s private Xwayland server. Native Wayland game clients and Windows/macOS graphics-hook overlays are not implemented. Windows/macOS runtime behavior, full-duplex voice, complete source-wide walkthrough compilation, automatic browser text discovery and independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
+**Development prototype:** the Linux compositor backend works with games on Gamescope’s private Xwayland server. Native Wayland game clients and Windows/macOS graphics-hook overlays are not implemented. Subscription-backed WebRTC voice and resumable source-wide compilation are implemented; their limits and checks are described in the [provider guide](docs/subscription-providers.md). Windows/macOS runtime behavior, automatic browser text discovery and independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
 
 ## Run
 
@@ -33,7 +34,7 @@ Without `--launch`, the desktop companion uses **Share game** for OS screen shar
 
 With **On unmute** enabled, mute/unmute your system microphone to start listening without taking game focus. If it is already unmuted, choose **Listen**. Pause to submit a speech turn; mute to stop capture. Say **“Open the guide”** or **“Arrange widgets”** to interact with the overlay. Hold-to-talk remains available. See [voice controls and platform coverage](docs/voice-input.md).
 
-Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. The first speech turn downloads the English whisper.cpp base model (~142 MB). Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. Voice uses composed turns and pauses capture during spoken replies.
+For local inference, Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. Local transcription downloads the English whisper.cpp base model (~142 MB) on first use. Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. The local speech option uses composed turns and pauses capture during spoken replies. The Codex live-voice option streams audio over WebRTC instead.
 
 Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.local/share/GameBuddy`). Override with `--data-dir` or `GAMEBUDDY_DATA_DIR`. Configure models in Options; keys are read from named environment variables.
 
@@ -47,7 +48,7 @@ Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.
 
 Point an MCP client's stdio configuration at the absolute `gamebuddy-mcp` executable and pass the app's `--data-dir`. Its environment needs the media tools for imports. Keep shell startup messages off protocol stdout.
 
-For Lunchpail development, build GameBuddy using the commands above, then set **GameBuddy executable** to the absolute `scripts/gamebuddy-dev` path and enable **Launch with GameBuddy**. The script runs the existing `target/debug/gamebuddy` in this project's Nix runtime environment; it never runs Cargo during game startup. Rebuild explicitly after source changes. A missing binary fails immediately with the build command instead of making the game wait for compilation. On Linux, Lunchpail uses the Gamescope session handshake automatically when enabled. The script supplies the development runtime; it is not an installed package. The game command, working directory and controller pipes remain owned by Lunchpail.
+For Lunchpail development, run `./dev.sh` to build initially and rebuild on source changes, then set **GameBuddy executable** to the absolute `scripts/gamebuddy-dev` path and enable **Launch with GameBuddy**. The launch script runs the existing `target/debug/gamebuddy` in this project's Nix runtime environment; it never runs Cargo during game startup. The watcher does not restart a running game. A missing binary fails immediately with the build command. On Linux, Lunchpail uses the Gamescope session handshake automatically when enabled. The script supplies the development runtime; it is not an installed package. The game command, working directory and controller pipes remain owned by Lunchpail.
 
 For non-Nix builds, install Rust plus Qt 6 Core/Gui/Qml/Quick/QuickControls2/Multimedia/TextToSpeech/WebEngineQuick, expose `qmake` and Qt runtime plugins, then build with Cargo. Windows requires the MSVC Qt build for WebEngine. Native Windows/macOS verification is outstanding.
 
@@ -60,6 +61,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 scripts/test-gamescope
 scripts/test-resolution
 scripts/test-voice
+scripts/test-realtime
+node scripts/test-voice-lifecycle.mjs
 ```
 
 The initial live source test imported RetroNate's [Faxanadu walkthrough](https://www.youtube.com/watch?v=P05edoxsWQg): ten author chapters and 603 sampled reference frames. A held-out source frame matched its chapter. This is a same-video retrieval check, not proof of tracking a different player. The local 4B VLM abstained on the first comparison; accuracy and game coverage are not established.

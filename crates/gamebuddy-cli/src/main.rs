@@ -68,6 +68,19 @@ enum Action {
         guide: String,
         path: PathBuf,
     },
+    /// Create or resume an illustrated edition, preserving the original guide.
+    Walkthrough {
+        guide: String,
+        output: PathBuf,
+        #[arg(long)]
+        resume: bool,
+        #[arg(long, default_value_t = 2)]
+        jobs: usize,
+    },
+    ExportBook {
+        guide: String,
+        output: PathBuf,
+    },
     Index {
         guide: String,
         #[arg(long, default_value_t = 10)]
@@ -90,6 +103,15 @@ enum Action {
         question: String,
     },
     Settings,
+    /// Choose the saved edition used by the companion and its next launch.
+    UseGuide {
+        guide: String,
+    },
+    /// Apply a revision-checked PlanEdit JSON file to a specific saved guide.
+    EditPlan {
+        guide: String,
+        path: PathBuf,
+    },
 }
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -98,6 +120,16 @@ fn main() -> Result<()> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let notify = |text: String| eprintln!("{text}");
     match args.command {
+        Action::EditPlan { guide, path } => {
+            let edit = serde_json::from_slice(&std::fs::read(path)?)?;
+            let result = plan::edit_plan(&store, &guide, edit)?;
+            println!("Saved guide {} revision {}", result.id, result.revision);
+        }
+        Action::UseGuide { guide } => {
+            let guide = store.guide(&guide)?;
+            store.put("active_guide", &guide.id)?;
+            println!("Selected {} ({})", guide.title, guide.id);
+        }
         Action::Configure { path } => {
             let settings: Settings = serde_json::from_slice(&std::fs::read(path)?)?;
             settings.reasoning.validate()?;
@@ -198,6 +230,25 @@ fn main() -> Result<()> {
         }
         Action::Export { guide, path } => {
             std::fs::write(path, serde_json::to_string_pretty(&store.guide(&guide)?)?)?
+        }
+        Action::Walkthrough {
+            guide,
+            output,
+            resume,
+            jobs,
+        } => {
+            let guide = store.guide(&guide)?;
+            let guide = if resume {
+                guide
+            } else {
+                walkthrough::new_edition(&store, &guide)?
+            };
+            eprintln!("Illustrated edition: {}", guide.id);
+            let guide = walkthrough::build_edition(&store, &guide.id, jobs, &output, &notify)?;
+            println!("{}\n{}", guide.id, output.join("index.html").display());
+        }
+        Action::ExportBook { guide, output } => {
+            walkthrough::export_book(&store, &store.guide(&guide)?, &output)?
         }
         Action::Index {
             guide,

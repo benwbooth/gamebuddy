@@ -13,6 +13,8 @@ pub enum ProviderKind {
     OpenAiCompatible,
     OpenAiResponses,
     Gemini,
+    Codex,
+    ClaudeCode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,10 +39,26 @@ impl Default for ProviderConfig {
 pub struct Settings {
     pub reasoning: ProviderConfig,
     pub vision: ProviderConfig,
+    #[serde(default)]
+    pub speech: SpeechBackend,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechBackend {
+    #[default]
+    Local,
+    CodexRealtime,
 }
 
 impl ProviderConfig {
     pub fn validate(&self) -> Result<()> {
+        if matches!(self.kind, ProviderKind::Codex | ProviderKind::ClaudeCode) {
+            ensure!(
+                self.api_key_env.is_empty(),
+                "Subscription providers use the installed CLI login, not an API key"
+            );
+            return Ok(());
+        }
         let u = url::Url::parse(&self.endpoint).context("Invalid provider endpoint")?;
         ensure!(
             matches!(u.scheme(), "http" | "https"),
@@ -70,6 +88,7 @@ impl ProviderConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct ModelRequest {
     pub system: String,
     pub prompt: String,
@@ -110,8 +129,18 @@ impl HttpProvider {
 }
 impl ReasoningProvider for HttpProvider {
     fn complete(&self, r: ModelRequest) -> Result<String> {
+        match self.config.kind {
+            ProviderKind::Codex => {
+                return crate::subscription::codex_complete(&self.config.model, r);
+            }
+            ProviderKind::ClaudeCode => {
+                return crate::subscription::claude_complete(&self.config.model, r);
+            }
+            _ => {}
+        }
         let base = self.config.endpoint.trim_end_matches('/');
         let (url, body) = match self.config.kind {
+            ProviderKind::Codex | ProviderKind::ClaudeCode => unreachable!(),
             ProviderKind::Ollama => (format!("{base}/api/chat"), {
                 let mut body = json!({"model":self.config.model,"stream":false,"think":false,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":16384,"num_predict":4096}});
                 if r.json {
@@ -175,6 +204,7 @@ impl ReasoningProvider for HttpProvider {
         );
         let body: Value = serde_json::from_str(&text).context("Provider returned invalid JSON")?;
         let result = match self.config.kind {
+            ProviderKind::Codex | ProviderKind::ClaudeCode => unreachable!(),
             ProviderKind::Ollama => body["message"]["content"].as_str().map(str::to_owned),
             ProviderKind::OpenAiCompatible => body["choices"][0]["message"]["content"]
                 .as_str()
@@ -299,11 +329,22 @@ pub fn compare_candidates(
     live: impl AsRef<Path>,
     candidates: &[Candidate],
 ) -> Result<VisionVerdict> {
+    compare_candidate_images(provider, guide, image_base64(live)?, candidates)
+}
+
+/// Accept an immutable frame so a later capture cannot replace the observation
+/// while the model request is queued.
+pub fn compare_candidate_images(
+    provider: &dyn ReasoningProvider,
+    guide: &Guide,
+    live_image: String,
+    candidates: &[Candidate],
+) -> Result<VisionVerdict> {
     ensure!(
         !candidates.is_empty(),
         "Build a visual index and match a frame first"
     );
-    let mut images = vec![image_base64(live)?];
+    let mut images = vec![live_image];
     let mut descriptions = Vec::new();
     for (i, c) in candidates.iter().take(3).enumerate() {
         images.push(image_base64(&c.image_path)?);

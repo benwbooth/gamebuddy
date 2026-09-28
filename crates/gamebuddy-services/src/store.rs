@@ -107,11 +107,42 @@ impl Store {
         // identify the same content. Changed/new sections need fresh indexing.
         if let Some(mut index) = self.index(&old)? {
             for frame in &mut index.frames {
-                frame.step_ids.retain(|id| {
-                    old.step(id)
-                        .zip(guide.step(id))
-                        .is_some_and(|(a, b)| a.anchors == b.anchors)
-                });
+                if old.sources.iter().find(|s| s.id == frame.source_id)
+                    != guide.sources.iter().find(|s| s.id == frame.source_id)
+                {
+                    frame.step_ids.clear();
+                    continue;
+                }
+                // Rebind existing images to newly compiled substeps without
+                // decoding the full video again for every outline revision.
+                let matching: Vec<_> = guide
+                    .steps
+                    .iter()
+                    .filter(|s| {
+                        s.anchors.iter().any(|a| {
+                            a.source_id == frame.source_id
+                                && a.start_ms.is_some_and(|t| t <= frame.at_ms)
+                                && a.end_ms.is_some_and(|t| frame.at_ms < t)
+                        })
+                    })
+                    .collect();
+                if matching.is_empty() {
+                    frame.step_ids.retain(|id| {
+                        old.step(id)
+                            .zip(guide.step(id))
+                            .is_some_and(|(a, b)| a.anchors == b.anchors)
+                    });
+                } else {
+                    let parents: std::collections::HashSet<_> = matching
+                        .iter()
+                        .filter_map(|s| s.parent_id.as_deref())
+                        .collect();
+                    frame.step_ids = matching
+                        .iter()
+                        .filter(|s| !parents.contains(s.id.as_str()))
+                        .map(|s| s.id.clone())
+                        .collect();
+                }
             }
             index.frames.retain(|frame| !frame.step_ids.is_empty());
             index.guide_revision = guide.revision;

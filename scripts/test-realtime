@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Uses the signed-in Codex subscription and dedicated virtual audio devices.
+# Run inside nix develop. No physical microphone or speaker is used.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-overlay --bin gamebuddy --bin gamebuddy-cli --examples
+runtime_dir="$(mktemp -d /tmp/gamebuddy-realtime-test-XXXXXXXX)"
+export GAMEBUDDY_TEST_DATA="$runtime_dir/data" GAMEBUDDY_TEST_REALTIME=1
+export GAMEBUDDY_TEST_MIC_SINK="gamebuddy_test_input_$$"
+export GAMEBUDDY_TEST_MIC_SOURCE="gamebuddy_test_mic_$$"
+export GAMEBUDDY_AUDIO_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE"
+export PULSE_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE" PULSE_SINK="gamebuddy_test_output_$$"
+export GAMEBUDDY_TEST_VOICE_WAV="$runtime_dir/request.wav"
+export GAMEBUDDY_TEST_LOG="$runtime_dir/runtime.log"
+modules=(); recorder=""
+cleanup(){
+  if [[ -n "$recorder" ]]; then kill -INT "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true; fi
+  for module in "${modules[@]}"; do pactl unload-module "$module"; done
+}
+trap cleanup EXIT
+modules+=("$(pactl load-module module-null-sink sink_name="$GAMEBUDDY_TEST_MIC_SINK" sink_properties=device.description=GameBuddyTestInput)")
+modules+=("$(pactl load-module module-remap-source master="$GAMEBUDDY_TEST_MIC_SINK.monitor" source_name="$GAMEBUDDY_TEST_MIC_SOURCE" source_properties=device.description=GameBuddyTestMic)")
+modules+=("$(pactl load-module module-null-sink sink_name="$PULSE_SINK" sink_properties=device.description=GameBuddyTestOutput)")
+pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 1
+nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please show a text widget titled Voice Works. Put the words I can hear you in it. Then say Game Buddy audio test complete.'
+./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
+cat >"$runtime_dir/settings.json" <<'JSON'
+{"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
+JSON
+./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
+parec --device="$PULSE_SINK.monitor" --file-format=wav "$runtime_dir/response.wav" & recorder=$!
+./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+    ./target/debug/examples/compositor_probe "$runtime_dir/proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
+kill -INT "$recorder"; wait "$recorder" || true; recorder=""
+ffmpeg -hide_banner -i "$runtime_dir/response.wav" -af volumedetect -f null - >"$runtime_dir/audio-check.txt" 2>&1
+./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$runtime_dir/response.wav" >"$runtime_dir/heard.txt"
+printf 'Realtime voice evidence: %s\n' "$runtime_dir"
+cat "$runtime_dir/heard.txt"

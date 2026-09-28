@@ -4,10 +4,12 @@
 <title>GameBuddy widgets</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color:#e8f1f7;font:14px/1.5 system-ui,sans-serif}.widget{position:absolute;min-width:230px;min-height:130px;width:350px;height:260px;border:1px solid #86decb80;background:#142130f5;border-radius:13px;box-shadow:0 8px 28px #0005;overflow:hidden;display:flex;flex-direction:column}.widget header{padding:12px 16px;border-bottom:1px solid #ffffff18;display:flex;gap:14px;align-items:center;cursor:grab;touch-action:none;user-select:none}.brand{font-size:9px;letter-spacing:1.8px;color:#86decb}.title{font-weight:650;font-size:16px;line-height:1.25}.body{padding:14px 16px;overflow:auto;flex:1;white-space:pre-wrap}.resize{position:absolute;bottom:0;right:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,#86decb80 55%,#86decb80 60%,transparent 60%)}.locked .resize{display:none}.locked header{cursor:default}table{border-collapse:collapse;white-space:normal;width:100%;font-size:12px}td,th{padding:7px;text-align:left;border-bottom:1px solid #ffffff20}th{color:#86decb}ul{padding-left:18px;margin:0;white-space:normal}li{margin-bottom:9px}img{width:100%;height:auto;object-fit:contain}iframe{border:0;width:100%;min-height:200px}.source{color:#91a3b6;font-size:10px;padding-top:10px}.empty{position:absolute;top:28px;left:28px;width:320px;background:#142130ed;padding:22px;border-radius:13px;color:#b8cadd}.empty strong{color:#86decb;display:block;font-size:17px;margin-bottom:8px}
+.tree{white-space:normal;font-size:12px}.tree ul{list-style:none;padding-left:15px}.tree li{margin:3px 0}.tree summary{cursor:pointer;padding:4px;border-radius:5px}.tree .step{display:block;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:5px;border-radius:5px;width:100%}.tree .current{background:#86decb28;color:#b5ffe9;border-left:3px solid #86decb}.tree .done{color:#91a3b6}.tree .instructions{color:#b8cadd;font-size:11px;padding:4px 8px 10px}.preparation{white-space:normal;color:#efc783;font-size:11px;margin-bottom:12px}.location{color:#86decb;font-size:11px;margin-bottom:8px}
 </style></head><body><div id="widgets"></div><script>
 (() => {
   const host=document.getElementById('widgets');
   let layouts={}, last='', locked=true, active=null;
+  let openNodes=new Set(), followed=null, guideId=null;
   const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts))}
@@ -21,21 +23,43 @@
     if(state.layouts)layouts={...state.layouts,...layouts};
     const items=[...(state.widgets||[])];
     if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
+    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:state.guide,progress:state.progress,estimate:state.estimate,preparation:state.preparation}});
     const signature=JSON.stringify(items);if(signature===last)return;last=signature;host.replaceChildren();
-    if(!items.length){const empty=text('div','','empty');empty.append(text('strong','GameBuddy'),text('div','Ask for a strategy, table, or checklist. Your assistant can place it here.'));host.append(empty);return}
+    if(!items.length){const empty=text('div','','empty');empty.append(text('strong','Preparing your guide'),text('div','Finding references and building the walkthrough. Chapters and steps will appear here automatically.'));host.append(empty);return}
     items.forEach((item,i)=>{
       const node=text('section','','widget');node.dataset.widgetId=item.id;
       const header=text('header',''),titles=text('div','');titles.append(text('div','GAMEBUDDY','brand'),text('div',item.title,'title'));header.append(titles);
       header.addEventListener('pointerdown',e=>begin(e,node,item.id,false));node.append(header);
       const body=text('div','','body'),c=item.content||{};
-      if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach(row=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));table.append(tr)});body.append(table)}
+      if(c.kind==='outline'){
+        body.classList.add('tree');const g=c.guide,steps=g.steps||[],byId=new Map(steps.map(s=>[s.id,s])),children=new Map();
+        if(guideId!==g.id){openNodes=new Set();followed=null;guideId=g.id}
+        const current=c.progress?.current_step, completed=new Set(c.progress?.completed||[]), changed=current!==followed;
+        if(changed){followed=current;let s=byId.get(current);while(s?.parent_id){openNodes.add(s.parent_id);s=byId.get(s.parent_id)}}
+        body.append(text('div',current?'Current: '+(byId.get(current)?.title||current):'Locating player · no step confirmed yet','location'));
+        if(c.estimate?.status && c.estimate.status!=='located')body.append(text('div',c.estimate.detail||'Location uncertain','preparation'));
+        if(c.preparation)body.append(text('div',c.preparation.message,'preparation'));
+        else if(g.coverage_notes?.length)body.append(text('div',g.coverage_notes[0],'preparation'));
+        for(const s of steps){const p=s.parent_id||'';if(!children.has(p))children.set(p,[]);children.get(p).push(s)}
+        function branch(parent){const ul=document.createElement('ul');for(const s of children.get(parent)||[]){
+          const li=document.createElement('li'), hasChildren=children.has(s.id), row=text(hasChildren?'summary':'button',(completed.has(s.id)?'✓ ':s.id===current?'▶ ':'')+s.title,hasChildren?'':'step');
+          if(!hasChildren)row.type='button';row.dataset.stepId=s.id;if(s.id===current){row.classList.add('current');row.setAttribute('aria-current','step')}
+          if(completed.has(s.id))row.classList.add('done');
+          if(hasChildren){const details=document.createElement('details');details.open=openNodes.has(s.id);details.addEventListener('toggle',()=>{if(details.open)openNodes.add(s.id);else openNodes.delete(s.id)});details.append(row,branch(s.id));li.append(details)}
+          else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(text('div',s.instructions,'instructions'))});li.append(row);if(s.id===current)li.append(text('div',s.instructions,'instructions'))}
+          ul.append(li)
+        }return ul}
+        body.append(branch(''));
+        if(changed)requestAnimationFrame(()=>body.querySelector('[aria-current="step"]')?.scrollIntoView({block:'nearest'}));
+      }
+      else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach(row=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));table.append(tr)});body.append(table)}
       else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach(v=>ul.append(text('li',v)));body.append(ul)}
       else if(c.kind==='image'){const img=document.createElement('img');if(new URL(c.url).protocol==='https:')img.src=c.url;img.alt=c.caption||item.title;body.append(img,text('div',c.caption||''))}
       else if(c.kind==='video'){const u=new URL(c.url),id=u.hostname==='youtu.be'?u.pathname.slice(1):u.searchParams.get('v');if(/^[A-Za-z0-9_-]{11}$/.test(id)){const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/'+id+'?start='+Math.floor(c.start_seconds||0);frame.allow='fullscreen';frame.title=item.title;body.append(frame)}}
       else body.append(text('div',c.body||''));
       if(item.source_step_ids?.length)body.append(text('div','Guide: '+item.source_step_ids.join(', '),'source'));node.append(body);
       const handle=text('div','','resize');handle.addEventListener('pointerdown',e=>begin(e,node,item.id,true));node.append(handle);
-      const box=layouts[item.id]||{x:28+(i%3)*375,y:30+Math.floor(i/3)*290,width:350,height:260};place(node,box);host.append(node);
+      const box=layouts[item.id]||(c.kind==='outline'?{x:Math.max(0,innerWidth-430),y:30,width:400,height:Math.min(550,innerHeight-60)}:{x:28+(Math.max(0,i-1)%2)*375,y:30+Math.floor(Math.max(0,i-1)/2)*290,width:350,height:260});place(node,box);host.append(node);
     });
   }};
 })();

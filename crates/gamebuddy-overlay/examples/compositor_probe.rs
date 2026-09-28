@@ -25,10 +25,18 @@ fn main() -> anyhow::Result<()> {
         let guide = gamebuddy_core::import_markdown(
             "Faxanadu",
             "Overlay test",
-            "# Overlay fixture\nTest display only.",
+            "# Overlay fixture\nTest display only.\n## Current action\nThis is a test scene, not a real game walkthrough.\n## Next action\nInspect the collapsible outline.",
         )?;
         store.save_guide(&guide)?;
         store.put("active_guide", &guide.id)?;
+        store.save_progress(
+            &guide,
+            &gamebuddy_core::Progress {
+                current_step: Some("step-2".into()),
+                ..Default::default()
+            },
+            "test_fixture",
+        )?;
         store.put(&format!("widgets:{}:{}",guide.id,guide.revision), &serde_json::json!([
             {"id":"compositor-test","title":"Overlay test","source_step_ids":[],"content":{"kind":"text","body":"Drag and resize this HTML widget."}}
         ]))?;
@@ -252,10 +260,12 @@ fn main() -> anyhow::Result<()> {
         mouse(MOTION_NOTIFY_EVENT, 0, 306, 530)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        screenshot("widgets-edit-mode.png")?;
         mouse(MOTION_NOTIFY_EVENT, 0, 650, 104)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(MOTION_NOTIFY_EVENT, 0, 800, 300)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        screenshot("widgets-after-drag.png")?;
         let store = gamebuddy_services::Store::open(data_root)?;
         let layout: serde_json::Value = store.get("widget-layout")?.context("layout not saved")?;
         let box_ = &layout["compositor-test"];
@@ -302,11 +312,14 @@ fn main() -> anyhow::Result<()> {
     conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 76, 130, 0)?
         .check()?;
     conn.flush()?;
-    pause();
-    ensure!(
-        cardinal(&conn, overlay, focus)? == 2,
-        "Orb hover did not acquire pointer-only focus"
-    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while cardinal(&conn, overlay, focus)? != 2 {
+        ensure!(
+            Instant::now() < deadline,
+            "Orb hover did not acquire pointer-only focus"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
     conn.xtest_fake_input(BUTTON_PRESS_EVENT, 1, 0, root, 0, 0, 0)?
         .check()?;
     conn.xtest_fake_input(BUTTON_RELEASE_EVENT, 1, 0, root, 0, 0, 0)?

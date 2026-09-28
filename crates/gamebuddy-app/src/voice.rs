@@ -40,6 +40,7 @@ pub mod ffi {
             busy: bool,
             speaking: bool,
             push_to_talk: bool,
+            realtime: bool,
         ) -> QString;
     }
 }
@@ -111,6 +112,7 @@ impl ffi::VoiceInput {
         busy: bool,
         speaking: bool,
         push_to_talk: bool,
+        realtime: bool,
     ) -> QString {
         if self.rust().monitor.is_none() {
             self.as_mut().rust_mut().monitor = Some(Monitor::default());
@@ -152,6 +154,17 @@ impl ffi::VoiceInput {
         self.as_mut().rust_mut().last_armed = armed;
         let active = self.rust().gate.active;
         self.as_mut().set_active(active);
+        if realtime {
+            // Chromium owns capture, echo cancellation and playback for WebRTC.
+            // Keep the same system-mute gate, without opening a second recorder.
+            self.as_mut().suspend_capture();
+            self.set_status(QString::from(if active {
+                "Live Codex voice"
+            } else {
+                "Unmute your mic or choose Listen"
+            }));
+            return QString::default();
+        }
         let blocked = busy || speaking || push_to_talk;
         if blocked {
             self.as_mut().rust_mut().resume_after = Instant::now() + Duration::from_millis(800);

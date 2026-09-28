@@ -25,6 +25,8 @@ Item {
     property bool embedded: false
     property bool syncActive: false
     property bool voiceTurnPending: false
+    property bool realtimeEnabled: false
+    property string realtimeStatus: ""
     signal utteranceReady(string path)
     width: expanded ? 410 : 80
     height: expanded ? 480 : 80
@@ -36,6 +38,7 @@ Item {
         }
     }
     function startTalking() {
+        if(realtimeEnabled){if(!voice.active)voice.toggle_listening();return}
         if (buddy.busy || recording || voiceTurnPending) return
         microphoneError = ""
         stopSpeaking()
@@ -145,7 +148,7 @@ Item {
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
         }
         Text {
-            Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || voice.error || voice.status
+            Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || voice.error || (companion.realtimeEnabled ? companion.realtimeStatus || voice.status : voice.status)
             color: companion.microphoneError || voice.error ? "#f6b7a5" : "#a9c0cf"; font.pixelSize: 12; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
         }
         Rectangle {
@@ -153,8 +156,8 @@ Item {
             color: companion.recording ? "#724840" : "#254c49"; border.color: "#68bda9"
             Column {
                 anchors.centerIn: parent; spacing: 3
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.recording ? "Listening" : buddy.busy ? "Thinking…" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? (voice.active ? "Voice chat active" : "Start voice chat") : companion.recording ? "Listening" : buddy.busy ? "Thinking…" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? "Talk naturally · change goals while you play" : "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
             }
             MouseArea { anchors.fill: parent; enabled: !buddy.busy && !companion.voiceTurnPending; onPressed: companion.startTalking(); onReleased: companion.stopTalking(); onCanceled: companion.stopTalking() }
         }
@@ -173,7 +176,7 @@ Item {
             Column {
                 width: parent.width; spacing: 10
                 Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 12; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { width: parent.width; text: buddy.answer || "Tell me what you're trying to do. I can keep useful instructions and references over the game."; color: "#e3edf5"; font.pixelSize: 14; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { width: parent.width; text: buddy.answer || (companion.session.current ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 14; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             }
         }
         RowLayout {

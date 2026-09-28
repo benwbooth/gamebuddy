@@ -11,7 +11,7 @@
         qtEnv = pkgs.qt6.env "gamebuddy-qt" qtModules;
       in {
         devShells.default = pkgs.mkShell {
-          packages = (with pkgs; [ cargo rustc rustfmt clippy pkg-config clang cmake ninja ffmpeg yt-dlp whisper-cpp ])
+          packages = (with pkgs; [ cargo rustc rustfmt clippy pkg-config clang cmake ninja ffmpeg yt-dlp whisper-cpp watchexec ])
             ++ qtModules ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.alsa-lib pkgs.libxcb-cursor pkgs.mold pkgs.pipewire pkgs.pulseaudio pkgs.gamescope ];
           QMAKE = "${qtEnv}/bin/qmake";
           FLAKE_INPUTS = builtins.concatStringsSep ":" (map (input: input.outPath) (builtins.attrValues (builtins.removeAttrs inputs [ "self" ])));

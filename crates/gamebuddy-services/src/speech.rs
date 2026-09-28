@@ -87,3 +87,105 @@ pub fn transcribe(root: &Path, recording: &Path) -> Result<String> {
     );
     Ok(text)
 }
+
+/// Caption fallback for a bounded walkthrough interval. Cache original timings;
+/// these are machine transcripts, not publisher captions or verified game facts.
+pub fn transcribe_reference(
+    root: &Path,
+    media: &Path,
+    start: u64,
+    end: u64,
+) -> Result<Vec<crate::captions::CaptionCue>> {
+    use sha2::{Digest, Sha256};
+    use std::process::Stdio;
+    ensure!(
+        end > start && end - start <= 600_000,
+        "Audio reference interval must be at most ten minutes"
+    );
+    let key = format!(
+        "{:x}",
+        Sha256::digest(format!("{}:{start}:{end}", media.display()))
+    );
+    let directory = root.join("transcripts");
+    std::fs::create_dir_all(&directory)?;
+    let cached = directory.join(format!("{key}.json"));
+    if cached.is_file() {
+        return Ok(serde_json::from_slice(&std::fs::read(cached)?)?);
+    }
+    let model = speech_model(root)?;
+    let temporary = tempfile::tempdir_in(&directory)?;
+    let audio = temporary.path().join("audio.wav");
+    let converted = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+        ])
+        .arg(format!("{:.3}", start as f64 / 1000.0))
+        .arg("-i")
+        .arg(media)
+        .arg("-t")
+        .arg(format!("{:.3}", (end - start) as f64 / 1000.0))
+        .args(["-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+        .arg(&audio)
+        .output()?;
+    ensure!(
+        converted.status.success(),
+        "Reference audio unavailable: {}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let output = temporary.path().join("result");
+    let mut child = Command::new(
+        std::env::var_os("GAMEBUDDY_WHISPER_CLI").unwrap_or_else(|| "whisper-cli".into()),
+    )
+    .arg("-m")
+    .arg(model)
+    .arg("-f")
+    .arg(audio)
+    .args(["-ng", "-oj", "-t", "4", "-of"])
+    .arg(&output)
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn()
+    .context("Reference transcription requires whisper-cli")?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            ensure!(status.success(), "Reference transcription failed");
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Reference transcription timed out");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output.with_extension("json"))?)?;
+    let cues = value["transcription"]
+        .as_array()
+        .context("Whisper returned no timestamped transcript")?
+        .iter()
+        .filter_map(|v| {
+            let from = v["offsets"]["from"].as_u64()?;
+            let to = v["offsets"]["to"].as_u64()?;
+            let text = v["text"].as_str()?.trim();
+            (to > from && !text.is_empty() && start + from < end).then(|| {
+                crate::captions::CaptionCue {
+                    start_ms: start + from,
+                    end_ms: (start + to).min(end),
+                    text: text.into(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(&mut file, &cues)?;
+    file.persist(cached)?;
+    Ok(cues)
+}

@@ -31,7 +31,7 @@ pub fn discover_walkthroughs(game: &str, platform: &str) -> Result<Vec<Walkthrou
         !game.trim().is_empty(),
         "A game title is required for walkthrough discovery"
     );
-    let query = format!("ytsearch5:{game} {platform} complete walkthrough guide");
+    let query = format!("ytsearch8:{game} {platform} complete walkthrough U Can Beat Video Games");
     let result = Command::new("yt-dlp")
         .args([
             "--flat-playlist",
@@ -130,13 +130,11 @@ pub fn prepare_game(
         .and_then(|id| store.guide(&id).ok());
     let active = store.get::<String>("active_guide")?;
     let library = store.guides()?;
-    let existing = cached
-        .or_else(|| {
-            library
-                .iter()
-                .find(|g| g.game.eq_ignore_ascii_case(game) && Some(&g.id) == active.as_ref())
-                .cloned()
-        })
+    let existing = library
+        .iter()
+        .find(|g| g.game.eq_ignore_ascii_case(game) && Some(&g.id) == active.as_ref())
+        .cloned()
+        .or(cached)
         .or_else(|| {
             library
                 .iter()
@@ -183,8 +181,16 @@ pub fn prepare_game(
         progress("Preparing visual references for automatic synchronization…".into());
         index_video(store, &guide, Crop::default(), 10, progress)?;
     }
+    let guide = crate::preparation::compile_walkthrough(store, &guide, progress)?;
+    if store.index(&guide)?.is_some() {
+        crate::walkthrough::export_book(
+            store,
+            &guide,
+            &store.root.join("walkthroughs").join(&guide.id),
+        )?;
+    }
     progress(format!(
-        "{} is ready. Share the game screen to synchronize.",
+        "{} reference preparation finished. Watching the game for location matches.",
         guide.game
     ));
     Ok(guide)
@@ -198,6 +204,31 @@ mod tests {
         fn complete(&self, _: ModelRequest) -> Result<String> {
             Ok(self.0.into())
         }
+    }
+    #[test]
+    fn selected_edition_takes_precedence_over_older_launch_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let old = gamebuddy_core::import_markdown("Faxanadu", "Original", "# Route\nEarlier guide")
+            .unwrap();
+        let selected =
+            gamebuddy_core::import_markdown("Faxanadu", "Illustrated", "# Route\nDetailed guide")
+                .unwrap();
+        store.save_guide(&old).unwrap();
+        store.save_guide(&selected).unwrap();
+        store.put("game-guide:faxanadu:nes", &old.id).unwrap();
+        store.put("active_guide", &selected.id).unwrap();
+        assert_eq!(
+            prepare_game(&store, "Faxanadu", "NES", &|_| {}).unwrap().id,
+            selected.id
+        );
+        assert_eq!(
+            store
+                .get::<String>("game-guide:faxanadu:nes")
+                .unwrap()
+                .unwrap(),
+            selected.id
+        );
     }
     #[test]
     fn filters_invalid_sources_and_rejects_invented_model_choices() {

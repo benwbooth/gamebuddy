@@ -743,6 +743,7 @@ dependencies = [
  "gamebuddy-services",
  "image",
  "serde_json",
+ "tiny_http",
  "url",
 ]
 

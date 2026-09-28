@@ -16,6 +16,7 @@ pub mod ffi {
         #[qproperty(QString, answer)]
         #[qproperty(bool, busy)]
         #[qproperty(bool, preparing)]
+        #[qproperty(bool, matching)]
         #[qproperty(QString, transcript)]
         type Buddy = super::BuddyRust;
         #[qinvokable]
@@ -44,6 +45,8 @@ pub mod ffi {
         fn build_index(self: Pin<&mut Buddy>, interval: i32, crop_json: QString);
         #[qinvokable]
         fn compile_selected(self: Pin<&mut Buddy>);
+        #[qinvokable]
+        fn export_illustrated(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn match_frame(self: Pin<&mut Buddy>, path: QString);
         #[qinvokable]
@@ -77,6 +80,8 @@ pub mod ffi {
         #[qinvokable]
         fn voice_turn(self: Pin<&mut Buddy>, path: QString);
         #[qinvokable]
+        fn realtime_transcript(self: Pin<&mut Buddy>, text: QString);
+        #[qinvokable]
         fn discard_voice(self: &Buddy, path: QString);
         #[qsignal]
         fn voice_command(self: Pin<&mut Buddy>, action: i32);
@@ -101,6 +106,11 @@ pub struct BuddyRust {
     answer: QString,
     busy: bool,
     preparing: bool,
+    matching: bool,
+    vision_inflight: bool,
+    last_vision_at: u64,
+    vision_votes: Option<(String, u32)>,
+    vision_evidence: Option<services::VisionVerdict>,
     transcript: QString,
     root: PathBuf,
     guide: Option<Guide>,
@@ -119,6 +129,11 @@ impl Default for BuddyRust {
             answer: QString::default(),
             busy: false,
             preparing: false,
+            matching: false,
+            vision_inflight: false,
+            last_vision_at: 0,
+            vision_votes: None,
+            vision_evidence: None,
             transcript: QString::default(),
             root: PathBuf::new(),
             guide: None,
@@ -147,7 +162,6 @@ enum Outcome {
     Vision(String),
     Voice(String, String),
     VoiceCommand(String, i32),
-    Match(Box<(Synchronizer, SyncEstimate, PathBuf)>),
 }
 impl ffi::Buddy {
     pub fn launch_arguments(&self) -> QString {
@@ -223,7 +237,7 @@ impl ffi::Buddy {
                     Ok(guide) => {
                         object.as_mut().use_guide(guide);
                         object.as_mut().set_message(q(
-                            "Walkthrough ready. Share your game view to synchronize.",
+                            "Reference preparation finished. Watching the game for location matches.",
                         ));
                     }
                     Err(e) => object.as_mut().set_message(q(format!(
@@ -265,14 +279,31 @@ impl ffi::Buddy {
                 .get::<serde_json::Value>("widget-layout")?
                 .unwrap_or_else(|| json!({}));
             if let Some(guide) = &data.guide {
-                store.put("session", &json!({"guide_id":guide.id,"guide_revision":guide.revision,"game":data.game,"estimate":data.estimate,"last_frame":data.last_frame}))?;
+                store.put("session", &json!({"guide_id":guide.id,"guide_revision":guide.revision,"game":data.game,"estimate":data.estimate,"vision":data.vision_evidence,"last_frame":data.last_frame}))?;
             }
             let frame_url = data
                 .last_frame
                 .as_ref()
                 .and_then(|p| url::Url::from_file_path(p).ok())
                 .map(|u| u.to_string());
-            Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+            let preparation = data
+                .guide
+                .as_ref()
+                .map(|g| store.get::<serde_json::Value>(&format!("preparation:{}", g.id)))
+                .transpose()?
+                .flatten();
+            let book_url = data
+                .guide
+                .as_ref()
+                .and_then(|g| {
+                    store
+                        .get::<String>(&format!("book:{}", g.id))
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|p| url::Url::from_file_path(p).ok())
+                .map(|u| u.to_string());
+            Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
         })();
         match result {
             Ok(s) => self.set_state_json(q(s)),
@@ -298,6 +329,8 @@ impl ffi::Buddy {
         self.as_mut().rust_mut().guide = Some(guide);
         self.as_mut().rust_mut().estimate = SyncEstimate::default();
         self.as_mut().rust_mut().last_frame = None;
+        self.as_mut().rust_mut().vision_votes = None;
+        self.as_mut().rust_mut().vision_evidence = None;
         self.refresh();
     }
     fn background<F>(mut self: Pin<&mut Self>, label: &str, job: F)
@@ -322,7 +355,6 @@ impl ffi::Buddy {
                 Ok(Outcome::Vision(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Visual comparison ready. Confirm a location when the evidence is sufficient."));},
                 Ok(Outcome::Voice(transcript,answer))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().set_answer(q(answer));object.as_mut().set_message(q("Ready to listen"));},
                 Ok(Outcome::VoiceCommand(transcript,action))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().voice_command(action);object.as_mut().set_message(q("Voice command applied"));},
-                Ok(Outcome::Match(data))=>{let (sync,estimate,path)=*data;object.as_mut().set_message(q(&estimate.detail));object.as_mut().rust_mut().sync=sync;object.as_mut().rust_mut().estimate=estimate;object.as_mut().rust_mut().last_frame=Some(path);},
                 Err(e)=>object.as_mut().set_message(q(format!("{e:#}"))),
             }
             object.poll_widgets();
@@ -429,6 +461,20 @@ impl ffi::Buddy {
             )))
         });
     }
+    pub fn export_illustrated(self: Pin<&mut Self>) {
+        let Some(guide) = self.rust().guide.clone() else {
+            return;
+        };
+        self.background("Building illustrated guide…", move |root| {
+            let store = Store::open(&root)?;
+            services::walkthrough::export_book(
+                &store,
+                &guide,
+                &root.join("walkthroughs").join(&guide.id),
+            )?;
+            Ok(Outcome::Guide(guide))
+        });
+    }
     pub fn compile_selected(self: Pin<&mut Self>) {
         let Some(guide) = self.rust().guide.clone() else {
             return;
@@ -463,33 +509,164 @@ impl ffi::Buddy {
             self.match_input(QString::default(), Some(pid));
         }
     }
-    fn match_input(self: Pin<&mut Self>, path: QString, game_pid: Option<u32>) {
+    fn match_input(mut self: Pin<&mut Self>, path: QString, game_pid: Option<u32>) {
+        if *self.matching() {
+            return;
+        }
         let Some(guide) = self.rust().guide.clone() else {
             return;
         };
         let mut sync = self.rust().sync.clone();
-        self.background("Matching gameplay to guide references…", move |root| {
-            let store = Store::open(&root)?;
-            let index = store
-                .index(&guide)?
-                .context("Build the guide's visual index first")?;
-            let path = if let Some(pid) = game_pid {
-                let path = root.join("captures").join(format!("game-{pid}.png"));
-                #[cfg(target_os = "linux")]
-                gamebuddy_overlay::x11::capture_game(pid, &path)?;
-                #[cfg(not(target_os = "linux"))]
-                anyhow::bail!("Gamescope capture is only available on Linux");
-                path
-            } else {
-                services::local_path(&path.to_string())?
-            };
-            let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
-            let time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_millis() as u64;
-            let estimate = sync.observe(&guide, &index, &vector, time, sync.progress.epoch)?;
-            store.save_progress(&guide, &sync.progress, "visual_observation")?;
-            Ok(Outcome::Match(Box::new((sync, estimate, path))))
+        let initial = sync.progress.clone();
+        let root = self.rust().root.clone();
+        let thread = self.qt_thread();
+        self.as_mut().set_matching(true);
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_> {
+                let store = Store::open(&root)?;
+                let index = store
+                    .index(&guide)?
+                    .context("Build the guide's visual index first")?;
+                let path = if let Some(pid) = game_pid {
+                    let path = root.join("captures").join(format!("game-{pid}.png"));
+                    #[cfg(target_os = "linux")]
+                    gamebuddy_overlay::x11::capture_game(pid, &path)?;
+                    #[cfg(not(target_os = "linux"))]
+                    anyhow::bail!("Gamescope capture is only available on Linux");
+                    path
+                } else {
+                    services::local_path(&path.to_string())?
+                };
+                let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
+                let time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis() as u64;
+                let estimate = sync.observe(&guide, &index, &vector, time, sync.progress.epoch)?;
+                Ok((sync, estimate, path))
+            })();
+            let _ = thread.queue(move |mut object| {
+                object.as_mut().set_matching(false);
+                let current = &object.rust().sync.progress;
+                if object
+                    .rust()
+                    .guide
+                    .as_ref()
+                    .is_none_or(|g| g.id != guide.id || g.revision != guide.revision)
+                    || current.epoch != initial.epoch
+                    || current.current_step != initial.current_step
+                    || current.completed != initial.completed
+                {
+                    return;
+                }
+                match result {
+                    Ok((sync, estimate, path)) => {
+                        if sync.progress.current_step != initial.current_step
+                            && let Some(step) = sync
+                                .progress
+                                .current_step
+                                .as_deref()
+                                .and_then(|id| guide.step(id))
+                        {
+                            object.as_mut().rust_mut().selected = step.id.clone();
+                            object.as_mut().set_answer(q(format!(
+                                "{}: {}",
+                                step.title,
+                                step.instructions.chars().take(500).collect::<String>()
+                            )));
+                        }
+                        if let Err(e) = Store::open(&root).and_then(|s| {
+                            s.save_progress(&guide, &sync.progress, "visual_observation")
+                        }) {
+                            object
+                                .as_mut()
+                                .set_message(q(format!("Could not save observation: {e:#}")));
+                        }
+                        object.as_mut().rust_mut().sync = sync;
+                        object.as_mut().rust_mut().estimate = estimate;
+                        object.as_mut().rust_mut().last_frame = Some(path);
+                        object.as_mut().refresh();
+                        object.verify_location();
+                    }
+                    Err(e) => {
+                        if !*object.preparing() {
+                            object.set_message(q(format!("Screen matching: {e:#}")));
+                        }
+                    }
+                }
+            });
+        });
+    }
+    fn verify_location(mut self: Pin<&mut Self>) {
+        let at = self.rust().estimate.observed_at_ms;
+        if self.rust().vision_inflight
+            || self.rust().estimate.status == "located"
+            || at.saturating_sub(self.rust().last_vision_at) < 15_000
+        {
+            return;
+        }
+        let (Some(guide), Some(path)) = (self.rust().guide.clone(), self.rust().last_frame.clone())
+        else {
+            return;
+        };
+        let candidates = self.rust().estimate.candidates.clone();
+        if candidates.is_empty() {
+            return;
+        }
+        let root = self.rust().root.clone();
+        let Ok(settings) =
+            Store::open(&root).and_then(|s| Ok(s.get::<Settings>("settings")?.unwrap_or_default()))
+        else {
+            return;
+        };
+        // Automatic frame interpretation stays local by default. Remote visual
+        // providers remain available through the explicit Compare control.
+        if settings.vision.kind != services::ProviderKind::Ollama {
+            return;
+        }
+        let initial = self.rust().sync.progress.clone();
+        let Ok(live_image) = services::image_base64(path) else {
+            return;
+        };
+        self.as_mut().rust_mut().vision_inflight = true;
+        self.as_mut().rust_mut().last_vision_at = at;
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = HttpProvider::new(settings.vision).and_then(|provider| {
+                services::compare_candidate_images(&provider, &guide, live_image, &candidates)
+            });
+            let _=thread.queue(move|mut object|{
+                object.as_mut().rust_mut().vision_inflight=false;
+                if object.rust().guide.as_ref().is_none_or(|g|g.id!=guide.id || g.revision!=guide.revision)
+                    || object.rust().sync.progress.epoch!=initial.epoch
+                    || object.rust().sync.progress.current_step!=initial.current_step
+                    || object.rust().sync.progress.completed!=initial.completed
+                    || object.rust().estimate.status=="located"
+                    || object.rust().estimate.observed_at_ms.saturating_sub(at)>20_000 {
+                    object.as_mut().rust_mut().vision_votes=None;
+                    return;
+                }
+                let Ok(verdict)=result else{
+                    object.as_mut().rust_mut().vision_votes=None;
+                    return;
+                };
+                let id=verdict.step_id.clone().filter(|id|!verdict.visible_evidence.is_empty()
+                    && object.rust().estimate.candidates.iter().any(|c|&c.step_id==id));
+                if let Some(id)=id {
+                    let votes=object.rust().vision_votes.as_ref().filter(|(last,_)|last==&id).map(|(_,n)|n+1).unwrap_or(1);
+                    object.as_mut().rust_mut().vision_votes=Some((id.clone(),votes));
+                    if votes>=2 && object.rust().sync.progress.current_step.as_deref()!=Some(&id) {
+                        let _=object.as_mut().rust_mut().sync.confirm_step(&guide,&id);
+                        object.as_mut().rust_mut().estimate.status="vision_estimate".into();
+                        object.as_mut().rust_mut().estimate.located_step=Some(id.clone());
+                        object.as_mut().rust_mut().estimate.detail="Repeated local vision match. Location is an estimate; objective completion is unverified.".into();
+                        object.as_mut().rust_mut().selected=id.clone();
+                        if let Some(step)=guide.step(&id){object.as_mut().set_answer(q(format!("Likely at {}. {}",step.title,step.instructions.chars().take(500).collect::<String>())));}
+                        let _=Store::open(&root).and_then(|s|s.save_progress(&guide,&object.rust().sync.progress,"vision_location_estimate"));
+                    }
+                } else {object.as_mut().rust_mut().vision_votes=None;}
+                object.as_mut().rust_mut().vision_evidence=Some(verdict);
+                object.refresh();
+            });
         });
     }
     pub fn compare_vision(self: Pin<&mut Self>) {
@@ -616,7 +793,7 @@ impl ffi::Buddy {
     /// Qt passes a live QObject from VideoOutput.videoSink for this call.
     /// The C++ helper validates its runtime type and retains no pointer.
     pub unsafe fn match_sink(self: Pin<&mut Self>, sink: *mut cxx_qt::QObject) {
-        if *self.busy() || self.rust().guide.is_none() {
+        if *self.matching() || self.rust().guide.is_none() {
             return;
         }
         let path = self.capture_path();
@@ -680,8 +857,14 @@ impl ffi::Buddy {
             },
         );
     }
+    pub fn realtime_transcript(mut self: Pin<&mut Self>, text: QString) {
+        if let Some(action) = services::voice::overlay_command(&text.to_string()) {
+            self.as_mut().voice_command(action);
+        }
+        self.set_transcript(text);
+    }
     pub fn poll_widgets(mut self: Pin<&mut Self>) {
-        if self.rust().root.as_os_str().is_empty() || *self.busy() {
+        if self.rust().root.as_os_str().is_empty() {
             return;
         }
         let latest = self.rust().guide.as_ref().and_then(|g| {
@@ -692,6 +875,19 @@ impl ffi::Buddy {
         });
         if let Some(guide) = latest {
             self.as_mut().use_guide(guide);
+        } else if self.rust().guide.is_none() {
+            let prepared = Store::open(&self.rust().root)
+                .ok()
+                .and_then(|s| {
+                    s.get::<String>("active_guide")
+                        .ok()
+                        .flatten()
+                        .and_then(|id| s.guide(&id).ok())
+                })
+                .filter(|g| g.game.eq_ignore_ascii_case(&self.rust().game));
+            if let Some(guide) = prepared {
+                self.as_mut().use_guide(guide);
+            }
         }
         self.refresh();
     }

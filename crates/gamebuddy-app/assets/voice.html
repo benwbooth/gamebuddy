@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'"></head><body><audio id="speaker" autoplay></audio><script>
+(() => {
+  let peer=null, mic=null, generation=0;
+  const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
+  function stop(){generation++;if(peer)peer.close();peer=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;document.getElementById('speaker').srcObject=null}
+  window.gamebuddyVoice={stop,
+    async start(deviceName){
+      stop();const own=generation;let stage='microphone';
+      try {
+        const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+        if(own!==generation){stream.getTracks().forEach(t=>t.stop());return}
+        mic=stream;
+        // Qt and Chromium use different opaque device IDs. Once capture grants
+        // device labels, select the requested microphone before transmitting.
+        if(deviceName){
+          const devices=await navigator.mediaDevices.enumerateDevices();
+          if(own!==generation)return;
+          const selected=devices.find(d=>d.kind==='audioinput' && (d.label===deviceName || d.label.endsWith(deviceName)));
+          if(!selected)throw Error('Selected microphone is unavailable to the voice engine');
+          stream.getTracks().forEach(t=>t.stop());
+          const selectedStream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:selected.deviceId},echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+          if(own!==generation){selectedStream.getTracks().forEach(t=>t.stop());return}
+          mic=selectedStream;
+        }
+        stage='peer connection';const pc=new RTCPeerConnection();peer=pc;
+        mic.getTracks().forEach(t=>pc.addTrack(t,mic));
+        const events=pc.createDataChannel('oai-events');
+        events.onmessage=e=>{try{const v=JSON.parse(e.data);if(v.type==='error')emit('error',v.error?.message||'Voice transport error')}catch{}};
+        pc.ontrack=e=>{if(own!==generation)return;document.getElementById('speaker').srcObject=e.streams[0];document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
+        pc.onconnectionstatechange=()=>{if(own===generation)emit('connection',pc.connectionState)};
+        stage='SDP offer';await pc.setLocalDescription(await pc.createOffer());
+        if(pc.iceGatheringState!=='complete')await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(Error('Voice connection setup timed out')),10000);pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete'){clearTimeout(timeout);resolve()}})});
+        if(own===generation)emit('offer',pc.localDescription.sdp);
+      }catch(e){if(own===generation){stop();emit('error',stage+': '+e.name+': '+e.message)}}
+    },
+    async answer(sdp){const pc=peer,own=generation;try{if(pc)await pc.setRemoteDescription({type:'answer',sdp})}catch(e){if(own===generation)emit('error',e.message)}},
+    muteOutput(muted){document.getElementById('speaker').muted=muted}
+  };
+})();
+</script></body></html>

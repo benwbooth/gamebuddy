@@ -41,9 +41,9 @@ Reasoning and visual inference are independently configurable. Frontier models c
 
 The implemented baseline uses spatial RGB fingerprints, source anchors, a continuity prior and repeated-match gating. Learned embeddings, OCR, temporal events and calibrated VLM reranking need evaluation on independent gameplay. The first target is Faxanadu on the development host's RX 7900 XTX.
 
-Video compilation samples six frames plus available captions from a section of at most ten minutes. Author chapters alone are navigation. A complete compiler must chunk long sections, account for source intervals, reconcile overlapping tasks and revisit gaps at finer resolution. Captions cannot describe every silent action.
+Automatic video compilation divides uncompiled chapters into two-minute intervals, samples twelve frames per interval and combines them with publisher captions or cached local audio transcription. It publishes revisions incrementally and remaps existing visual references to the new substeps. Author chapters alone remain navigation. Full coverage still requires reconciling overlapping tasks and revisiting evidence gaps; captions cannot describe every silent action.
 
-Voice currently composes local whisper.cpp, the configured reasoner and Qt speech. Duplex streaming, interruption while tools are working and a hotkey independent of game focus remain work.
+Voice can use the signed-in Codex app-server's experimental WebRTC v3 interface. The original local whisper.cpp/Qt speech chain remains selectable. Claude Code can supply subscription-backed reasoning independently. See [subscription providers](subscription-providers.md) for the transport boundary, configuration and runtime checks.
 
 ## Acceptance gates
 

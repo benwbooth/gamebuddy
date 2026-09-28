@@ -6,10 +6,12 @@ fn main() {
         "qml/GbButton.qml",
         "qml/GbField.qml",
         "qml/Companion.qml",
+        "qml/RealtimePanel.qml",
     ]))
     .file("src/controller.rs")
     .file("src/overlay.rs")
     .file("src/voice.rs")
+    .file("src/realtime.rs")
     .file("src/webengine.rs");
     // SAFETY: add a header search path only; preserve CXX-Qt's compiler flags.
     let builder = unsafe {
