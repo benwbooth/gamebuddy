@@ -5,19 +5,37 @@ pub mod narration;
 use std::{collections::VecDeque, path::Path};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
-/// An initial unmuted device is not an activation gesture. Switching devices
-/// or losing mute-state visibility revokes activation and discards old audio.
+/// Hands-free mode starts on the first confirmed unmuted microphone, then on
+/// mute/unmute gestures. Stop and capture failures consume the startup request;
+/// repeated snapshots must never reopen capture behind the user's back.
 #[derive(Default, Debug)]
 pub struct MicGate {
     pub device: String,
     pub muted: Option<bool>,
     pub active: bool,
+    hands_free: bool,
+    startup_pending: bool,
 }
 impl MicGate {
+    pub fn set_hands_free(&mut self, enabled: bool) {
+        if self.hands_free == enabled {
+            return;
+        }
+        self.hands_free = enabled;
+        self.stop();
+        self.startup_pending = enabled;
+        self.try_start();
+    }
+    fn try_start(&mut self) {
+        if self.startup_pending && !self.device.is_empty() && self.muted.is_some() {
+            self.startup_pending = false;
+            self.active = self.muted == Some(false);
+        }
+    }
     pub fn observe(&mut self, device: &str, muted: Option<bool>) {
         if device != self.device || muted.is_none() {
             self.active = false;
-        } else if self.muted == Some(true) && muted == Some(false) {
+        } else if self.hands_free && self.muted == Some(true) && muted == Some(false) {
             self.active = true;
         }
         if muted == Some(true) {
@@ -25,9 +43,15 @@ impl MicGate {
         }
         self.device = device.into();
         self.muted = muted;
+        self.try_start();
     }
     pub fn listen(&mut self) {
+        self.startup_pending = false;
         self.active = !self.device.is_empty() && self.muted != Some(true);
+    }
+    pub fn stop(&mut self) {
+        self.startup_pending = false;
+        self.active = false;
     }
 }
 
@@ -163,11 +187,28 @@ pub fn overlay_command(text: &str) -> Option<i32> {
 mod tests {
     use super::*;
     #[test]
-    fn unmute_is_a_gesture_and_device_loss_revokes_it() {
+    fn hands_free_starts_on_an_already_unmuted_microphone() {
         let mut gate = MicGate::default();
-        gate.observe("mic1", Some(false));
+        gate.set_hands_free(true);
+        gate.observe("mic1", None); // Qt selection precedes the async mute query.
         assert!(!gate.active);
+        gate.observe("mic1", Some(false));
+        assert!(gate.active);
+        gate.stop();
+        for _ in 0..10 {
+            gate.set_hands_free(true);
+            gate.observe("mic1", Some(false));
+            assert!(!gate.active, "Stop must survive ordinary polling");
+        }
+        gate.listen();
+        assert!(gate.active);
+    }
+    #[test]
+    fn muted_startup_waits_for_unmute_and_device_loss_revokes_capture() {
+        let mut gate = MicGate::default();
+        gate.set_hands_free(true);
         gate.observe("mic1", Some(true));
+        assert!(!gate.active);
         gate.observe("mic1", Some(false));
         assert!(gate.active);
         gate.observe("mic2", Some(false));
@@ -181,6 +222,41 @@ mod tests {
         gate.observe("mic2", Some(true));
         gate.listen();
         assert!(!gate.active);
+    }
+    #[test]
+    fn hands_free_can_be_disabled_and_reenabled_without_defeating_manual_controls() {
+        let mut gate = MicGate::default();
+        gate.observe("mic1", Some(false));
+        assert!(!gate.active, "Manual mode does not open capture");
+        gate.set_hands_free(true);
+        assert!(
+            gate.active,
+            "Enabling hands-free with an unmuted mic starts it"
+        );
+        gate.set_hands_free(false);
+        gate.observe("mic1", Some(true));
+        gate.observe("mic1", Some(false));
+        assert!(!gate.active);
+        gate.listen();
+        gate.set_hands_free(false);
+        gate.observe("mic1", Some(false));
+        assert!(gate.active, "Manual Listen works with hands-free disabled");
+        gate.observe("mic1", Some(true));
+        assert!(!gate.active);
+        gate.set_hands_free(true);
+        assert!(!gate.active, "Enabling hands-free must not bypass mute");
+        gate.observe("mic1", Some(false));
+        assert!(gate.active);
+        gate.stop();
+        gate.observe("mic1", None);
+        gate.observe("mic1", Some(false));
+        assert!(
+            !gate.active,
+            "Recovery must not defeat Stop or capture errors"
+        );
+        gate.observe("mic1", Some(true));
+        gate.observe("mic1", Some(false));
+        assert!(gate.active, "An explicit unmute resumes hands-free mode");
     }
     #[test]
     fn silence_and_clicks_do_not_submit_but_a_pause_ends_speech() {

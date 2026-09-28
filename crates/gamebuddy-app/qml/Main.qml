@@ -134,6 +134,7 @@ ApplicationWindow {
     }
     VoiceInput {
         id: voice
+        armed: compositor.active && root.appArguments.indexOf("--no-listen") < 0
         onActiveChanged: if (active) root.overlayHidden = false
         onListeningChanged: if (root.appArguments.indexOf("--voice-trace") >= 0) console.warn("GAMEBUDDY_MIC_CAPTURE " + listening)
     }

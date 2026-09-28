@@ -162,8 +162,8 @@ Item {
             color: companion.recording ? "#724840" : "#254c49"; border.color: "#68bda9"
             Column {
                 anchors.centerIn: parent; spacing: 3
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? (voice.active ? "Voice chat active" : "Start voice chat") : companion.recording ? "Listening" : buddy.busy ? "Thinking…" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? "Talk naturally · change goals while you play" : "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? (voice.active ? "Voice chat active" : "Start voice chat") : companion.recording ? "Listening" : buddy.busy ? "Thinking…" : voice.active ? "Speak naturally" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? "Talk naturally · change goals while you play" : voice.active ? "Pause when you're done · no click needed" : "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
             }
             MouseArea { anchors.fill: parent; enabled: !buddy.busy && !companion.voiceTurnPending; onPressed: companion.startTalking(); onReleased: companion.stopTalking(); onCanceled: companion.stopTalking() }
         }
@@ -171,9 +171,9 @@ Item {
             Layout.fillWidth: true
             GbButton { text: voice.active ? "Stop listening" : "Listen"; Layout.fillWidth: true; onClicked: voice.toggle_listening() }
             CheckBox {
-                text: "On unmute"; checked: voice.armed; onToggled: voice.armed = checked
+                text: "Hands-free"; checked: voice.armed; onToggled: voice.armed = checked
                 palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
-                ToolTip.visible: hovered; ToolTip.text: "Start listening when this microphone is unmuted in the system."
+                ToolTip.visible: hovered; ToolTip.text: "Listen automatically at game launch and when you unmute your microphone."
             }
         }
         RowLayout {

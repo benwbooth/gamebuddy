@@ -22,7 +22,9 @@ trap cleanup EXIT
 modules+=("$(pactl load-module module-null-sink sink_name="$GAMEBUDDY_TEST_MIC_SINK" sink_properties=device.description=GameBuddyTestInput)")
 modules+=("$(pactl load-module module-remap-source master="$GAMEBUDDY_TEST_MIC_SINK.monitor" source_name="$GAMEBUDDY_TEST_MIC_SOURCE" source_properties=device.description=GameBuddyTestMic)")
 modules+=("$(pactl load-module module-null-sink sink_name="$PULSE_SINK" sink_properties=device.description=GameBuddyTestOutput)")
-pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 1
+# Already unmuted before launch: the fixture must talk without any UI action
+# or post-launch mute/unmute gesture. test-voice covers initially muted startup.
+pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 0
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
 cat >"$runtime_dir/settings.json" <<'JSON'

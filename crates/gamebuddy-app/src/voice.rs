@@ -67,13 +67,12 @@ pub struct VoiceInputRust {
     monitor: Option<Monitor>,
     native: cxx::UniquePtr<ffi::Microphone>,
     resume_after: Instant,
-    last_armed: bool,
     pcm: Vec<u8>,
 }
 impl Default for VoiceInputRust {
     fn default() -> Self {
         Self {
-            armed: true,
+            armed: false,
             active: false,
             listening: false,
             speaking: false,
@@ -85,7 +84,6 @@ impl Default for VoiceInputRust {
             monitor: None,
             native: cxx::UniquePtr::null(),
             resume_after: Instant::now(),
-            last_armed: true,
             pcm: Vec::new(),
         }
     }
@@ -93,7 +91,7 @@ impl Default for VoiceInputRust {
 impl ffi::VoiceInput {
     pub fn toggle_listening(mut self: Pin<&mut Self>) {
         if self.rust().gate.active {
-            self.as_mut().rust_mut().gate.active = false;
+            self.as_mut().rust_mut().gate.stop();
         } else {
             self.as_mut().rust_mut().gate.listen();
         }
@@ -118,6 +116,8 @@ impl ffi::VoiceInput {
         push_to_talk: bool,
         realtime: bool,
     ) -> QString {
+        let armed = *self.armed();
+        self.as_mut().rust_mut().gate.set_hands_free(armed);
         if self.rust().monitor.is_none() {
             self.as_mut().rust_mut().monitor = Some(Monitor::default());
             self.as_mut().rust_mut().native = ffi::microphone_new();
@@ -135,7 +135,6 @@ impl ffi::VoiceInput {
         let update = self.rust().monitor.as_ref().unwrap().poll();
         let mut finished = None;
         if let Some(update) = update.filter(|u| u.device == id) {
-            let was_active = self.rust().gate.active;
             if update.muted == Some(true)
                 && *self.listening()
                 && !busy
@@ -145,17 +144,8 @@ impl ffi::VoiceInput {
                 finished = self.as_mut().rust_mut().segmenter.finish();
             }
             self.as_mut().rust_mut().gate.observe(&id, update.muted);
-            if !*self.armed() && !was_active {
-                self.as_mut().rust_mut().gate.active = false;
-            }
             self.as_mut().set_error(QString::from(update.error));
         }
-        // Disabling automatic activation also stops a current conversation.
-        if self.rust().last_armed && !*self.armed() {
-            self.as_mut().rust_mut().gate.active = false;
-        }
-        let armed = *self.armed();
-        self.as_mut().rust_mut().last_armed = armed;
         let active = self.rust().gate.active;
         self.as_mut().set_active(active);
         if realtime {
@@ -182,7 +172,7 @@ impl ffi::VoiceInput {
             if !started {
                 let error = self.rust().native.error();
                 self.as_mut().set_error(error);
-                self.as_mut().rust_mut().gate.active = false;
+                self.as_mut().rust_mut().gate.stop();
                 self.as_mut().set_active(false);
             }
             self.as_mut().set_listening(started);
@@ -191,7 +181,7 @@ impl ffi::VoiceInput {
             let error = self.rust().native.error();
             if !error.is_empty() {
                 self.as_mut().set_error(error);
-                self.as_mut().rust_mut().gate.active = false;
+                self.as_mut().rust_mut().gate.stop();
                 self.as_mut().set_active(false);
                 self.as_mut().suspend_capture();
             } else {

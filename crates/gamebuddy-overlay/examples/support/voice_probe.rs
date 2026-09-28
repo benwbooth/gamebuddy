@@ -154,6 +154,41 @@ pub fn run(
     );
     screenshot("voice-answer.png")?;
     wait("listening resumes after the reply", &capturing)?;
+    // Exercise the real Stop listening control with Hands-free still enabled.
+    // The fixture is confined to Gamescope's private X server by its caller.
+    {
+        use x11rb::{
+            connection::Connection,
+            protocol::{xproto::*, xtest::ConnectionExt as _},
+        };
+        let root = conn.get_geometry(overlay)?.reply()?.root;
+        gamebuddy_overlay::control::send(Path::new(&control), "focus")?;
+        wait("expand voice controls", || {
+            Ok(cardinal(conn, overlay, focus)? == 1)
+        })?;
+        thread::sleep(Duration::from_millis(400));
+        screenshot("voice-hands-free.png")?;
+        // Companion at (36,90); the Listen/Stop listening row is at y=300.
+        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 180, 300, 0)?
+            .check()?;
+        conn.flush()?;
+        thread::sleep(Duration::from_millis(200));
+        conn.xtest_fake_input(BUTTON_PRESS_EVENT, 1, 0, root, 0, 0, 0)?
+            .check()?;
+        conn.xtest_fake_input(BUTTON_RELEASE_EVENT, 1, 0, root, 0, 0, 0)?
+            .check()?;
+        conn.flush()?;
+        wait("Stop listening closes capture", || Ok(!capturing()?))?;
+        thread::sleep(Duration::from_secs(2));
+        ensure!(!capturing()?, "Hands-free defeated Stop listening");
+        screenshot("voice-stopped.png")?;
+        gamebuddy_overlay::control::send(Path::new(&control), "release")?;
+        pactl(&["set-source-mute", &source, "1"])?;
+        // Allow the asynchronous mute monitor to observe the gesture.
+        thread::sleep(Duration::from_millis(600));
+        pactl(&["set-source-mute", &source, "0"])?;
+        wait("explicit unmute resumes after Stop listening", &capturing)?;
+    }
     pactl(&["set-source-mute", &source, "1"])?;
     wait("final mute closes capture", || Ok(!capturing()?))?;
     ensure!(
@@ -163,7 +198,7 @@ pub fn run(
         "Processed voice recording leaked"
     );
     println!(
-        "GAMEBUDDY_VOICE_TEST_PASS unmute/capture, passive focus, silence, mute/close, real VAD/Whisper guide command, delayed provider question/reply, resume, ephemeral audio"
+        "GAMEBUDDY_VOICE_TEST_PASS muted startup, unmute/capture, passive focus, silence, mute/close, real VAD/Whisper guide command, delayed provider question/reply, resume, Stop listening stays stopped, explicit unmute resumes, ephemeral audio"
     );
     Ok(())
 }
@@ -212,10 +247,11 @@ fn realtime(
         Ok(text.contains("GAMEBUDDY_NARRATION")
             && text.contains("GAMEBUDDY_REALTIME_TRANSCRIPT role=assistant"))
     })?;
-    ensure!(
-        !capturing()?,
-        "Introduction opened a microphone without activation"
-    );
+    wait(
+        "already-unmuted microphone opens automatically at launch",
+        &capturing,
+    )?;
+    println!("GAMEBUDDY_HANDS_FREE_START_PASS no clicks or mute/unmute gestures");
     ensure!(
         cardinal(conn, overlay, focus)? == 0,
         "Introduction stole game focus"
@@ -256,7 +292,6 @@ fn realtime(
             "Screen tool has no game-only image"
         );
     }
-    pactl(&["set-source-mute", &source, "0"])?;
     wait("subscription WebRTC connects", || {
         Ok(std::fs::read_to_string(&log)?.contains("Live voice · speak naturally"))
     })?;
@@ -352,7 +387,7 @@ fn realtime(
         thread::sleep(Duration::from_secs(10));
     }
     println!(
-        "GAMEBUDDY_REALTIME_TEST_PASS automatic introduction without capture, subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute closes capture and preserves guidance"
+        "GAMEBUDDY_REALTIME_TEST_PASS hands-free startup without clicks or mute/unmute, automatic introduction, subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute closes capture and preserves guidance"
     );
     Ok(())
 }

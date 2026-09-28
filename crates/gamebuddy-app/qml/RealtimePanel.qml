@@ -44,7 +44,7 @@ WebEngineView {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
-            preparing:buddy.preparing, guide_revision:session.guide?.revision,
+            preparing:buddy.preparing, guide_revision:session.guide?.revision, microphone_active:voice.active,
             instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})
     }
     function update() {

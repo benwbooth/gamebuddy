@@ -58,8 +58,13 @@ impl Narrator {
             } else {
                 "I'm watching for a reliable location match before giving directions.".into()
             };
+            let invitation = if context["microphone_active"] == true {
+                "Just speak whenever you want to talk. I'm listening."
+            } else {
+                "Unmute your mic or choose Listen whenever you want to talk."
+            };
             return Some(format!(
-                "Hey, I'm GameBuddy, your companion for {game}. {state} {next} Unmute your mic or choose Listen whenever you want to talk."
+                "Hey, I'm GameBuddy, your companion for {game}. {state} {next} {invitation}"
             ));
         }
         let scene = &context["screen"]["scene"];
