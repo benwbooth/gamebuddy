@@ -64,6 +64,35 @@ pub fn fingerprint(image: &DynamicImage, crop: Crop) -> Result<Vec<f32>> {
     Ok(small.as_raw().iter().map(|&v| v as f32 / 255.0).collect())
 }
 
+/// Uniform fades/loading frames carry no usable location evidence. Measure
+/// spatial variation within each channel, so a solid coloured frame also fails.
+/// Applies to existing cached fingerprints; no source re-download is required.
+pub fn fingerprint_has_detail(vector: &[f32]) -> bool {
+    if vector.len() < 6
+        || !vector.len().is_multiple_of(3)
+        || vector
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+    {
+        return false;
+    }
+    let pixels = (vector.len() / 3) as f32;
+    let mut mean = [0.0; 3];
+    for pixel in vector.as_chunks::<3>().0 {
+        for channel in 0..3 {
+            mean[channel] += pixel[channel] / pixels;
+        }
+    }
+    let variance = vector
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| (0..3).map(|c| (p[c] - mean[c]).powi(2)).sum::<f32>())
+        .sum::<f32>()
+        / vector.len() as f32;
+    variance >= 0.025_f32.powi(2)
+}
+
 pub fn similarity(a: &[f32], b: &[f32]) -> Result<f32> {
     ensure!(
         !a.is_empty() && a.len() == b.len(),
@@ -102,6 +131,18 @@ pub struct VisualIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_fades_and_uniform_colour_but_keeps_dark_gameplay_detail() {
+        for pixel in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 0.0]] {
+            assert!(!fingerprint_has_detail(&pixel.repeat(432)));
+        }
+        assert!(!fingerprint_has_detail(
+            &[0.0, 0.001, 0.002, 0.003, 0.0, 0.001].repeat(216)
+        ));
+        assert!(fingerprint_has_detail(
+            &[0.0, 0.0, 0.0, 0.1, 0.05, 0.05].repeat(216)
+        ));
+    }
     #[test]
     fn matching_survives_resize_and_detects_different_scene() {
         let a = DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 240, |x, y| {

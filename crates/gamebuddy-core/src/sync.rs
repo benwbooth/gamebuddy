@@ -1,4 +1,4 @@
-use crate::{Guide, VisualIndex, similarity};
+use crate::{Guide, VisualIndex, fingerprint_has_detail, similarity};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -91,9 +91,21 @@ impl Synchronizer {
             self.last_observation.is_none_or(|last| at_ms > last),
             "Stale observation ignored"
         );
+        if !fingerprint_has_detail(vector) {
+            self.last_observation = Some(at_ms);
+            self.pending_step = None;
+            self.pending_count = 0;
+            return Ok(SyncEstimate {
+                observed_at_ms: at_ms, epoch, status: "unmatched".into(),
+                detail: "The frame has too little visible detail to locate the player (possibly a fade or loading screen).".into(),
+                ..Default::default()
+            });
+        }
         let mut by_step: HashMap<String, Candidate> = HashMap::new();
         for frame in &index.frames {
-            if !guide.source_enabled(&frame.source_id) {
+            if !guide.source_enabled(&frame.source_id)
+                || !fingerprint_has_detail(&frame.fingerprint)
+            {
                 continue;
             }
             let visual_score = similarity(vector, &frame.fingerprint)?;
@@ -141,7 +153,13 @@ impl Synchronizer {
                 .total_cmp(&a.rank_score)
                 .then_with(|| a.step_id.cmp(&b.step_id))
         });
-        candidates.truncate(4);
+        // Preserve ambiguous task IDs sharing an image, but do not let them
+        // occupy every slot intended for distinct visual alternatives.
+        let mut images = HashSet::new();
+        candidates.retain(|c| {
+            images.contains(&c.image_path)
+                || (images.len() < 4 && images.insert(c.image_path.clone()))
+        });
         self.last_observation = Some(at_ms);
         let mut estimate = SyncEstimate {
             observed_at_ms: at_ms,
@@ -193,6 +211,60 @@ impl Synchronizer {
 mod tests {
     use super::*;
     use crate::*;
+    #[test]
+    fn cached_blank_references_cannot_outrank_dark_gameplay() {
+        let (g, mut idx) = fixture();
+        let mut blank = idx.frames[0].clone();
+        blank.id = "fade".into();
+        blank.image_path = "fade.png".into();
+        blank.fingerprint.fill(0.0);
+        let live = [0.0, 0.0, 0.0, 0.1, 0.05, 0.05];
+        assert!(
+            similarity(&live, &blank.fingerprint).unwrap()
+                > similarity(&live, &idx.frames[0].fingerprint).unwrap()
+        );
+        idx.frames.push(blank);
+        let estimate = Synchronizer::default()
+            .observe(&g, &idx, &live, 1, 0)
+            .unwrap();
+        assert!(!estimate.candidates.is_empty());
+        assert!(estimate.candidates.iter().all(|c| c.reference_id != "fade"));
+    }
+    #[test]
+    fn live_fades_break_confirmation_votes_without_erasing_progress() {
+        let (g, idx) = fixture();
+        let mut sync = Synchronizer::default();
+        let live = &idx.frames[0].fingerprint;
+        assert_eq!(
+            sync.observe(&g, &idx, live, 1, 0).unwrap().status,
+            "candidate"
+        );
+        let faded = sync.observe(&g, &idx, &[0.0; 6], 2, 0).unwrap();
+        assert!(faded.candidates.is_empty());
+        assert_eq!(
+            sync.observe(&g, &idx, live, 3, 0).unwrap().status,
+            "candidate"
+        );
+        sync.observe(&g, &idx, live, 4, 0).unwrap();
+        sync.observe(&g, &idx, &[0.0; 6], 5, 0).unwrap();
+        assert_eq!(sync.progress.current_step.as_deref(), Some("step-1"));
+        assert!(sync.progress.completed.is_empty());
+    }
+    #[test]
+    fn shared_frame_tasks_preserve_ambiguity_without_crowding_out_other_images() {
+        let (_, mut idx) = fixture();
+        let g = import_markdown("Game", "Route", "# A\n# B\n# C\n# D\n# E").unwrap();
+        idx.guide_id = g.id.clone();
+        idx.frames[0].step_ids = (1..=4).map(|i| format!("step-{i}")).collect();
+        idx.frames[1].step_ids = vec!["step-5".into()];
+        let estimate = Synchronizer::default()
+            .observe(&g, &idx, &idx.frames[0].fingerprint, 1, 0)
+            .unwrap();
+        assert_eq!(estimate.candidates.len(), 5);
+        assert!(estimate.candidates.iter().any(|c| c.image_path == "b.png"));
+        assert_eq!(estimate.status, "ambiguous");
+        assert!(estimate.located_step.is_none());
+    }
     fn fixture() -> (Guide, VisualIndex) {
         let g = import_markdown("Game", "Test", "# Town\n# Forest").unwrap();
         let idx = VisualIndex {
@@ -208,7 +280,7 @@ mod tests {
                     at_ms: 0,
                     image_path: "a.png".into(),
                     step_ids: vec!["step-1".into()],
-                    fingerprint: vec![0.0, 0.0],
+                    fingerprint: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
                 },
                 ReferenceFrame {
                     id: "b".into(),
@@ -216,7 +288,7 @@ mod tests {
                     at_ms: 1000,
                     image_path: "b.png".into(),
                     step_ids: vec!["step-2".into()],
-                    fingerprint: vec![1.0, 1.0],
+                    fingerprint: vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
                 },
             ],
         };
@@ -227,11 +299,13 @@ mod tests {
         let (g, idx) = fixture();
         let mut s = Synchronizer::default();
         assert_eq!(
-            s.observe(&g, &idx, &[0.0, 0.0], 1, 0).unwrap().status,
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 1, 0)
+                .unwrap()
+                .status,
             "candidate"
         );
         assert_eq!(
-            s.observe(&g, &idx, &[0.0, 0.0], 2, 0)
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2, 0)
                 .unwrap()
                 .located_step
                 .as_deref(),
@@ -244,25 +318,39 @@ mod tests {
         let (mut g, idx) = fixture();
         let mut s = Synchronizer::default();
         s.confirm_complete(&g, "step-1").unwrap();
-        s.observe(&g, &idx, &[0.0, 0.0], 10, 0).unwrap();
-        assert!(s.observe(&g, &idx, &[0.0, 0.0], 9, 0).is_err());
+        s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 10, 0)
+            .unwrap();
+        assert!(
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 9, 0)
+                .is_err()
+        );
         s.reset();
         assert!(s.progress.completed.is_empty());
-        assert!(s.observe(&g, &idx, &[0.0, 0.0], 11, 0).is_err());
+        assert!(
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 11, 0)
+                .is_err()
+        );
         g.revision += 1;
-        assert!(s.observe(&g, &idx, &[0.0, 0.0], 12, 1).is_err());
+        assert!(
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 12, 1)
+                .is_err()
+        );
     }
     #[test]
     fn can_relocalize_backwards_and_preserves_ambiguity() {
         let (g, mut idx) = fixture();
         let mut s = Synchronizer::default();
         s.confirm_step(&g, "step-2").unwrap();
-        s.observe(&g, &idx, &[0.0, 0.0], 1, 0).unwrap();
-        s.observe(&g, &idx, &[0.0, 0.0], 2, 0).unwrap();
+        s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 1, 0)
+            .unwrap();
+        s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2, 0)
+            .unwrap();
         assert_eq!(s.progress.current_step.as_deref(), Some("step-1"));
-        idx.frames[1].fingerprint = vec![0.0, 0.0];
+        idx.frames[1].fingerprint = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         assert_eq!(
-            s.observe(&g, &idx, &[0.0, 0.0], 3, 0).unwrap().status,
+            s.observe(&g, &idx, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 3, 0)
+                .unwrap()
+                .status,
             "ambiguous"
         );
     }
