@@ -21,7 +21,13 @@ pub mod ffi {
         #[qinvokable]
         unsafe fn attach(self: Pin<&mut Compositor>, window: *mut QObject);
         #[qinvokable]
-        fn poll(self: Pin<&mut Compositor>, shown: bool, interactive: bool, rect: QRectF) -> i32;
+        fn poll(
+            self: Pin<&mut Compositor>,
+            shown: bool,
+            interactive: bool,
+            rect: QRectF,
+            widgets: QString,
+        ) -> i32;
     }
 }
 use cxx_qt::CxxQtType;
@@ -69,16 +75,25 @@ impl ffi::Compositor {
         shown: bool,
         interactive: bool,
         rect: cxx_qt_lib::QRectF,
+        widgets: QString,
     ) -> i32 {
         let scale = self.rust().scale;
         #[cfg(target_os = "linux")]
         if let Some(native) = self.as_mut().rust_mut().native.as_mut() {
-            let result = native.poll(
-                shown,
-                interactive,
-                [rect.x(), rect.y(), rect.width(), rect.height()]
-                    .map(|v| (v * scale).round() as i32),
-            );
+            let mut regions = vec![[rect.x(), rect.y(), rect.width(), rect.height()]];
+            if let Ok(boxes) = serde_json::from_str::<Vec<[f64; 4]>>(&widgets.to_string()) {
+                regions.extend(
+                    boxes
+                        .into_iter()
+                        .take(128)
+                        .filter(|r| r.iter().all(|v| v.is_finite())),
+                );
+            }
+            let regions: Vec<_> = regions
+                .into_iter()
+                .map(|r| r.map(|v| (v * scale).round() as i32))
+                .collect();
+            let result = native.poll(shown, interactive, &regions);
             let mode = native.mode() as i32;
             self.as_mut().set_focus_mode(mode);
             match result {
@@ -87,7 +102,7 @@ impl ffi::Compositor {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = (shown, interactive, rect, scale);
+        let _ = (shown, interactive, rect, widgets, scale);
         0
     }
 }

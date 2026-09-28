@@ -1,5 +1,6 @@
 //! Microphone activation and bounded, local speech turn detection.
 pub mod mute;
+pub mod narration;
 use std::{collections::VecDeque, path::Path};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 

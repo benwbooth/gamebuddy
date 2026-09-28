@@ -200,6 +200,20 @@ fn realtime(
             .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
     };
     let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+    wait("automatic spoken introduction", || {
+        let text = std::fs::read_to_string(&log)?;
+        Ok(text.contains("GAMEBUDDY_NARRATION")
+            && text.contains("GAMEBUDDY_REALTIME_TRANSCRIPT role=assistant"))
+    })?;
+    ensure!(
+        !capturing()?,
+        "Introduction opened a microphone without activation"
+    );
+    ensure!(
+        cardinal(conn, overlay, focus)? == 0,
+        "Introduction stole game focus"
+    );
+    thread::sleep(Duration::from_secs(18)); // let the introduction finish before the request
     pactl(&["set-source-mute", &source, "0"])?;
     wait("subscription WebRTC connects", || {
         Ok(std::fs::read_to_string(&log)?.contains("Live voice · speak naturally"))
@@ -237,12 +251,13 @@ fn realtime(
     screenshot("realtime-widget.png")?;
     thread::sleep(Duration::from_secs(10)); // include the complete streamed reply
     pactl(&["set-source-mute", &source, "1"])?;
-    wait("mute ends realtime session", || {
-        Ok(std::fs::read_to_string(&log)?.contains("GAMEBUDDY_REALTIME_STATUS Voice stopped"))
+    wait("mute leaves guidance available", || {
+        Ok(std::fs::read_to_string(&log)?
+            .contains("GAMEBUDDY_REALTIME_STATUS Guide voice ready · mic off"))
     })?;
     wait("mute closes the WebRTC microphone", || Ok(!capturing()?))?;
     println!(
-        "GAMEBUDDY_REALTIME_TEST_PASS subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute disconnect"
+        "GAMEBUDDY_REALTIME_TEST_PASS automatic introduction without capture, subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute closes capture and preserves guidance"
     );
     Ok(())
 }

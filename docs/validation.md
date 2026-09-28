@@ -5,7 +5,7 @@ September 27, 2026, NixOS/KDE Wayland, RX 7900 XTX. This is evidence for the dev
 | Check | Result |
 | --- | --- |
 | Rust workspace build | Passed locally with Qt 6.11.2 |
-| Rust tests | 52 passed: 17 core, 7 overlay and 28 services; includes source intervals, frame rebinding, atlas validation/rebasing, repeated-room estimates, prerequisite-aware advice, goal completion, and stale-capture protection for player reports |
+| Rust tests | 53 passed: 17 core, 7 overlay and 29 services; includes source intervals, frame rebinding, atlas validation/rebasing, repeated-room estimates, prerequisite-aware advice, goal completion, and stale-capture protection for player reports |
 | Strict workspace Clippy | Passed from the final Rust tree |
 | MCP | Real stdio handshake and all 15 tools listed; atlas reads, map preferences and separately recorded player reports exercised, in addition to earlier goal/reference/widget/restore checks |
 | Qt UI | Actual compact icon, expanded companion and workbench rendered on Wayland; image captures inspected |
@@ -50,3 +50,12 @@ The normal preparation service, using the configured reasoning provider, reviewe
 The production HTML widgets were checked at the Gamescope fixture's 1280×720 resolution: area changes selected different maps, zoom worked, a manual map choice survived location changes, Follow restored automatic selection, and an uncertain observation cleared the live room label. The preview is generated from the application-built atlas using controlled reference-location inputs. It does not show a tracked live player.
 
 The private Gamescope fixture passed widget drag/resize, keyboard passthrough, focus shortcuts, orb interaction and uncontaminated game capture on the final two complete runs. Two preceding runs intermittently missed the synthetic orb-hover focus transition; additional timeout diagnostics were retained. Those passes do not establish that the intermittent synthetic-input issue is resolved. Proof images for the final run are under `/tmp/gamebuddy-overlay-test-YcVP2Rci/proof`; MCP results are in `artifacts/navigation-mcp-check.json`.
+
+
+## Widget interaction and spoken startup correction
+
+The earlier widget test explicitly entered Arrange mode and therefore did not cover the normal collapsed companion. Visible widgets now report pointer regions to Gamescope and allow header dragging/corner resizing directly, retaining game keyboard input. A new real-overlay test moves and resizes a widget without Arrange, dismisses it with its header button, restores it through the companion widget tray with identical persisted bounds, and hides/shows the whole widget set. It also checks the existing focus shortcuts and uncontaminated game capture. Final proof: `/tmp/gamebuddy-overlay-test-KQq0nByZ/proof`. Screenshots of the tray and restored widget were inspected. An initial overlapping test run failed the initial pointer-focus check; isolated subsequent runs passed.
+
+The Codex runtime now connects for spoken guidance with no microphone permission request. The first output-only trial connected but produced silence: frameless speech needed an incoming audio clock. A generated zero-valued Web Audio track fixed this without opening an input device. In the subsequent real subscription test, recorded output began: “Hey, I'm GameBuddy your companion for Faxanadu. I've got your guide open.” The test asserted that microphone capture was closed during this introduction, then unmuted its isolated virtual source and created the requested widget 3.6 seconds after synthetic speech ended. Muting closed capture while guidance stayed connected. Proof: `/tmp/gamebuddy-realtime-test-r7EDFBts/`, including `heard.txt`, `response.wav`, and `runtime.log`. No physical microphone/speaker was used. This supersedes the earlier mute-disconnect behavior.
+
+A deterministic lifecycle test covers output-only startup without getUserMedia, delayed permission across reconnect, and capture closure while output remains connected. Rust narration checks cover one introduction per game, debounce, unchanged/uncertain observations, and prerequisite wording. Strict workspace Clippy and all 53 Rust tests passed. This does not establish independent live-game localization accuracy or physical-microphone acoustics.

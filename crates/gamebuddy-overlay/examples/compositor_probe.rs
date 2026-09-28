@@ -206,9 +206,12 @@ fn main() -> anyhow::Result<()> {
         .check()?;
     conn.flush()?;
     thread::sleep(Duration::from_secs(2));
+    screenshot("initial-input.png")?;
     ensure!(
         cardinal(&conn, overlay, focus)? == 0,
-        "Collapsed overlay trapped input"
+        "Collapsed overlay trapped input: mode={} pointer={:?}",
+        cardinal(&conn, overlay, focus)?,
+        conn.query_pointer(root)?.reply()?
     );
     count_a()?;
     send_key(a, true)?;
@@ -256,12 +259,17 @@ fn main() -> anyhow::Result<()> {
             pause();
             Ok(())
         };
-        // Arrange button on the real companion panel.
-        mouse(MOTION_NOTIFY_EVENT, 0, 306, 530)?;
-        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
-        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
-        screenshot("widgets-edit-mode.png")?;
+        // Drag directly while collapsed: no Arrange button or focus shortcut.
+        toggle()?;
         mouse(MOTION_NOTIFY_EVENT, 0, 650, 104)?;
+        ensure!(
+            cardinal(&conn, overlay, focus)? == 2,
+            "Widget hover did not acquire pointer-only focus"
+        );
+        send_key(a, true)?;
+        send_key(a, false)?;
+        pause();
+        ensure!(count_a()? == 1, "Widget hover stole game keyboard input");
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(MOTION_NOTIFY_EVENT, 0, 800, 300)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
@@ -298,6 +306,73 @@ fn main() -> anyhow::Result<()> {
         );
         screenshot("widgets-arranged.png")?;
         println!("GAMEBUDDY_HTML_TEST_PASS {layout}");
+        // The close affordance returns the widget to the companion tray.
+        let box_ = &layout["compositor-test"];
+        mouse(
+            MOTION_NOTIFY_EVENT,
+            0,
+            (box_["x"].as_f64().unwrap() + box_["width"].as_f64().unwrap() - 30.) as i16,
+            (box_["y"].as_f64().unwrap() + 28.) as i16,
+        )?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        let guide: String = store.get("active_guide")?.unwrap();
+        let visibility: serde_json::Value = store
+            .get(&format!("widget-visibility:{guide}"))?
+            .context("dismiss preference missing")?;
+        ensure!(
+            visibility["compositor-test"] == false,
+            "Dismiss did not hide the widget"
+        );
+        screenshot("widget-dismissed.png")?;
+        toggle()?;
+        // Open the production tray, then restore its fourth item (the custom widget).
+        mouse(MOTION_NOTIFY_EVENT, 0, 304, 530)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        screenshot("widget-tray.png")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 210, 405)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        let visibility: serde_json::Value =
+            store.get(&format!("widget-visibility:{guide}"))?.unwrap();
+        ensure!(
+            visibility["compositor-test"] == true,
+            "Tray did not restore the widget: {visibility}"
+        );
+        let restored: serde_json::Value = store.get("widget-layout")?.unwrap();
+        ensure!(restored == layout, "Restoring a widget lost its layout");
+        screenshot("widget-restored.png")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 365, 215)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 140, 530)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        screenshot("widgets-hidden.png")?;
+        ensure!(
+            image::open(directory.join("widgets-hidden.png"))?
+                .to_rgb8()
+                .get_pixel(800, 300)
+                .0
+                == [20, 40, 80],
+            "Hide widgets left a widget visible"
+        );
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        screenshot("widgets-shown.png")?;
+        ensure!(
+            image::open(directory.join("widgets-shown.png"))?
+                .to_rgb8()
+                .get_pixel(800, 300)
+                .0
+                != [20, 40, 80],
+            "Show widgets did not restore the widget"
+        );
+        println!(
+            "GAMEBUDDY_WIDGET_VISIBILITY_TEST_PASS dismiss, tray restore, layout persistence, hide/show all"
+        );
+        mouse(MOTION_NOTIFY_EVENT, 0, 1250, 690)?;
     }
     toggle()?;
     ensure!(

@@ -32,6 +32,14 @@ ApplicationWindow {
     property string replayPath: arg("--replay")
     property bool editOverlay: false
     property bool widgetsEnabled: true
+    property string widgetRegions: "[]"
+    property var widgetCatalog: {
+        let items=[]
+        if(session.guide)items.push({id:"walkthrough-outline",title:"Walkthrough"})
+        if(session.navigation?.guidance || session.current)items.push({id:"current-step",title:"Next action"})
+        if(session.navigation?.map)items.push({id:"location-map",title:"Location map"})
+        return items.concat(session.widgets || [])
+    }
     property color ink: "#e6edf3"
     property color muted: "#91a3b6"
     property var selected: session.selected || null
@@ -97,6 +105,7 @@ ApplicationWindow {
         parent: compositor.active ? overlayScene : companionWindow.contentItem
         buddy: root.buddyObject; voice: voice; session: root.session
         enabledBackend: root.realtimeEnabled; spokenReplies: companion.spokenReplies
+        automaticSession: compositor.active
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
@@ -143,13 +152,17 @@ ApplicationWindow {
         voice: voice
         realtimeEnabled: root.realtimeEnabled
         realtimeStatus: realtimeVoice.status
+        realtimeCapturing: realtimeVoice.capturing
+        spokenReplies: root.appArguments.indexOf("--quiet") < 0
+        widgetCatalog: root.widgetCatalog
+        onWidgetVisibilityChanged: (id,shown) => { buddy.set_widget_visible(id,shown);if(shown){root.widgetsEnabled=true;companion.widgetsVisible=true} }
         voiceTurnPending: root.queuedVoice.length > 0 || root.voiceTurnRunning
         onUtteranceReady: path => root.queuedVoice = path
         session: root.session
         expanded: root.appArguments.indexOf("--expanded") >= 0
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
         onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
-        onStopSpeaking: { speech.stop(); if(root.realtimeEnabled && voice.active)voice.toggle_listening() }
+        onStopSpeaking: { speech.stop(); realtimeVoice.stopSpeaking() }
         onWidgetsToggled: shown => root.widgetsEnabled = shown
         onArrangementChanged: active => { root.editOverlay = active; root.widgetsEnabled = true }
     }
@@ -240,26 +253,28 @@ ApplicationWindow {
         x: 0; y: 0
         visible: compositor.active || (root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay))
         color: "transparent"
-        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay || companion.expanded || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
         Item { id: overlayScene; anchors.fill: parent }
         WebEngineView {
             id: widgetView
             parent: overlayScene
             visible: root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay)
-            enabled: root.editOverlay || (compositor.active && companion.expanded)
+            enabled: compositor.active || root.editOverlay || companion.expanded
             anchors.fill: parent
             backgroundColor: "transparent"
             settings.localContentCanAccessRemoteUrls: true
             settings.localContentCanAccessFileUrls: false
             settings.javascriptCanOpenWindows: false
             function updateWidgets() {
-                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, locked: !root.editOverlay}) + ")")
+                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, widget_visibility:root.session.widget_visibility, locked: false}) + ")")
             }
             Component.onCompleted: loadHtml(buddy.widget_html())
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }
             onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
                 if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17))
+                else if(message.startsWith("GAMEBUDDY_REGIONS "))root.widgetRegions=message.slice(18)
+                else if(message.startsWith("GAMEBUDDY_DISMISS "))buddy.set_widget_visible(message.slice(18),false)
                 else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
                 else if(message.startsWith("GAMEBUDDY_COMPLETE ")){buddy.select_step(message.slice(19));buddy.complete_step()}
             }
@@ -273,7 +288,8 @@ ApplicationWindow {
         onTriggered: {
             root.overlayAction(compositor.poll(!root.overlayHidden,
                                 companion.expanded || root.editOverlay || root.overlayOptions,
-                                Qt.rect(companion.x, companion.y, companion.width, companion.height)))
+                                Qt.rect(companion.x, companion.y, companion.width, companion.height),
+                                widgetView.visible ? root.widgetRegions : "[]"))
         }
     }
     Shortcut {
@@ -321,7 +337,7 @@ ApplicationWindow {
                 Text { text: root.session.launch_context && root.session.launch_context.game_pid ? "LUNCHPAIL · PID " + root.session.launch_context.game_pid : "STANDALONE SESSION"; color: root.muted; font.pixelSize: 10; font.letterSpacing: 1 }
                 GbButton { visible: compositor.active; text: "Back to game"; onClicked: { root.overlayOptions = false; companion.expanded = false; root.editOverlay = false } }
                 GbButton { id: overlayButton; text: checked ? "Hide overlay" : "Show overlay"; checkable: true }
-                GbButton { text: checked ? "Lock widgets" : "Arrange widgets"; checkable: true; onToggled: { root.editOverlay = checked; if (checked) overlayButton.checked = true } }
+                GbButton { text: checked ? "Done arranging" : "Arrange widgets"; checkable: true; onToggled: { root.editOverlay = checked; if (checked) overlayButton.checked = true } }
             }
         }
         RowLayout {

@@ -111,7 +111,7 @@ impl Overlay {
 
     /// 0 routes everything to the game, 1 routes to GameBuddy, 2 routes only
     /// the pointer to GameBuddy. Keep pointer focus during an in-progress drag.
-    pub fn poll(&mut self, shown: bool, interactive: bool, rect: [i32; 4]) -> Result<i32> {
+    pub fn poll(&mut self, shown: bool, interactive: bool, regions: &[[i32; 4]]) -> Result<i32> {
         let mut action = 0;
         while let Some(event) = self.conn.poll_for_event()? {
             if let Event::KeyPress(event) = event {
@@ -143,7 +143,7 @@ impl Overlay {
                 visible,
                 dragging,
                 [i32::from(pointer.root_x), i32::from(pointer.root_y)],
-                rect,
+                regions,
             )
         };
         if mode != self.mode {
@@ -202,16 +202,20 @@ fn focus_mode(
     cursor_visible: bool,
     dragging: bool,
     p: [i32; 2],
-    r: [i32; 4],
+    regions: &[[i32; 4]],
 ) -> u32 {
     if interactive {
         1
     } else if dragging
         || (cursor_visible
-            && p[0] >= r[0]
-            && p[1] >= r[1]
-            && p[0] < r[0] + r[2]
-            && p[1] < r[1] + r[3])
+            && regions.iter().any(|r| {
+                r[2] > 0
+                    && r[3] > 0
+                    && p[0] >= r[0]
+                    && p[1] >= r[1]
+                    && p[0] < r[0].saturating_add(r[2])
+                    && p[1] < r[1].saturating_add(r[3])
+            }))
     {
         2
     } else {
@@ -369,12 +373,15 @@ mod tests {
     use super::*;
     #[test]
     fn focus_does_not_trap_game_input() {
-        let rect = [30, 40, 80, 80];
+        let rect = &[[30, 40, 80, 80], [600, 80, 350, 260]];
         assert_eq!(focus_mode(false, true, false, [1, 1], rect), 0);
         assert_eq!(focus_mode(false, true, false, [35, 50], rect), 2);
         assert_eq!(focus_mode(false, false, false, [35, 50], rect), 0);
         assert_eq!(focus_mode(false, true, true, [500, 500], rect), 2);
         assert_eq!(focus_mode(true, false, false, [1, 1], rect), 1);
+        assert_eq!(focus_mode(false, true, false, [650, 100], rect), 2);
+        assert_eq!(focus_mode(false, true, false, [950, 100], rect), 0);
+        assert_eq!(focus_mode(false, true, false, [650, 100], &[]), 0);
     }
     #[test]
     fn decodes_8_and_10_bit_channels() {

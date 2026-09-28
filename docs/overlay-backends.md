@@ -13,10 +13,10 @@ The development flake currently supplies **Gamescope 3.16.29**. The adapter uses
 | State | Visible surfaces | Input |
 | --- | --- | --- |
 | Hidden | None | Game |
-| Passive | Icon and enabled widgets | Game; hovering the icon gives GameBuddy pointer-only focus |
-| Interactive | Expanded companion, editable widgets or options | GameBuddy keyboard/pointer focus |
+| Passive | Icon and enabled widgets | Game; hovering the icon or any visible widget gives GameBuddy pointer-only focus |
+| Interactive | Expanded companion, arrangement mode or options | GameBuddy keyboard/pointer focus |
 
-Shift+Tab toggles interaction. Ctrl+Shift+Tab hides/restores all GameBuddy surfaces. Escape releases interaction. Grabs exist only on this session's Xwayland root, so they do not intercept typing in other desktop applications. The icon can also be clicked, dragged, or held for speech. Hidden game cursors do not activate hover focus; use the shortcut in games that lock/hide their pointer.
+Shift+Tab toggles interaction. Ctrl+Shift+Tab hides/restores all GameBuddy surfaces. Escape releases interaction. Grabs exist only on this session's Xwayland root, so they do not intercept typing in other desktop applications. The icon can also be clicked, dragged, or held for speech. Widgets report their live bounds to the compositor, including after moving, resizing or dismissal. Pointer focus is retained through a drag outside those bounds. Headers and resize corners are available without entering arrangement mode. Dismissed widgets remain in the companion’s **Widgets…** list; visibility is stored per guide separately from layout and AI-generated content. Hidden game cursors do not activate hover focus; use the shortcut in games that lock/hide their pointer.
 
 A private Unix datagram socket accepts `toggle`, `toggle-visibility`, `show`, `hide`, `focus` and `release`. The supervisor prints its path as `GAMEBUDDY_CONTROL_SOCKET`; in Lunchpail it is `control.sock` in the private session directory. GameBuddy's controller adapter should send these actions instead of synthesizing keyboard keys:
 

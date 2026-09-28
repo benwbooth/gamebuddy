@@ -72,6 +72,8 @@ pub mod ffi {
         #[qinvokable]
         fn save_widget_layout(self: Pin<&mut Buddy>, json: QString);
         #[qinvokable]
+        fn set_widget_visible(self: Pin<&mut Buddy>, id: QString, visible: bool);
+        #[qinvokable]
         fn poll_widgets(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn voice_path(self: &Buddy) -> QString;
@@ -282,6 +284,15 @@ impl ffi::Buddy {
             let layouts = store
                 .get::<serde_json::Value>("widget-layout")?
                 .unwrap_or_else(|| json!({}));
+            let widget_visibility = store
+                .get::<serde_json::Value>(&format!(
+                    "widget-visibility:{}",
+                    data.guide
+                        .as_ref()
+                        .map(|g| g.id.as_str())
+                        .unwrap_or_default()
+                ))?
+                .unwrap_or_else(|| json!({}));
             if let Some(guide) = &data.guide {
                 store.put("session", &json!({"guide_id":guide.id,"guide_revision":guide.revision,"game":data.game,"estimate":data.estimate,"vision":data.vision_evidence,"last_frame":data.last_frame}))?;
             }
@@ -316,7 +327,7 @@ impl ffi::Buddy {
             } else {
                 String::new()
             };
-            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
+            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
         })();
         match result {
             Ok((state, automatic)) => {
@@ -958,6 +969,30 @@ impl ffi::Buddy {
                 });
             });
         }
+    }
+    pub fn set_widget_visible(mut self: Pin<&mut Self>, id: QString, visible: bool) {
+        let result = (|| -> Result<()> {
+            let guide = self.rust().guide.as_ref().context("No game guide loaded")?;
+            let id = id.to_string();
+            let store = Store::open(&self.rust().root)?;
+            anyhow::ensure!(
+                ["current-step", "walkthrough-outline", "location-map"].contains(&id.as_str())
+                    || services::harness::widgets(&store, guide)?
+                        .iter()
+                        .any(|w| w.id == id),
+                "Unknown widget"
+            );
+            let key = format!("widget-visibility:{}", guide.id);
+            let mut prefs = store
+                .get::<serde_json::Value>(&key)?
+                .unwrap_or_else(|| json!({}));
+            prefs[&id] = json!(visible);
+            store.put(&key, &prefs)
+        })();
+        if let Err(e) = result {
+            self.as_mut().set_message(q(e.to_string()));
+        }
+        self.refresh();
     }
     pub fn save_widget_layout(mut self: Pin<&mut Self>, json: QString) {
         let result = (|| -> Result<()> {

@@ -27,11 +27,16 @@ Item {
     property bool voiceTurnPending: false
     property bool realtimeEnabled: false
     property string realtimeStatus: ""
+    property bool realtimeCapturing: false
+    property bool capturing: recording || voice.listening || realtimeCapturing
+    property var widgetCatalog: []
+    signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
     width: expanded ? 410 : 80
     height: expanded ? 480 : 80
 
     onExpandedChanged: {
+        if(!expanded)widgetTray.close()
         if (embedded) {
             x = Math.max(0, Math.min(parent.width-width, x))
             y = Math.max(0, Math.min(parent.height-height, y))
@@ -82,8 +87,8 @@ Item {
     Rectangle {
         id: orb
         x: 8; y: 8; width: 64; height: 64; radius: 32
-        color: companion.recording || voice.listening ? "#bf665c" : "#162c35"
-        border { width: 2; color: companion.recording || voice.listening ? "#ffc4b9" : "#86decb" }
+        color: companion.capturing ? "#bf665c" : "#162c35"
+        border { width: 2; color: companion.capturing ? "#ffc4b9" : "#86decb" }
         Rectangle {
             anchors.centerIn: parent
             width: 45; height: 45; radius: 22
@@ -96,7 +101,7 @@ Item {
                         required property int index
                         width: 4; height: index === 1 || index === 2 ? 21 : 11; radius: 2
                         y: (21-height)/2; color: "#a5f2dd"
-                        SequentialAnimation on opacity { running: companion.recording || voice.listening || buddy.busy || buddy.preparing; loops: Animation.Infinite; NumberAnimation { to: 0.35; duration: 350 + index*90 } NumberAnimation { to: 1; duration: 350 + index*90 } }
+                        SequentialAnimation on opacity { running: companion.capturing || buddy.busy || buddy.preparing; loops: Animation.Infinite; NumberAnimation { to: 0.35; duration: 350 + index*90 } NumberAnimation { to: 1; duration: 350 + index*90 } }
                     }
                 }
             }
@@ -188,10 +193,52 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             GbButton { text: companion.widgetsVisible ? "Hide widgets" : "Show widgets"; Layout.fillWidth: true; onClicked: { companion.widgetsVisible = !companion.widgetsVisible; companion.widgetsToggled(companion.widgetsVisible) } }
-            GbButton { text: companion.arranging ? "Lock" : "Arrange"; onClicked: { companion.arranging = !companion.arranging; companion.arrangementChanged(companion.arranging) } }
+            GbButton { text: "Widgets…"; onClicked: widgetTray.open() }
             GbButton { text: "Options"; onClicked: companion.workbenchRequested() }
         }
     }
+    }
+    Popup {
+        id: widgetTray
+        parent: companion
+        x: 20; y: 90; width: 370
+        height: Math.min(350, 130+companion.widgetCatalog.length*52)
+        padding: 14
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color:"#162c35";radius:12;border.color:"#86decb" }
+        contentItem: ColumnLayout {
+            RowLayout {
+                Text { text:"Your widgets";color:"#c7fff0";font.pixelSize:16;Layout.fillWidth:true }
+                GbButton { text:"Done";onClicked:widgetTray.close() }
+            }
+            ScrollView {
+                Layout.fillWidth:true;Layout.fillHeight:true;clip:true
+                Column {
+                    width: parent.width
+                    Repeater {
+                        model: companion.widgetCatalog
+                        CheckDelegate {
+                            id: widgetToggle
+                            required property var modelData
+                            width: widgetTray.availableWidth
+                            height: 48
+                            text:modelData.title
+                            checked:companion.session.widget_visibility?.[modelData.id]!==false
+                            palette.text:"#e3edf5";palette.windowText:"#e3edf5"
+                            indicator: Rectangle {
+                                x: parent.width-width-10;y:(parent.height-height)/2;width:22;height:22;radius:4
+                                color:widgetToggle.checked?"#86decb":"#213f48";border.color:"#86decb"
+                                Text { anchors.centerIn:parent;text:widgetToggle.checked?"✓":"";color:"#142130" }
+                            }
+                            background: Rectangle { color:widgetToggle.hovered?"#27434c":"transparent";radius:5 }
+                            contentItem: Text { text:widgetToggle.text;color:"#e3edf5";font.pixelSize:12;verticalAlignment:Text.AlignVCenter;rightPadding:40;elide:Text.ElideRight }
+                            onClicked:companion.widgetVisibilityChanged(modelData.id,checked)
+                        }
+                    }
+                }
+            }
+            Text { text:"Dismissed widgets stay here. Drag their headers or corners to arrange them.";color:"#a9c0cf";font.pixelSize:11;wrapMode:Text.WordWrap;Layout.fillWidth:true }
+        }
     }
     Shortcut { sequence: "Escape"; enabled: !companion.embedded; onActivated: { companion.stopTalking(); companion.arranging = false; companion.arrangementChanged(false); companion.expanded = false } }
 }
