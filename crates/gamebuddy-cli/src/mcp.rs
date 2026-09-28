@@ -87,6 +87,26 @@ fn result(value: anyhow::Result<Value>) -> CallToolResult {
 #[tool_router(server_handler)]
 impl GameBuddy {
     #[tool(
+        description = "View the latest actual game screenshot as an image, with capture timestamp and visual observations. Available while screen watching is enabled; does not require a walkthrough index. Stale or paused capture returns an error rather than an old image."
+    )]
+    fn get_game_screen(&self) -> CallToolResult {
+        let output = Store::open(&self.root)
+            .and_then(|store| harness::call_tool_with_images(&store, "get_game_screen", json!({})));
+        match output {
+            Ok(output) => {
+                let mut content = vec![ContentBlock::text(output.value.to_string())];
+                content.extend(
+                    output
+                        .images
+                        .into_iter()
+                        .map(|image| ContentBlock::image(image, "image/jpeg")),
+                );
+                CallToolResult::success(content)
+            }
+            Err(e) => result(Err(e)),
+        }
+    }
+    #[tool(
         description = "Record an explicit statement by the player that a task is done. Never infer this from advice, a walkthrough or room identity. Stored separately as player-reported progress. Read current context for revision and epoch first."
     )]
     fn report_step_complete(

@@ -10,6 +10,10 @@ pub struct Narrator {
     pending: String,
     pending_since: Option<Instant>,
     last_spoken: Option<Instant>,
+    last_scene_at: u64,
+    pending_event: String,
+    event_votes: u8,
+    spoken_event: String,
 }
 
 fn field(value: &Value, key: &str) -> String {
@@ -57,6 +61,41 @@ impl Narrator {
             return Some(format!(
                 "Hey, I'm GameBuddy, your companion for {game}. {state} {next} Unmute your mic or choose Listen whenever you want to talk."
             ));
+        }
+        let scene = &context["screen"]["scene"];
+        if context["screen"]["status"] == "live" && scene["fresh"] == true {
+            let at = scene["captured_at_ms"].as_u64().unwrap_or_default();
+            let event = field(scene, "event");
+            if at > self.last_scene_at {
+                self.last_scene_at = at;
+                if event == "none" {
+                    self.spoken_event.clear();
+                }
+                if event == self.pending_event {
+                    self.event_votes = self.event_votes.saturating_add(1);
+                } else {
+                    self.pending_event = event.clone();
+                    self.event_votes = 1;
+                }
+            }
+            let feedback = field(scene, "feedback");
+            if ["death", "danger", "dialogue", "menu", "new_area", "victory"]
+                .contains(&event.as_str())
+                && self.event_votes >= 2
+                && event != self.spoken_event
+                && !feedback.is_empty()
+                && scene["confidence"].as_f64().unwrap_or_default() >= 0.8
+                && self
+                    .last_spoken
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(25))
+            {
+                self.spoken_event = event;
+                self.last_spoken = Some(now);
+                return Some(feedback);
+            }
+        } else {
+            self.pending_event.clear();
+            self.event_votes = 0;
         }
         if action != self.pending {
             self.pending = action.clone();
@@ -131,5 +170,25 @@ mod tests {
                 .unwrap()
                 .contains("I'm GameBuddy")
         );
+    }
+    #[test]
+    fn unsolicited_feedback_needs_two_fresh_observations_and_does_not_repeat() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = json!({"game":"Game","screen":{"status":"live","scene":{"fresh":true,"captured_at_ms":1,"event":"death","confidence":0.9,"feedback":"Looks like a game-over screen. We can plan the next attempt."}}});
+        n.next(&c, t);
+        assert!(n.next(&c, t + Duration::from_secs(26)).is_none());
+        assert!(n.next(&c, t + Duration::from_secs(27)).is_none());
+        c["screen"]["scene"]["captured_at_ms"] = json!(2);
+        assert!(
+            n.next(&c, t + Duration::from_secs(28))
+                .unwrap()
+                .contains("game-over")
+        );
+        assert!(n.next(&c, t + Duration::from_secs(60)).is_none());
+        c["screen"]["status"] = json!("paused");
+        c["screen"]["scene"]["event"] = json!("danger");
+        c["screen"]["scene"]["captured_at_ms"] = json!(3);
+        assert!(n.next(&c, t + Duration::from_secs(90)).is_none());
     }
 }

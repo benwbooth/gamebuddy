@@ -175,7 +175,11 @@ Item {
                 ToolTip.visible: hovered; ToolTip.text: "Start listening when this microphone is unmuted in the system."
             }
         }
-        Text { Layout.fillWidth: true; text: buddy.message; color: "#a9c0cf"; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight }
+        Text {
+            Layout.fillWidth: true
+            text: companion.session.screen?.status === "live" ? "Watching game · " + (companion.session.screen.scene_error ? "visual analysis unavailable; screenshots ready" : companion.session.screen.scene?.fresh ? companion.session.screen.scene.summary : "interpreting the scene…") : "Screen " + (companion.session.screen?.status || "waiting") + " · " + (companion.session.screen?.error || buddy.message)
+            color: "#a9c0cf"; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+        }
         ScrollView {
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             Column {
@@ -186,7 +190,7 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
-            GbButton { text: companion.embedded ? (companion.syncActive ? "Pause sync" : "Resume sync") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
+            GbButton { text: companion.embedded ? (companion.syncActive ? "Pause watching" : "Resume watching") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
             GbButton { text: companion.spokenReplies ? "Voice on" : "Voice off"; onClicked: { companion.spokenReplies = !companion.spokenReplies; if (!companion.spokenReplies) companion.stopSpeaking() } }
             GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
         }

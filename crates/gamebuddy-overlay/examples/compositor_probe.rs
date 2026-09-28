@@ -229,7 +229,38 @@ fn main() -> anyhow::Result<()> {
         "Overlay contaminated game-only capture"
     );
     if std::env::var_os("GAMEBUDDY_TEST_MIC_SOURCE").is_some() {
-        support::voice_probe::run(&conn, overlay, focus, &directory, screenshot)?;
+        if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
+            let gc = conn.generate_id()?;
+            conn.create_gc(gc, window, &CreateGCAux::new().foreground(0xff2020))?
+                .check()?;
+            conn.poly_fill_rectangle(
+                window,
+                gc,
+                &[Rectangle {
+                    x: 420,
+                    y: 180,
+                    width: 240,
+                    height: 240,
+                }],
+            )?
+            .check()?;
+            conn.change_gc(gc, &ChangeGCAux::new().foreground(0x20ee40))?
+                .check()?;
+            conn.poly_fill_rectangle(
+                window,
+                gc,
+                &[Rectangle {
+                    x: 820,
+                    y: 200,
+                    width: 130,
+                    height: 300,
+                }],
+            )?
+            .check()?;
+            conn.free_gc(gc)?.check()?;
+            conn.flush()?;
+        }
+        support::voice_probe::run(&conn, window, overlay, focus, &directory, screenshot)?;
         return Ok(());
     }
     toggle()?;

@@ -176,6 +176,22 @@ impl Store {
         self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,serde_json::to_string(value)?])?;
         Ok(())
     }
+    /// Atomically replace a document only if its complete previous value matches.
+    pub fn compare_exchange<T: Serialize>(
+        &self,
+        key: &str,
+        expected: &T,
+        value: &T,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE documents SET body=?3 WHERE key=?1 AND body=?2",
+            params![
+                key,
+                serde_json::to_string(expected)?,
+                serde_json::to_string(value)?
+            ],
+        )? == 1)
+    }
     /// Publish derived data only while the input guide revision is still current.
     pub fn put_for_guide<T: Serialize>(&self, guide: &Guide, key: &str, value: &T) -> Result<()> {
         let transaction = rusqlite::Transaction::new_unchecked(

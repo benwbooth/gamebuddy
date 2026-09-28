@@ -1,10 +1,22 @@
 <!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'"></head><body><audio id="speaker" autoplay></audio><script>
 (() => {
-  let peer=null, mic=null, sender=null, silence=null, audioContext=null, generation=0, captureGeneration=0;
+  let peer=null, mic=null, sender=null, silence=null, audioContext=null, events=null, pendingContext='', generation=0, captureGeneration=0;
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
   function closeMic(){captureGeneration++;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
-  function stop(){generation++;closeMic();if(peer)peer.close();peer=null;sender=null;if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;document.getElementById('speaker').srcObject=null}
+  function stop(){generation++;closeMic();if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;document.getElementById('speaker').srcObject=null}
+  function updateContext(text){
+    pendingContext=text;
+    if(events?.readyState!=='open')return;
+    // Frameless v3 appendText defaults to speakable even for developer messages.
+    // Observations must use the quiet commentary channel on the same WebRTC session.
+    // Match Codex's 500-byte context chunks without splitting a Unicode character.
+    const encoder=new TextEncoder();let chunk='',bytes=0;
+    const send=text=>events.send(JSON.stringify({type:'session.context.append',channel:'commentary',content:[{type:'input_text',text}]}));
+    for(const char of pendingContext){const size=encoder.encode(char).length;if(bytes+size>500){send(chunk);chunk='';bytes=0}chunk+=char;bytes+=size}
+    if(chunk)send(chunk);
+    pendingContext='';
+  }
   async function setMicrophone(enabled,deviceName){
     closeMic();if(!enabled||!peer)return;
     const own=generation,request=captureGeneration,stale=()=>own!==generation||request!==captureGeneration;
@@ -27,7 +39,7 @@
       if(!stale())emit('capture',true);
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
-  window.gamebuddyVoice={stop,setMicrophone,
+  window.gamebuddyVoice={stop,setMicrophone,updateContext,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {
@@ -42,8 +54,8 @@
         zero.offset.value=0;zero.connect(output);zero.start();
         silence=output.stream.getAudioTracks()[0];await sender.replaceTrack(silence);await audio.resume();
         if(own!==generation)return;
-        const events=pc.createDataChannel('oai-events');
-        events.onopen=()=>{if(own===generation)emit('ready',true)};
+        events=pc.createDataChannel('oai-events');
+        events.onopen=()=>{if(own===generation){if(pendingContext)updateContext(pendingContext);emit('ready',true)}};
         events.onmessage=e=>{if(own!==generation)return;try{const v=JSON.parse(e.data);if(v.type==='error')emit('error',v.error?.message||'Voice transport error')}catch{}};
         pc.ontrack=e=>{if(own!==generation)return;document.getElementById('speaker').srcObject=e.streams[0]||new MediaStream([e.track]);document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
         pc.onconnectionstatechange=()=>{if(own===generation)emit('connection',pc.connectionState)};

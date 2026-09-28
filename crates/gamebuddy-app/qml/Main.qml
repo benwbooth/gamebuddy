@@ -22,6 +22,7 @@ ApplicationWindow {
     property int page: 0
     property bool grabbing: false
     property bool autoSync: compositor.active
+    onAutoSyncChanged: if(session.data_dir)buddy.set_screen_capture(autoSync)
     property bool overlayOptions: false
     property bool overlayHidden: false
     property string queuedVoice: ""
@@ -85,7 +86,8 @@ ApplicationWindow {
         return Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0")
     }
     function grabFrame() {
-        if (buddy.matching || grabbing || !session.reference_count) return
+        if (buddy.matching || grabbing) return
+        buddy.set_screen_capture(true)
         if (compositor.active && replay.source.toString().length === 0) { buddy.match_game_frame(); return }
         let output = replay.source.toString().length > 0 ? replayOutput : liveOutput
         if (output.contentRect.width <= 0 || output.contentRect.height <= 0) return
@@ -421,7 +423,7 @@ ApplicationWindow {
                             GbButton { visible: !compositor.active; text: capture.active ? "Stop sharing" : "Share screen"; onClicked: { replay.stop(); replay.source = ""; root.captureError = ""; capture.active = !capture.active } }
                             GbButton { text: "Replay video"; onClicked: replayDialog.open() }
                             GbButton { text: "Compare screenshot"; enabled: !buddy.busy && root.session.reference_count > 0; onClicked: frameDialog.open() }
-                            GbButton { text: "Match frame"; enabled: !buddy.busy && root.session.reference_count > 0 && (compositor.active || capture.active || replay.source.toString().length > 0); onClicked: root.grabFrame() }
+                            GbButton { text: "Observe frame"; enabled: !buddy.matching && (compositor.active || capture.active || replay.source.toString().length > 0); onClicked: root.grabFrame() }
                             GbButton { text: checked ? "Auto sync on" : "Auto sync off"; checkable: true; checked: root.autoSync; onClicked: root.autoSync = checked }
                             GbButton { text: "Ask vision model"; enabled: !buddy.busy && root.candidates.length > 0; onClicked: buddy.compare_vision() }
                         }

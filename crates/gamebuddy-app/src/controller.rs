@@ -52,6 +52,8 @@ pub mod ffi {
         #[qinvokable]
         fn match_game_frame(self: Pin<&mut Buddy>);
         #[qinvokable]
+        fn set_screen_capture(self: Pin<&mut Buddy>, enabled: bool);
+        #[qinvokable]
         fn compare_vision(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn ask(self: Pin<&mut Buddy>, question: QString);
@@ -122,6 +124,10 @@ pub struct BuddyRust {
     last_frame: Option<PathBuf>,
     game: String,
     automatic_answer: String,
+    screen_session: String,
+    scene_inflight: bool,
+    last_scene_at: u64,
+    last_scene_image: String,
 }
 impl Default for BuddyRust {
     fn default() -> Self {
@@ -146,6 +152,19 @@ impl Default for BuddyRust {
             last_frame: None,
             game: "Faxanadu".into(),
             automatic_answer: String::new(),
+            screen_session: String::new(),
+            scene_inflight: false,
+            last_scene_at: 0,
+            last_scene_image: String::new(),
+        }
+    }
+}
+impl Drop for BuddyRust {
+    fn drop(&mut self) {
+        if !self.screen_session.is_empty()
+            && let Ok(store) = Store::open(&self.root)
+        {
+            let _ = services::screen::set_enabled(&store, &self.screen_session, &self.game, false);
         }
     }
 }
@@ -177,7 +196,7 @@ impl ffi::Buddy {
         .unwrap_or_else(|_| "[]".into()))
     }
     pub fn initialize(mut self: Pin<&mut Self>) {
-        let result = (|| -> Result<(PathBuf, Settings, Option<Guide>, String)> {
+        let result = (|| -> Result<_> {
             let root = argument("--data-dir")
                 .map(PathBuf::from)
                 .map(Ok)
@@ -192,12 +211,14 @@ impl ffi::Buddy {
                 .find(|g| Some(&g.id) == active.as_ref() && g.game.eq_ignore_ascii_case(&game))
                 .or_else(|| guides.iter().find(|g| g.game.eq_ignore_ascii_case(&game)))
                 .cloned();
-            Ok((root, settings, guide, game))
+            let capture = services::screen::start(&store, &game, argument("--game-pid").is_some())?;
+            Ok((root, settings, guide, game, capture.session))
         })();
         match result {
-            Ok((root, settings, guide, game)) => {
+            Ok((root, settings, guide, game, capture_session)) => {
                 self.as_mut().rust_mut().root = root;
                 self.as_mut().rust_mut().game = game;
+                self.as_mut().rust_mut().screen_session = capture_session;
                 self.as_mut()
                     .set_settings_json(q(serde_json::to_string(&settings).unwrap()));
                 if let Some(g) = guide {
@@ -327,7 +348,7 @@ impl ffi::Buddy {
             } else {
                 String::new()
             };
-            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
+            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
         })();
         match result {
             Ok((state, automatic)) => {
@@ -345,6 +366,19 @@ impl ffi::Buddy {
         }
     }
     fn use_guide(mut self: Pin<&mut Self>, guide: Guide) {
+        if self.rust().game != guide.game {
+            if let Ok(store) = Store::open(&self.rust().root) {
+                let enabled = services::screen::ticket(&store, &self.rust().screen_session).is_ok();
+                let _ = services::screen::set_enabled(
+                    &store,
+                    &self.rust().screen_session,
+                    &guide.game,
+                    enabled,
+                );
+            }
+            self.as_mut().rust_mut().last_scene_at = 0;
+            self.as_mut().rust_mut().last_scene_image.clear();
+        }
         let progress = Store::open(&self.rust().root)
             .and_then(|s| {
                 s.put("active_guide", &guide.id)?;
@@ -534,7 +568,26 @@ impl ffi::Buddy {
             },
         );
     }
-    pub fn match_frame(self: Pin<&mut Self>, path: QString) {
+    pub fn set_screen_capture(mut self: Pin<&mut Self>, enabled: bool) {
+        if self.rust().screen_session.is_empty() {
+            return;
+        }
+        let result = Store::open(&self.rust().root).and_then(|store| {
+            services::screen::set_enabled(
+                &store,
+                &self.rust().screen_session,
+                &self.rust().game,
+                enabled,
+            )
+        });
+        if let Err(e) = result {
+            self.as_mut()
+                .set_message(q(format!("Screen watching: {e:#}")));
+        }
+        self.refresh();
+    }
+    pub fn match_frame(mut self: Pin<&mut Self>, path: QString) {
+        self.as_mut().set_screen_capture(true);
         self.match_input(path, None);
     }
     pub fn match_game_frame(self: Pin<&mut Self>) {
@@ -547,87 +600,178 @@ impl ffi::Buddy {
         if *self.matching() {
             return;
         }
-        let Some(guide) = self.rust().guide.clone() else {
-            return;
-        };
+        let guide = self.rust().guide.clone();
         let mut sync = self.rust().sync.clone();
         let initial = sync.progress.clone();
         let root = self.rust().root.clone();
+        let Ok(ticket) = Store::open(&root)
+            .and_then(|store| services::screen::ticket(&store, &self.rust().screen_session))
+        else {
+            return;
+        };
         let thread = self.qt_thread();
         self.as_mut().set_matching(true);
         std::thread::spawn(move || {
             let result = (|| -> Result<_> {
                 let store = Store::open(&root)?;
-                let index = store
-                    .index(&guide)?
-                    .context("Build the guide's visual index first")?;
-                let path = if let Some(pid) = game_pid {
-                    let path = root.join("captures").join(format!("game-{pid}.png"));
-                    #[cfg(target_os = "linux")]
-                    gamebuddy_overlay::x11::capture_game(pid, &path)?;
-                    #[cfg(not(target_os = "linux"))]
-                    anyhow::bail!("Gamescope capture is only available on Linux");
-                    path
+                let captured = (|| -> Result<PathBuf> {
+                    if let Some(pid) = game_pid {
+                        let path = root.join("captures").join(format!("game-{pid}.png"));
+                        #[cfg(target_os = "linux")]
+                        gamebuddy_overlay::x11::capture_game(pid, &path)?;
+                        #[cfg(not(target_os = "linux"))]
+                        anyhow::bail!("Gamescope capture is only available on Linux");
+                        Ok(path)
+                    } else {
+                        services::local_path(&path.to_string())
+                    }
+                })();
+                if let Err(error) = &captured {
+                    let _ = services::screen::capture_error(&store, &ticket, &error.to_string());
+                }
+                let path = captured?;
+                // Publish the screen even before any guide or reference index exists.
+                services::screen::publish(
+                    &store,
+                    &ticket,
+                    &path,
+                    if game_pid.is_some() {
+                        "game_window"
+                    } else {
+                        "shared_frame"
+                    },
+                )?;
+                let matching = if let Some(guide) = &guide {
+                    if let Some(index) = store.index(guide)? {
+                        let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
+                        let estimate = sync.observe(
+                            guide,
+                            &index,
+                            &vector,
+                            services::screen::now_ms(),
+                            sync.progress.epoch,
+                        )?;
+                        Some((sync, estimate))
+                    } else {
+                        None
+                    }
                 } else {
-                    services::local_path(&path.to_string())?
+                    None
                 };
-                let vector = fingerprint(&image::open(&path)?, index.live_crop)?;
-                let time = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis() as u64;
-                let estimate = sync.observe(&guide, &index, &vector, time, sync.progress.epoch)?;
-                Ok((sync, estimate, path))
+                Ok((matching, path))
             })();
             let _ = thread.queue(move |mut object| {
                 object.as_mut().set_matching(false);
-                let current = &object.rust().sync.progress;
-                if object
-                    .rust()
-                    .guide
-                    .as_ref()
-                    .is_none_or(|g| g.id != guide.id || g.revision != guide.revision)
-                    || current.epoch != initial.epoch
-                    || current.current_step != initial.current_step
-                    || current.completed != initial.completed
-                {
-                    return;
-                }
                 match result {
-                    Ok((sync, estimate, path)) => {
-                        if sync.progress.current_step != initial.current_step
-                            && let Some(step) = sync
-                                .progress
-                                .current_step
-                                .as_deref()
-                                .and_then(|id| guide.step(id))
-                        {
-                            object.as_mut().rust_mut().selected = step.id.clone();
+                    Ok((matching, path)) => {
+                        let valid = Store::open(&root)
+                            .and_then(|s| services::screen::ticket(&s, &ticket.session))
+                            .is_ok_and(|current| current == ticket);
+                        if !valid {
+                            return;
                         }
-                        if let Err(e) = Store::open(&root).and_then(|s| {
-                            s.save_progress(&guide, &sync.progress, "visual_observation")
-                        }) {
-                            object
-                                .as_mut()
-                                .set_message(q(format!("Could not save observation: {e:#}")));
-                        }
-                        object.as_mut().rust_mut().sync = sync;
-                        object.as_mut().rust_mut().estimate = estimate;
                         object.as_mut().rust_mut().last_frame = Some(path);
+                        if let (Some(guide), Some((sync, estimate))) = (guide, matching) {
+                            let current = &object.rust().sync.progress;
+                            if object
+                                .rust()
+                                .guide
+                                .as_ref()
+                                .is_some_and(|g| g.id == guide.id && g.revision == guide.revision)
+                                && current.epoch == initial.epoch
+                                && current.current_step == initial.current_step
+                                && current.completed == initial.completed
+                            {
+                                if let Some(step) = sync
+                                    .progress
+                                    .current_step
+                                    .as_deref()
+                                    .and_then(|id| guide.step(id))
+                                {
+                                    object.as_mut().rust_mut().selected = step.id.clone();
+                                }
+                                if let Err(e) = Store::open(&root).and_then(|s| {
+                                    s.save_progress(&guide, &sync.progress, "visual_observation")
+                                }) {
+                                    object.as_mut().set_message(q(format!(
+                                        "Could not save observation: {e:#}"
+                                    )));
+                                }
+                                object.as_mut().rust_mut().sync = sync;
+                                object.as_mut().rust_mut().estimate = estimate;
+                            }
+                        }
                         object.as_mut().refresh();
+                        object.as_mut().observe_screen();
                         object.verify_location();
                     }
                     Err(e) => {
-                        if !*object.preparing() {
-                            object.set_message(q(format!("Screen matching: {e:#}")));
-                        }
+                        object
+                            .as_mut()
+                            .set_message(q(format!("Screen capture/matching: {e:#}")));
+                        object.as_mut().refresh();
+                        object.observe_screen();
                     }
                 }
+            });
+        });
+    }
+    fn observe_screen(mut self: Pin<&mut Self>) {
+        if self.rust().scene_inflight || self.rust().vision_inflight {
+            return;
+        }
+        let now = services::screen::now_ms();
+        if now.saturating_sub(self.rust().last_scene_at) < 6_000 {
+            return;
+        }
+        let root = self.rust().root.clone();
+        let Ok(store) = Store::open(&root) else {
+            return;
+        };
+        let Ok(snapshot) = services::screen::snapshot(&store) else {
+            return;
+        };
+        if snapshot.ticket.session != self.rust().screen_session {
+            return;
+        }
+        if snapshot.jpeg == self.rust().last_scene_image
+            && now.saturating_sub(self.rust().last_scene_at) < 15_000
+        {
+            return;
+        }
+        let Ok(settings) = store.get::<Settings>("settings") else {
+            return;
+        };
+        let config = settings.unwrap_or_default().vision;
+        self.as_mut().rust_mut().scene_inflight = true;
+        self.as_mut().rust_mut().last_scene_at = now;
+        self.as_mut().rust_mut().last_scene_image = snapshot.jpeg.clone();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = HttpProvider::new(config).and_then(|provider| {
+                services::screen::observe(&provider, &snapshot, snapshot.metadata.get("scene"))
+            });
+            let saved = Store::open(&root)
+                .and_then(|store| services::screen::save_observation(&store, &snapshot, &result));
+            if std::env::args().any(|a| a == "--voice-trace") {
+                eprintln!(
+                    "GAMEBUDDY_SCREEN_OBSERVATION success={} saved={} elapsed_ms={}",
+                    result.is_ok(),
+                    saved.is_ok(),
+                    services::screen::now_ms().saturating_sub(snapshot.captured_at_ms)
+                );
+            }
+            let _ = thread.queue(move |mut object| {
+                object.as_mut().rust_mut().scene_inflight = false;
+                object.as_mut().refresh();
+                object.verify_location();
             });
         });
     }
     fn verify_location(mut self: Pin<&mut Self>) {
         let at = self.rust().estimate.observed_at_ms;
         if self.rust().vision_inflight
+            || self.rust().scene_inflight
             || self.rust().estimate.status == "located"
             || at.saturating_sub(self.rust().last_vision_at) < 15_000
         {
@@ -642,6 +786,11 @@ impl ffi::Buddy {
             return;
         }
         let root = self.rust().root.clone();
+        let Ok(capture_ticket) = Store::open(&root)
+            .and_then(|store| services::screen::ticket(&store, &self.rust().screen_session))
+        else {
+            return;
+        };
         let Ok(settings) =
             Store::open(&root).and_then(|s| Ok(s.get::<Settings>("settings")?.unwrap_or_default()))
         else {
@@ -665,7 +814,8 @@ impl ffi::Buddy {
             });
             let _=thread.queue(move|mut object|{
                 object.as_mut().rust_mut().vision_inflight=false;
-                if object.rust().guide.as_ref().is_none_or(|g|g.id!=guide.id || g.revision!=guide.revision)
+                if !Store::open(&root).and_then(|s|services::screen::ticket(&s,&capture_ticket.session)).is_ok_and(|t|t==capture_ticket)
+                    || object.rust().guide.as_ref().is_none_or(|g|g.id!=guide.id || g.revision!=guide.revision)
                     || object.rust().sync.progress.epoch!=initial.epoch
                     || object.rust().sync.progress.current_step!=initial.current_step
                     || object.rust().sync.progress.completed!=initial.completed
@@ -833,7 +983,7 @@ impl ffi::Buddy {
     /// Qt passes a live QObject from VideoOutput.videoSink for this call.
     /// The C++ helper validates its runtime type and retains no pointer.
     pub unsafe fn match_sink(self: Pin<&mut Self>, sink: *mut cxx_qt::QObject) {
-        if *self.matching() || self.rust().guide.is_none() {
+        if *self.matching() {
             return;
         }
         let path = self.capture_path();

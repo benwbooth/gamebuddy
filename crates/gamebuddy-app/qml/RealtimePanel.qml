@@ -12,6 +12,7 @@ WebEngineView {
     property bool loaded: false
     property string status: ""
     property string lastContext: ""
+    property double contextAfter: 0
     property bool started: false
     property bool connected: false
     property bool capturing: false
@@ -31,11 +32,11 @@ WebEngineView {
     settings.localContentCanAccessFileUrls: false
     settings.javascriptCanOpenWindows: false
     function context() {
-        return JSON.stringify({game:session.game, current:session.current, location_status:session.navigation?.location?.status,
+        return JSON.stringify({game:session.game, screen:session.screen, current:session.current, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
             preparing:buddy.preparing, guide_revision:session.guide?.revision,
-            instruction:"This is quiet live context, not a player request. The application sends spoken introductions and stable next-action cues separately. Use guidance.now in conversation and respect unconfirmed prerequisites. Stay quiet for context-only updates. Room identity does not establish inventory, player coordinates, or task completion. Never mark tasks complete from this update."})
+            instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})
     }
     function update() {
         if (!loaded) return
@@ -47,6 +48,19 @@ WebEngineView {
             started=false; connected=false; transport.disconnect(); runJavaScript("gamebuddyVoice.stop()")
             status="Voice stopped"
         }
+    }
+    function voiceContext() {
+        const value=JSON.parse(context()),screen=value.screen
+        // Frame age is available from tools. Do not stream a new context message
+        // on every UI refresh when the observation itself has not changed.
+        if(screen){delete screen.age_ms;delete screen.captured_at_ms
+            if(screen.scene){delete screen.scene.age_ms;delete screen.scene.captured_at_ms}}
+        return JSON.stringify(value)
+    }
+    function updateContext() {
+        if(!connected || Date.now()<contextAfter)return
+        const next=voiceContext()
+        if(next!==lastContext){lastContext=next;runJavaScript("gamebuddyVoice.updateContext("+JSON.stringify(next)+")")}
     }
     function fail(message) {
         failed=true
@@ -63,12 +77,16 @@ WebEngineView {
         if(!spokenReplies || proactivePaused || (enabledBackend && !connected))return
         const text=transport.next_narration(context())
         if(text.length){
+            // Do not race a quiet context burst against a queued spoken cue.
+            // Capture and visual inference continue; send the newest context afterward.
+            contextAfter=Date.now()+12000
             if(trace)console.warn("GAMEBUDDY_NARRATION characters="+text.length)
             panel.answer(text)
             if(enabledBackend)transport.speak(text)
         }
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
+    Timer { interval: 2000; repeat: true; running: panel.connected; onTriggered: panel.updateContext() }
     RealtimeVoice {
         id: transport
         onEvent_jsonChanged: {
@@ -123,7 +141,5 @@ WebEngineView {
     } }
     onSessionChanged: {
         update()
-        const next=context()
-        if(started && next!==lastContext){lastContext=next;transport.update_context(next)}
     }
 }
