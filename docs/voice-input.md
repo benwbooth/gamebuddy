@@ -26,6 +26,18 @@ Explicit spoken commands bypass the reasoning provider:
 
 Ordinary strategy questions do not take focus. Shift+Tab, Ctrl+Shift+Tab and Escape remain available.
 
+## Automatic game volume
+
+**Lower game volume during conversations** is enabled by default in Options → Models (`duck_game_audio` in settings). A launched game's audio fades down by **12 dB** when microphone speech is detected, while a local voice request is processed, while hold-to-talk records, or when GameBuddy speaks. An unmuted but silent microphone and an idle voice connection do not lower it. The game returns to its normal level after 1.8 seconds without conversation activity, with a short release fade. Realtime voice holds through a pending reply for up to twenty seconds; a later audible reply ducks again automatically.
+
+For realtime input, the existing WebRTC/libfvad detector receives ephemeral 20 ms, 16 kHz samples from the already-authorized Chromium microphone stream. No second microphone is opened; Qt consumes the activity messages locally without writing audio files or application traces. Output activity comes from the actual received audio, respecting Voice off, rather than the presence of an audio track. Local voice uses its existing VAD and Qt speech state. Closing a voice session clears activity.
+
+The current volume backend requires **Linux with PipeWire**, including applications using its PulseAudio compatibility server. It follows the launch PID and descendants, including uniquely identifiable container processes. It applies temporary per-stream software attenuation; it never changes system volume or the application's saved mixer level. New game streams are discovered during conversations. A manual mixer volume adjustment takes precedence for that stream until the conversation ends. Ambiguous process ownership is left untouched.
+
+A separate Rust helper owns the attenuation and restores surviving streams when the overlay closes or crashes. A three-second heartbeat timeout also releases it if the UI stops responding. Disabling the option releases the helper immediately. The helper uses `pw-dump` and `pw-cli`, already present in the Nix runtime. Windows/macOS and a standalone PulseAudio server do not yet have ducking adapters; the settings page reports their availability. Unrelated apps and GameBuddy output are outside the launched game's process tree.
+
+`nix develop --command cargo run -p gamebuddy-services --example audio_duck_probe` checks actual output attenuation on a private virtual sink, restoration, channel balance, manual volume changes, recreated streams and helper EOF. `scripts/test-realtime` also checks ducking through the production WebRTC microphone and spoken introduction, including silence with an active microphone. Both fixtures avoid physical audio devices.
+
 ## Platform boundaries
 
 Automatic system mute detection currently supports Linux PulseAudio and PipeWire's PulseAudio compatibility server. A Rust background worker queries the exact Qt-selected source through `pactl` every 250 ms, with a bounded timeout; it never changes the system mute state. The Nix shell includes `pactl`. A physical microphone's mute button must expose its state through that server to trigger activation. The Shure MV7+ was identified as the host's default input, but its physical mute button has not been tested.

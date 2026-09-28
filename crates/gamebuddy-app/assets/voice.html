@@ -2,9 +2,36 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'"></head><body><audio id="speaker" autoplay></audio><script>
 (() => {
   let peer=null, mic=null, sender=null, silence=null, audioContext=null, events=null, pendingContext='', generation=0, captureGeneration=0;
+  let inputMeter=null,outputMeter=null,meterTimer=null,meterTick=0;
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
-  function closeMic(){captureGeneration++;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
-  function stop(){generation++;closeMic();if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;document.getElementById('speaker').srcObject=null}
+  function disconnectMeter(meter){if(meter){meter.source.disconnect();meter.analyser.disconnect();meter.zero.disconnect()}}
+  function meter(stream){
+    const source=audioContext.createMediaStreamSource(stream),analyser=audioContext.createAnalyser(),zero=audioContext.createGain();
+    analyser.fftSize=4096;zero.gain.value=0;source.connect(analyser);analyser.connect(zero);zero.connect(audioContext.destination);
+    return {source,analyser,zero,data:new Float32Array(analyser.fftSize)};
+  }
+  function sampleMeters(){
+    if(inputMeter){
+      inputMeter.analyser.getFloatTimeDomainData(inputMeter.data);
+      // Send a 20 ms, 16 kHz PCM slice to the existing Rust/WebRTC speech
+      // detector. The Qt console handler consumes this local IPC message;
+      // activity samples are not written to audio files or application traces.
+      const data=inputMeter.data,ratio=audioContext.sampleRate/16000,start=data.length-Math.ceil(320*ratio),pcm=[];
+      for(let i=0;i<320;i++){
+        const from=start+Math.floor(i*ratio),to=start+Math.max(Math.floor((i+1)*ratio),Math.floor(i*ratio)+1);
+        let sum=0;for(let j=from;j<to;j++)sum+=data[j]||0;
+        pcm.push(Math.round(Math.max(-1,Math.min(1,sum/(to-from)))*32767));
+      }
+      emit('input-pcm',pcm);
+    }
+    if(++meterTick%5===0){
+      let rms=0;
+      if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
+      emit('output-active',!document.getElementById('speaker').muted && rms>0.002);
+    }
+  }
+  function closeMic(){captureGeneration++;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
+  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;document.getElementById('speaker').srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open')return;
@@ -36,7 +63,7 @@
       }
       mic=stream;
       await sender.replaceTrack(stream.getAudioTracks()[0]);
-      if(!stale())emit('capture',true);
+      if(!stale()){inputMeter=meter(stream);emit('capture',true)}
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
   window.gamebuddyVoice={stop,setMicrophone,updateContext,
@@ -54,10 +81,11 @@
         zero.offset.value=0;zero.connect(output);zero.start();
         silence=output.stream.getAudioTracks()[0];await sender.replaceTrack(silence);await audio.resume();
         if(own!==generation)return;
+        meterTimer=setInterval(sampleMeters,20);
         events=pc.createDataChannel('oai-events');
         events.onopen=()=>{if(own===generation){if(pendingContext)updateContext(pendingContext);emit('ready',true)}};
         events.onmessage=e=>{if(own!==generation)return;try{const v=JSON.parse(e.data);if(v.type==='error')emit('error',v.error?.message||'Voice transport error')}catch{}};
-        pc.ontrack=e=>{if(own!==generation)return;document.getElementById('speaker').srcObject=e.streams[0]||new MediaStream([e.track]);document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
+        pc.ontrack=e=>{if(own!==generation)return;const stream=e.streams[0]||new MediaStream([e.track]);disconnectMeter(outputMeter);outputMeter=meter(stream);document.getElementById('speaker').srcObject=stream;document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
         pc.onconnectionstatechange=()=>{if(own===generation)emit('connection',pc.connectionState)};
         if(capture)await setMicrophone(true,deviceName);
         if(own!==generation)return;

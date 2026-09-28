@@ -175,6 +175,7 @@ fn realtime(
     focus: u32,
     screenshot: impl Fn(&str) -> Result<()>,
 ) -> Result<()> {
+    let game_audio = DuckingAudio::new()?;
     let source = std::env::var("GAMEBUDDY_TEST_MIC_SOURCE")?;
     let sink = std::env::var("GAMEBUDDY_TEST_MIC_SINK")?;
     ensure!(
@@ -202,6 +203,10 @@ fn realtime(
             .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
     };
     let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+    wait("spoken introduction lowers game audio", || {
+        game_audio.ducked()
+    })?;
+    println!("GAMEBUDDY_AUDIO_INTRO_PASS");
     wait("automatic spoken introduction", || {
         let text = std::fs::read_to_string(&log)?;
         Ok(text.contains("GAMEBUDDY_NARRATION")
@@ -216,6 +221,9 @@ fn realtime(
         "Introduction stole game focus"
     );
     thread::sleep(Duration::from_secs(18)); // let the introduction finish before the request
+    wait("quiet play restores game audio", || {
+        Ok(!game_audio.ducked()?)
+    })?;
     if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
         let id: String = store.get("active_guide")?.context("guide")?;
         ensure!(
@@ -261,11 +269,20 @@ fn realtime(
         "Live voice stole game focus"
     );
     let wave = std::env::var("GAMEBUDDY_TEST_VOICE_WAV")?;
+    thread::sleep(Duration::from_secs(2));
     ensure!(
-        Command::new("paplay")
-            .args(["--device", &sink, &wave])
-            .status()?
-            .success(),
+        !game_audio.ducked()?,
+        "An unmuted but silent mic lowered the game"
+    );
+    let mut request = Command::new("paplay")
+        .args(["--device", &sink, &wave])
+        .spawn()?;
+    wait("microphone speech lowers game audio", || {
+        game_audio.ducked()
+    })?;
+    println!("GAMEBUDDY_AUDIO_MIC_PASS");
+    ensure!(
+        request.wait()?.success(),
         "Synthetic speech playback failed"
     );
     let started = Instant::now();
@@ -338,6 +355,64 @@ fn realtime(
         "GAMEBUDDY_REALTIME_TEST_PASS automatic introduction without capture, subscription WebRTC, synthetic microphone, validated widget tool, passive focus, mute closes capture and preserves guidance"
     );
     Ok(())
+}
+
+/// A silent audio stream belonging to the fixture game, on the test's private
+/// output sink. Actual attenuation is measured by audio_duck_probe separately.
+struct DuckingAudio(std::process::Child);
+impl DuckingAudio {
+    fn new() -> Result<Self> {
+        use std::io::Write;
+        let sink = std::env::var("PULSE_SINK")?;
+        ensure!(
+            sink.starts_with("gamebuddy_test_"),
+            "Private output sink required"
+        );
+        let mut child = Command::new("paplay")
+            .args([
+                "--raw",
+                "--rate=48000",
+                "--channels=2",
+                "--format=s16le",
+                "--latency-msec=50",
+                "--device",
+                &sink,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        let mut input = child.stdin.take().unwrap();
+        thread::spawn(move || while input.write_all(&[0; 19200]).is_ok() {});
+        Ok(Self(child))
+    }
+    fn ducked(&self) -> Result<bool> {
+        let output = Command::new("pw-dump").output()?;
+        let objects: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let node = objects
+            .as_array()
+            .context("PipeWire objects")?
+            .iter()
+            .find(|o| {
+                o["info"]["props"]["media.class"] == "Stream/Output/Audio"
+                    && o["info"]["props"]["application.process.id"]
+                        .as_u64()
+                        .or_else(|| {
+                            o["info"]["props"]["application.process.id"]
+                                .as_str()?
+                                .parse()
+                                .ok()
+                        })
+                        == Some(self.0.id() as u64)
+            });
+        Ok(node
+            .and_then(|n| n["info"]["params"]["Props"][0]["softVolumes"][0].as_f64())
+            .is_some_and(|v| v < 0.6))
+    }
+}
+impl Drop for DuckingAudio {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Change actual game pixels after the conversation, with no model text hint.

@@ -1,4 +1,5 @@
 //! Microphone activation and bounded, local speech turn detection.
+pub mod duck;
 pub mod mute;
 pub mod narration;
 use std::{collections::VecDeque, path::Path};
@@ -58,6 +59,9 @@ impl Default for Segmenter {
     }
 }
 impl Segmenter {
+    pub fn speaking(&self) -> bool {
+        self.voiced >= 3 && self.silence < END_SILENCE
+    }
     pub fn feed(&mut self, samples: &[i16]) -> Option<Vec<i16>> {
         self.pending.extend(samples);
         while self.pending.len() >= FRAME {

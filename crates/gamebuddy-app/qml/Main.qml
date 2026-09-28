@@ -29,6 +29,7 @@ ApplicationWindow {
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
     property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
+    property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false
     property string captureError: ""
     property string smokePath: arg("--smoke-test")
     property string replayPath: arg("--replay")
@@ -110,6 +111,17 @@ ApplicationWindow {
         onBusyChanged: if (!busy) root.voiceTurnRunning = false
     }
     Compositor { id: compositor }
+    GameAudio {
+        id: gameAudio
+        onStatusChanged: if(root.appArguments.indexOf("--voice-trace")>=0)console.warn("GAMEBUDDY_AUDIO "+status)
+    }
+    Timer {
+        interval:100;repeat:true;running:true
+        onTriggered:gameAudio.poll(root.arg("--game-pid"),
+            realtimeVoice.conversationActive || voice.speaking || companion.recording || companion.pendingRecording
+            || root.voiceTurnRunning || root.queuedVoice.length>0 || speech.state===TextToSpeech.Speaking,
+            root.duckGameAudio)
+    }
     RealtimePanel {
         id: realtimeVoice
         parent: compositor.active ? overlayScene : companionWindow.contentItem
@@ -537,6 +549,12 @@ ApplicationWindow {
                                 settingsEditor.text=JSON.stringify(s,null,2);buddy.save_settings(settingsEditor.text)
                             } }
                         }
+                        CheckBox {
+                            text:"Lower game volume during conversations";checked:root.duckGameAudio;Layout.leftMargin:24
+                            palette.windowText:"#c7fff0";palette.text:"#c7fff0";palette.base:"#254c49"
+                            onClicked:{const s=JSON.parse(buddy.settings_json);s.duck_game_audio=checked;buddy.save_settings(JSON.stringify(s));settingsEditor.text=JSON.stringify(s,null,2)}
+                        }
+                        Text { text:gameAudio.status+" · −12 dB, with automatic restoration";color:root.muted;font.pixelSize:12;Layout.leftMargin:24;Layout.rightMargin:24;Layout.fillWidth:true;wrapMode:Text.WordWrap }
                         TextArea {
                             id: settingsEditor
                             Layout.fillWidth: true; Layout.preferredHeight: 355; Layout.leftMargin: 24; Layout.rightMargin: 24
@@ -545,6 +563,7 @@ ApplicationWindow {
                             background: Rectangle { color: "#172332"; radius: 10; border.color: "#344355" }
                         }
                         GbButton { text: "Save model configuration"; accent: true; enabled: !buddy.busy; Layout.leftMargin: 24; onClicked: buddy.save_settings(settingsEditor.text) }
+
                         Text { text: "api_key_env is the name of an environment variable, such as OPENAI_API_KEY. Keep the key itself outside this file. Cloud models receive the text and frames submitted to them."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24 }
                     }
                 }
@@ -575,6 +594,7 @@ ApplicationWindow {
     }
     Timer { interval: 8000; running: root.smokePath.length > 0; onTriggered: { console.warn("GAMEBUDDY_SMOKE timed out waiting for a rendered frame"); Qt.exit(1) } }
     Component.onCompleted: {
+        if(smokePath.length && root.appArguments.indexOf("--smoke-models")>=0)root.page=2
         console.warn("GAMEBUDDY_READY game=" + (session.game || "") + " smoke=" + smokePath)
         if (replayPath.length > 0) replay.play()
     }

@@ -25,6 +25,7 @@ pub mod ffi {
         #[qproperty(bool, armed)]
         #[qproperty(bool, active)]
         #[qproperty(bool, listening)]
+        #[qproperty(bool, speaking)]
         #[qproperty(QString, status)]
         #[qproperty(QString, error)]
         #[qproperty(QString, device_name)]
@@ -57,6 +58,7 @@ pub struct VoiceInputRust {
     armed: bool,
     active: bool,
     listening: bool,
+    speaking: bool,
     status: QString,
     error: QString,
     device_name: QString,
@@ -74,6 +76,7 @@ impl Default for VoiceInputRust {
             armed: true,
             active: false,
             listening: false,
+            speaking: false,
             status: QString::from("Waiting for microphone"),
             error: QString::default(),
             device_name: QString::default(),
@@ -105,6 +108,7 @@ impl ffi::VoiceInput {
         self.as_mut().rust_mut().segmenter = Segmenter::default();
         self.as_mut().rust_mut().pcm.clear();
         self.as_mut().set_listening(false);
+        self.as_mut().set_speaking(false);
     }
     pub fn poll(
         mut self: Pin<&mut Self>,
@@ -203,6 +207,8 @@ impl ffi::VoiceInput {
                 if let Some(turn) = self.as_mut().rust_mut().segmenter.feed(&samples) {
                     finished = Some(turn);
                 }
+                let speaking = self.rust().segmenter.speaking();
+                self.as_mut().set_speaking(speaking);
             }
         }
         let status = if *self.listening() {

@@ -4,18 +4,28 @@ import {runInNewContext} from 'node:vm';
 import assert from 'node:assert/strict';
 const html=readFileSync(new URL('../crates/gamebuddy-app/assets/voice.html',import.meta.url),'utf8');
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-const pending=[],streams=[],messages=[],channels=[],speaker={srcObject:null,play:async()=>{}};
+const pending=[],streams=[],messages=[],channels=[],peers=[],activity=[],analysers=[],timers=new Set(),speaker={srcObject:null,play:async()=>{}};
+const node=()=>({connect(){},disconnect(){}});
+const tick=()=>{for(let i=0;i<5;i++)for(const fn of timers)fn()};
 const stream=()=>{const track={stopped:false,stop(){this.stopped=true}};const value={getTracks:()=>[track],getAudioTracks:()=>[track],track};streams.push(value);return value};
-const context={window:{},document:{getElementById:()=>speaker},console:{info(){}},setTimeout,clearTimeout,TextEncoder,
+const context={window:{},document:{getElementById:()=>speaker},console:{info(s){activity.push(JSON.parse(s.slice(16)))}},setTimeout,clearTimeout,TextEncoder,
+  setInterval(fn){timers.add(fn);return fn},clearInterval(fn){timers.delete(fn)},
   navigator:{mediaDevices:{getUserMedia:()=>new Promise(resolve=>pending.push(resolve)),enumerateDevices:async()=>[{kind:'audioinput',label:'Test mic',deviceId:'test'}]}},
-  AudioContext:class{createMediaStreamDestination(){return {stream:{getAudioTracks:()=>[{stop(){}}]}}}createConstantSource(){return {offset:{value:0},connect(){},start(){}}}async resume(){}async close(){}},
-  RTCPeerConnection:class{iceGatheringState='complete';addTransceiver(){return {sender:{replaceTrack:async()=>{}}}}createDataChannel(){const channel={readyState:'connecting',send(text){messages.push(JSON.parse(text))}};channels.push(channel);return channel}async createOffer(){return {type:'offer',sdp:'test'}}async setLocalDescription(v){this.localDescription=v}close(){}}
+  AudioContext:class{sampleRate=48000;destination={};createMediaStreamSource(){return node()}createGain(){return {...node(),gain:{value:1}}}createAnalyser(){const a={...node(),level:0,getFloatTimeDomainData(data){data.fill(this.level)}};analysers.push(a);return a}createMediaStreamDestination(){return {stream:{getAudioTracks:()=>[{stop(){}}]}}}createConstantSource(){return {offset:{value:0},connect(){},start(){}}}async resume(){}async close(){}},
+  RTCPeerConnection:class{constructor(){peers.push(this)}iceGatheringState='complete';addTransceiver(){return {sender:{replaceTrack:async()=>{}}}}createDataChannel(){const channel={readyState:'connecting',send(text){messages.push(JSON.parse(text))}};channels.push(channel);return channel}async createOffer(){return {type:'offer',sdp:'test'}}async setLocalDescription(v){this.localDescription=v}close(){}}
 };
 runInNewContext(script,context);
 const flush=async()=>{await new Promise(resolve=>setImmediate(resolve))};
 const voice=context.window.gamebuddyVoice;
 await voice.start('Test mic',false);
 assert.equal(pending.length,0,'spoken startup must never request a microphone');
+tick();assert.equal(activity.filter(e=>e.type==='input-pcm').length,0,'no microphone samples before activation');
+peers[0].ontrack({streams:[{}]});analysers.at(-1).level=0.1;tick();
+assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,true,'audible assistant speech is detected');
+voice.muteOutput(true);tick();
+assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,false,'muted output cannot duck the game');
+voice.muteOutput(false);analysers.at(-1).level=0;tick();
+assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,false,'a connected silent output is not speech');
 voice.updateContext('old observation');voice.updateContext('latest observation');
 assert.equal(messages.length,0,'wait for the session to connect');
 channels[0].readyState='open';channels[0].onopen();
@@ -35,8 +45,12 @@ const late=stream();oldDevice(late);await first;
 assert(late.track.stopped,'late permission result must release its own stream');
 const current=stream();newDevice(current);await second;
 assert(!current.track.stopped,'old result must not close the new microphone');
+analysers.at(-1).level=0.25;tick();
+const pcm=activity.filter(e=>e.type==='input-pcm').at(-1).value;
+assert.equal(pcm.length,320);assert(pcm.every(v=>v===8192),'48 kHz audio is converted into 20 ms 16 kHz PCM for VAD');
 await voice.setMicrophone(false,'Test mic');
 assert(current.track.stopped,'muting closes capture while voice output remains connected');
 voice.stop();
+assert.equal(timers.size,0,'disconnect closes every activity timer');
 assert(streams.every(s=>s.track.stopped),'mute must leave no microphone track open');
 console.log('Voice lifecycle passed: stale capture released, new session preserved, mute closes every stream.');

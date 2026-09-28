@@ -35,12 +35,27 @@ impl Default for ProviderConfig {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub reasoning: ProviderConfig,
     pub vision: ProviderConfig,
     #[serde(default)]
     pub speech: SpeechBackend,
+    #[serde(default = "ducking_enabled")]
+    pub duck_game_audio: bool,
+}
+fn ducking_enabled() -> bool {
+    true
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            reasoning: ProviderConfig::default(),
+            vision: ProviderConfig::default(),
+            speech: SpeechBackend::default(),
+            duck_game_audio: true,
+        }
+    }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]

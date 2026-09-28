@@ -21,6 +21,15 @@ WebEngineView {
     property bool proactivePaused: false
     property bool trace: false
     property string pageOrigin: ""
+    property bool userSpeaking: false
+    property bool assistantSpeaking: false
+    property double replyUntil: 0
+    property double inputAt: 0
+    property double outputAt: 0
+    property bool waitingForReply: false
+    readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply)
+    function clearActivity(){userSpeaking=false;assistantSpeaking=false;replyUntil=0;waitingForReply=false;transport.reset_speech()}
+    onStartedChanged: if(!started)clearActivity()
     onStatusChanged: if(trace)console.warn("GAMEBUDDY_REALTIME_STATUS " + status)
     signal transcript(string text)
     signal answer(string text)
@@ -87,6 +96,15 @@ WebEngineView {
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
     Timer { interval: 2000; repeat: true; running: panel.connected; onTriggered: panel.updateContext() }
+    Timer {
+        interval:100;repeat:true;running:panel.started
+        onTriggered:{
+            const now=Date.now()
+            if(now-panel.inputAt>1000 && panel.userSpeaking){panel.userSpeaking=false;transport.reset_speech()}
+            if(now-panel.outputAt>1000)panel.assistantSpeaking=false
+            panel.waitingForReply=panel.replyUntil>now
+        }
+    }
     RealtimeVoice {
         id: transport
         onEvent_jsonChanged: {
@@ -120,9 +138,21 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(event.type==="capture"){capturing=event.value;return}
+        if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;transport.reset_speech()};return}
         if(!started)return
-        if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
+        if(event.type==="input-pcm"){
+            if(!capturing)return
+            inputAt=Date.now()
+            const speaking=transport.detect_speech(JSON.stringify(event.value))
+            if(speaking && !userSpeaking){replyUntil=Date.now()+20000;waitingForReply=true}
+            if(!speaking && userSpeaking && waitingForReply)replyUntil=Date.now()+20000
+            userSpeaking=speaking
+        }
+        else if(event.type==="output-active"){
+            outputAt=Date.now();assistantSpeaking=event.value
+            if(assistantSpeaking){replyUntil=0;waitingForReply=false}
+        }
+        else if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
         else if(event.type==="error")fail(event.value)
         else if(event.type==="microphone-error") { if(voice.active)voice.toggle_listening();status="Microphone: "+event.value }
         else if(event.type==="ready") { connected=true;status=capturing?"Live voice · speak naturally":"Guide voice ready · mic off";narrate() }
