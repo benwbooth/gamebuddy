@@ -12,6 +12,7 @@ pub mod discovery;
 pub use discovery::*;
 pub mod captions;
 pub mod harness;
+pub mod navigation;
 pub mod plan;
 pub mod preparation;
 pub mod walkthrough;

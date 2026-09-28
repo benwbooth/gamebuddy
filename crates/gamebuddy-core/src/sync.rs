@@ -29,6 +29,10 @@ pub struct Progress {
     pub epoch: u64,
     pub current_step: Option<String>,
     pub completed: HashSet<String>,
+    /// Explicit player reports received through the voice/agent harness.
+    /// Kept distinct from the companion's direct confirmation controls.
+    #[serde(default)]
+    pub reported_completed: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -50,6 +54,7 @@ impl Synchronizer {
         self.progress.epoch += 1;
         self.progress.current_step = None;
         self.progress.completed.clear();
+        self.progress.reported_completed.clear();
         self.last_observation = None;
         self.pending_step = None;
         self.pending_count = 0;

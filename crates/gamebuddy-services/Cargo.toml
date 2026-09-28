@@ -18,6 +18,8 @@ base64 = "0.22"
 tempfile = "3"
 sha2 = "0.10"
 schemars.workspace = true
+scraper = "0.24"
+fs2 = "0.4"
 webrtc-vad = "0.4"
 hound = "3.5"
 

@@ -13,6 +13,8 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - A stdio MCP server exposing the same game tools to external agents.
 - Draggable compact companion, Linux mic-unmute activation, local speech-turn detection and whisper.cpp transcription, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
 - Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and conservative local VLM comparison. Similarity never completes objectives. [Spatial localization design and remaining work](docs/visual-localization.md).
+- Automatic, resumable location-atlas preparation using the selected reasoning provider, walkthrough text and screenshots. GameBuddy discovers reference maps, compares their images with known places, and caches the associations; no game-specific room list is built into the application. [Maps and next actions](docs/contextual-navigation.md).
+- A following/zoomable map OSD and prerequisite-aware next-action card, with goal changes, source preferences, explicit completion controls and separately recorded player reports through voice/MCP.
 - Linux Gamescope session launcher with a compositor overlay, session shortcuts, HTML interaction and game-only XComposite capture.
 - Lunchpail prepares the compositor before the emulator and retains its real game process/controller pipes; other platforms use the desktop companion.
 

@@ -45,8 +45,8 @@ impl Widget {
             "Widget ID must be a short identifier"
         );
         ensure!(
-            self.id != "current-step",
-            "The current-step widget is managed by GameBuddy"
+            !["current-step", "walkthrough-outline", "location-map"].contains(&self.id.as_str()),
+            "This widget is managed by GameBuddy"
         );
         ensure!(
             !self.title.trim().is_empty() && self.title.len() <= 200,

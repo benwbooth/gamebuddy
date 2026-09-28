@@ -238,7 +238,7 @@ ApplicationWindow {
         width: Screen.width
         height: Screen.height
         x: 0; y: 0
-        visible: compositor.active || (root.widgetsEnabled && (!!root.session.current || (root.session.widgets || []).length > 0 || root.editOverlay))
+        visible: compositor.active || (root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay))
         color: "transparent"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.editOverlay || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
@@ -246,7 +246,7 @@ ApplicationWindow {
         WebEngineView {
             id: widgetView
             parent: overlayScene
-            visible: root.widgetsEnabled && (!!root.session.current || (root.session.widgets || []).length > 0 || root.editOverlay)
+            visible: root.widgetsEnabled && (!!root.session.guide || (root.session.widgets || []).length > 0 || root.editOverlay)
             enabled: root.editOverlay || (compositor.active && companion.expanded)
             anchors.fill: parent
             backgroundColor: "transparent"
@@ -254,13 +254,14 @@ ApplicationWindow {
             settings.localContentCanAccessFileUrls: false
             settings.javascriptCanOpenWindows: false
             function updateWidgets() {
-                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, locked: !root.editOverlay}) + ")")
+                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, locked: !root.editOverlay}) + ")")
             }
             Component.onCompleted: loadHtml(buddy.widget_html())
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }
             onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
                 if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17))
                 else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
+                else if(message.startsWith("GAMEBUDDY_COMPLETE ")){buddy.select_step(message.slice(19));buddy.complete_step()}
             }
             onPermissionRequested: permission => permission.deny()
             onNavigationRequested: request => { if (request.url.toString() !== "about:blank" && !request.url.toString().startsWith("data:")) request.action = WebEngineView.IgnoreRequest }

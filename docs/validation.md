@@ -5,9 +5,9 @@ September 27, 2026, NixOS/KDE Wayland, RX 7900 XTX. This is evidence for the dev
 | Check | Result |
 | --- | --- |
 | Rust workspace build | Passed locally with Qt 6.11.2 |
-| Rust tests | 39 passed: 9 core, 7 overlay and 23 services; includes source interval splitting, frame rebinding, ordering across chapter containers, and selection of a new edition over an older launch cache |
+| Rust tests | 52 passed: 17 core, 7 overlay and 28 services; includes source intervals, frame rebinding, atlas validation/rebasing, repeated-room estimates, prerequisite-aware advice, goal completion, and stale-capture protection for player reports |
 | Strict workspace Clippy | Passed from the final Rust tree |
-| MCP | Real stdio handshake and all 11 tools listed; goal edit, text reference attachment, widget creation and outline restore exercised on a fixture |
+| MCP | Real stdio handshake and all 15 tools listed; atlas reads, map preferences and separately recorded player reports exercised, in addition to earlier goal/reference/widget/restore checks |
 | Qt UI | Actual compact icon, expanded companion and workbench rendered on Wayland; image captures inspected |
 | HTML interaction | Production Qt WebEngine inside Gamescope: widget dragged from (600,80) to (750,276), resized from 350×260 to 430×330, and persisted to SQLite |
 | Gamescope interaction | Live private-session fixture passed keyboard passthrough, Shift+Tab focus transfer, Escape release, Ctrl+Shift+Tab visibility, icon expansion/drag, and socket focus/hide/show commands |
@@ -42,3 +42,11 @@ Outstanding runtime gates: native Wayland game clients, Windows/macOS overlays a
 The compositor tests used Gamescope **3.16.29** from the project flake and Qt **6.11.2**. Initial fullscreen tests used a 1280×720 nested game canvas, which caused blurry scaling and a narrower image on this ultrawide display. The corrected fullscreen path uses the physical 5120×2160 mode; windowed fixtures retain 1280×720. The outer compositor used Wayland; game and UI used private Xwayland. Keyboard events were generated only in dedicated private integration sessions. Screenshot artifacts and logs are kept locally under `artifacts/gamescope/` and `artifacts/resolution/` (ignored by Git). No independent gameplay-localization accuracy is implied by the rendering/capture test.
 
 The GitHub workflow covers Rust core/services/CLI and overlay-library tests on Linux, Windows and macOS. It does not build Qt packages or establish runtime compatibility.
+
+## Application-built navigation atlas
+
+The normal preparation service, using the configured reasoning provider, reviewed the existing Faxanadu edition's 555 leaf actions and discovered 29 VGMaps references. Its persisted result has 117 source-bound places, 244 action-to-place bindings, and 83 estimated place-to-map associations. The remaining actions/places are explicitly unbound; these counts are coverage of generated evidence, not independent gameplay accuracy. No Faxanadu room or map list was authored into the repository. Re-running the ordinary `prepare` command reused the atlas without another model pass. All 554 exported route edges were checked against the planner, including transitions stored on chapter containers.
+
+The production HTML widgets were checked at the Gamescope fixture's 1280×720 resolution: area changes selected different maps, zoom worked, a manual map choice survived location changes, Follow restored automatic selection, and an uncertain observation cleared the live room label. The preview is generated from the application-built atlas using controlled reference-location inputs. It does not show a tracked live player.
+
+The private Gamescope fixture passed widget drag/resize, keyboard passthrough, focus shortcuts, orb interaction and uncontaminated game capture on the final two complete runs. Two preceding runs intermittently missed the synthetic orb-hover focus transition; additional timeout diagnostics were retained. Those passes do not establish that the intermittent synthetic-input issue is resolved. Proof images for the final run are under `/tmp/gamebuddy-overlay-test-YcVP2Rci/proof`; MCP results are in `artifacts/navigation-mcp-check.json`.

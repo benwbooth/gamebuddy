@@ -18,6 +18,12 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Build/resume a source-derived location atlas with the configured LLM.
+    PrepareAtlas {
+        guide: String,
+        #[arg(long, default_value = "")]
+        platform: String,
+    },
     Configure {
         path: PathBuf,
     },
@@ -120,6 +126,12 @@ fn main() -> Result<()> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let notify = |text: String| eprintln!("{text}");
     match args.command {
+        Action::PrepareAtlas { guide, platform } => {
+            let guide = store.guide(&guide)?;
+            let atlas =
+                gamebuddy_services::navigation::prepare_atlas(&store, &guide, &platform, &notify)?;
+            println!("{}", serde_json::to_string_pretty(&atlas)?);
+        }
         Action::EditPlan { guide, path } => {
             let edit = serde_json::from_slice(&std::fs::read(path)?)?;
             let result = plan::edit_plan(&store, &guide, edit)?;

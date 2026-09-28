@@ -119,6 +119,7 @@ pub struct BuddyRust {
     estimate: SyncEstimate,
     last_frame: Option<PathBuf>,
     game: String,
+    automatic_answer: String,
 }
 impl Default for BuddyRust {
     fn default() -> Self {
@@ -142,6 +143,7 @@ impl Default for BuddyRust {
             estimate: SyncEstimate::default(),
             last_frame: None,
             game: "Faxanadu".into(),
+            automatic_answer: String::new(),
         }
     }
 }
@@ -247,8 +249,8 @@ impl ffi::Buddy {
             });
         });
     }
-    fn refresh(self: Pin<&mut Self>) {
-        let result = (|| -> Result<String> {
+    fn refresh(mut self: Pin<&mut Self>) {
+        let result = (|| -> Result<(String, String)> {
             let data = self.rust();
             let store = Store::open(&data.root)?;
             let guides = store
@@ -262,13 +264,15 @@ impl ffi::Buddy {
                 0
             };
             let selected = data.guide.as_ref().and_then(|g| g.step(&data.selected));
-            let current = data.guide.as_ref().and_then(|g| {
-                data.sync
-                    .progress
-                    .current_step
-                    .as_deref()
-                    .and_then(|id| g.step(id))
-            });
+            let navigation = data
+                .guide
+                .as_ref()
+                .map(|g| {
+                    services::navigation::context(&store, g, &data.sync.progress, &data.estimate)
+                })
+                .transpose()?
+                .unwrap_or_else(|| json!({}));
+            let current = &navigation["guidance"]["now"];
             let widgets = data
                 .guide
                 .as_ref()
@@ -303,10 +307,29 @@ impl ffi::Buddy {
                 })
                 .and_then(|p| url::Url::from_file_path(p).ok())
                 .map(|u| u.to_string());
-            Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+            let automatic = if navigation["guidance"]["status"] == "ready" {
+                format!(
+                    "{}: {}",
+                    current["title"].as_str().unwrap_or_default(),
+                    current["instructions"].as_str().unwrap_or_default()
+                )
+            } else {
+                String::new()
+            };
+            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
         })();
         match result {
-            Ok(s) => self.set_state_json(q(s)),
+            Ok((state, automatic)) => {
+                if automatic != self.rust().automatic_answer {
+                    if !automatic.is_empty()
+                        || self.answer().to_string() == self.rust().automatic_answer
+                    {
+                        self.as_mut().set_answer(q(&automatic));
+                    }
+                    self.as_mut().rust_mut().automatic_answer = automatic;
+                }
+                self.set_state_json(q(state));
+            }
             Err(e) => self.set_message(q(format!("Could not read library: {e:#}"))),
         }
     }
@@ -568,11 +591,6 @@ impl ffi::Buddy {
                                 .and_then(|id| guide.step(id))
                         {
                             object.as_mut().rust_mut().selected = step.id.clone();
-                            object.as_mut().set_answer(q(format!(
-                                "{}: {}",
-                                step.title,
-                                step.instructions.chars().take(500).collect::<String>()
-                            )));
                         }
                         if let Err(e) = Store::open(&root).and_then(|s| {
                             s.save_progress(&guide, &sync.progress, "visual_observation")
@@ -660,7 +678,6 @@ impl ffi::Buddy {
                         object.as_mut().rust_mut().estimate.located_step=Some(id.clone());
                         object.as_mut().rust_mut().estimate.detail="Repeated local vision match. Location is an estimate; objective completion is unverified.".into();
                         object.as_mut().rust_mut().selected=id.clone();
-                        if let Some(step)=guide.step(&id){object.as_mut().set_answer(q(format!("Likely at {}. {}",step.title,step.instructions.chars().take(500).collect::<String>())));}
                         let _=Store::open(&root).and_then(|s|s.save_progress(&guide,&object.rust().sync.progress,"vision_location_estimate"));
                     }
                 } else {object.as_mut().rust_mut().vision_votes=None;}
@@ -746,6 +763,18 @@ impl ffi::Buddy {
         })();
         match result {
             Ok(()) => {
+                if kind == "confirm" {
+                    self.as_mut().rust_mut().estimate = SyncEstimate {
+                        observed_at_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        epoch: self.rust().sync.progress.epoch,
+                        status: "confirmed".into(),
+                        located_step: Some(selected),
+                        ..Default::default()
+                    };
+                }
                 self.as_mut().set_message(q("Progress saved"));
                 self.refresh();
             }
@@ -867,6 +896,13 @@ impl ffi::Buddy {
         if self.rust().root.as_os_str().is_empty() {
             return;
         }
+        if let Some(guide) = &self.rust().guide
+            && let Ok(progress) = Store::open(&self.rust().root).and_then(|s| s.progress(guide))
+            && progress.epoch > self.rust().sync.progress.epoch
+        {
+            self.as_mut().rust_mut().sync = Synchronizer::new(progress);
+            self.as_mut().rust_mut().estimate = SyncEstimate::default();
+        }
         let latest = self.rust().guide.as_ref().and_then(|g| {
             Store::open(&self.rust().root)
                 .and_then(|s| s.guide(&g.id))
@@ -889,7 +925,39 @@ impl ffi::Buddy {
                 self.as_mut().use_guide(guide);
             }
         }
-        self.refresh();
+        self.as_mut().refresh();
+        // Atlas preparation belongs to the application lifecycle, including
+        // imported guides, changed goals/references, and newly supplied maps.
+        if !*self.preparing()
+            && !std::env::args().any(|a| a == "--no-prepare")
+            && let Some(guide) = self.rust().guide.clone()
+            && let Ok(atlas) =
+                Store::open(&self.rust().root).and_then(|s| services::navigation::atlas(&s, &guide))
+            && atlas.status == "pending"
+        {
+            self.as_mut().set_preparing(true);
+            let root = self.rust().root.clone();
+            let platform = argument("--platform").unwrap_or_default();
+            let updates = self.qt_thread();
+            let thread = self.qt_thread();
+            std::thread::spawn(move || {
+                let result = Store::open(root).and_then(|store| {
+                    services::navigation::prepare_atlas(&store, &guide, &platform, &|message| {
+                        let _ = updates
+                            .queue(move |mut object| object.as_mut().set_message(q(message)));
+                    })
+                });
+                let _ = thread.queue(move |mut object| {
+                    object.as_mut().set_preparing(false);
+                    if let Err(error) = result {
+                        object.as_mut().set_message(q(format!(
+                            "Location atlas: {error:#}. Retry preparation to resume."
+                        )));
+                    }
+                    object.refresh();
+                });
+            });
+        }
     }
     pub fn save_widget_layout(mut self: Pin<&mut Self>, json: QString) {
         let result = (|| -> Result<()> {

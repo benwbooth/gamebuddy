@@ -188,6 +188,11 @@ pub fn prepare_game(
             &guide,
             &store.root.join("walkthroughs").join(&guide.id),
         )?;
+        if let Err(error) = crate::navigation::prepare_atlas(store, &guide, platform, progress) {
+            progress(format!(
+                "Walkthrough is available; location atlas preparation can be retried: {error:#}"
+            ));
+        }
     }
     progress(format!(
         "{} reference preparation finished. Watching the game for location matches.",

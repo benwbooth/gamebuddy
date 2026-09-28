@@ -176,7 +176,7 @@ Item {
             Column {
                 width: parent.width; spacing: 10
                 Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 12; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { width: parent.width; text: buddy.answer || (companion.session.current ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 14; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { width: parent.width; text: buddy.answer || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 14; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             }
         }
         RowLayout {

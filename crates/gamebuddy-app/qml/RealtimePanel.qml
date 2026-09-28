@@ -26,10 +26,11 @@ WebEngineView {
     settings.localContentCanAccessFileUrls: false
     settings.javascriptCanOpenWindows: false
     function context() {
-        return JSON.stringify({game:session.game, current:session.current, location_status:session.estimate?.status,
+        return JSON.stringify({game:session.game, current:session.current, location_status:session.navigation?.location?.status,
+            guidance:session.navigation?.guidance, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
             preparing:buddy.preparing, guide_revision:session.guide?.revision,
-            instruction:"This is live game context, not a player request. Offer a brief useful next action on a newly located step; stay quiet for unchanged or uncertain observations. Never mark tasks complete from this update."})
+            instruction:"This is live game context, not a player request. Offer a brief useful next action when the estimated room or eligible action changes. Use guidance.now and respect unconfirmed prerequisites. Stay quiet for unchanged or uncertain observations. Room identity does not establish inventory, player coordinates, or task completion. Never mark tasks complete from this update."})
     }
     function update() {
         if (!loaded) return

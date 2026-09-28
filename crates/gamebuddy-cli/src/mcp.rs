@@ -33,6 +33,18 @@ struct Show {
 struct Remove {
     id: String,
 }
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+struct MapPreference {
+    id: String,
+    enabled: bool,
+}
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+struct ProgressReport {
+    step_id: String,
+    player_report: String,
+    expected_revision: u64,
+    epoch: u64,
+}
 #[derive(Deserialize, schemars::JsonSchema)]
 struct Prepare {
     game: String,
@@ -74,6 +86,35 @@ fn result(value: anyhow::Result<Value>) -> CallToolResult {
 }
 #[tool_router(server_handler)]
 impl GameBuddy {
+    #[tool(
+        description = "Record an explicit statement by the player that a task is done. Never infer this from advice, a walkthrough or room identity. Stored separately as player-reported progress. Read current context for revision and epoch first."
+    )]
+    fn report_step_complete(
+        &self,
+        Parameters(report): Parameters<ProgressReport>,
+    ) -> CallToolResult {
+        self.call("report_step_complete", json!(report))
+    }
+    #[tool(
+        description = "Read automatically prepared rooms, maps, source bindings and coverage. Map coordinates and task completion are not inferred from room identity."
+    )]
+    fn get_atlas(&self) -> CallToolResult {
+        self.call("get_atlas", json!({}))
+    }
+
+    #[tool(
+        description = "Add a player-supplied or source-backed HTTPS map to the active game. Never invent URLs."
+    )]
+    fn add_map(&self, Parameters(map): Parameters<gamebuddy_core::MapAsset>) -> CallToolResult {
+        self.call("add_map", json!(map))
+    }
+
+    #[tool(
+        description = "Enable or disable an available reference map according to player preference."
+    )]
+    fn set_map_enabled(&self, Parameters(args): Parameters<MapPreference>) -> CallToolResult {
+        self.call("set_map_enabled", json!(args))
+    }
     #[tool(
         description = "Read timestamped captions and imported text for an enabled reference in a range of up to ten minutes. Missing captions are returned empty, never invented."
     )]

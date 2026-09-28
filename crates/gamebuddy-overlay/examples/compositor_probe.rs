@@ -316,7 +316,14 @@ fn main() -> anyhow::Result<()> {
     while cardinal(&conn, overlay, focus)? != 2 {
         ensure!(
             Instant::now() < deadline,
-            "Orb hover did not acquire pointer-only focus"
+            "Orb hover did not acquire pointer-only focus (mode={}, cursor_visible={}, pointer={:?})",
+            cardinal(&conn, overlay, focus)?,
+            cardinal(
+                &conn,
+                root,
+                atom(&conn, "GAMESCOPE_CURSOR_VISIBLE_FEEDBACK")?
+            )?,
+            conn.query_pointer(root)?.reply()?
         );
         thread::sleep(Duration::from_millis(50));
     }

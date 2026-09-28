@@ -5,11 +5,13 @@
 <style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;color:#e8f1f7;font:14px/1.5 system-ui,sans-serif}.widget{position:absolute;min-width:230px;min-height:130px;width:350px;height:260px;border:1px solid #86decb80;background:#142130f5;border-radius:13px;box-shadow:0 8px 28px #0005;overflow:hidden;display:flex;flex-direction:column}.widget header{padding:12px 16px;border-bottom:1px solid #ffffff18;display:flex;gap:14px;align-items:center;cursor:grab;touch-action:none;user-select:none}.brand{font-size:9px;letter-spacing:1.8px;color:#86decb}.title{font-weight:650;font-size:16px;line-height:1.25}.body{padding:14px 16px;overflow:auto;flex:1;white-space:pre-wrap}.resize{position:absolute;bottom:0;right:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,#86decb80 55%,#86decb80 60%,transparent 60%)}.locked .resize{display:none}.locked header{cursor:default}table{border-collapse:collapse;white-space:normal;width:100%;font-size:12px}td,th{padding:7px;text-align:left;border-bottom:1px solid #ffffff20}th{color:#86decb}ul{padding-left:18px;margin:0;white-space:normal}li{margin-bottom:9px}img{width:100%;height:auto;object-fit:contain}iframe{border:0;width:100%;min-height:200px}.source{color:#91a3b6;font-size:10px;padding-top:10px}.empty{position:absolute;top:28px;left:28px;width:320px;background:#142130ed;padding:22px;border-radius:13px;color:#b8cadd}.empty strong{color:#86decb;display:block;font-size:17px;margin-bottom:8px}
 .tree{white-space:normal;font-size:12px}.tree ul{list-style:none;padding-left:15px}.tree li{margin:3px 0}.tree summary{cursor:pointer;padding:4px;border-radius:5px}.tree .step{display:block;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:5px;border-radius:5px;width:100%}.tree .current{background:#86decb28;color:#b5ffe9;border-left:3px solid #86decb}.tree .done{color:#91a3b6}.tree .instructions{color:#b8cadd;font-size:11px;padding:4px 8px 10px}.preparation{white-space:normal;color:#efc783;font-size:11px;margin-bottom:12px}.location{color:#86decb;font-size:11px;margin-bottom:8px}
-</style></head><body><div id="widgets"></div><script>
+.guidance{white-space:normal}.eyebrow{color:#86decb;font-size:10px;letter-spacing:1px;text-transform:uppercase;margin:0 0 7px}.advice{font-size:14px;line-height:1.5}.reason{color:#afc1cf;font-size:11px;margin:12px 0;line-height:1.4}.next-action{padding:7px 0;border-top:1px solid #ffffff16;font-size:12px}.action-button,.map-toolbar button,.map-toolbar select{background:#263d48;border:1px solid #567c87;border-radius:6px;color:#e8f8ff;padding:6px 9px;font:inherit}.action-button{margin-top:12px;cursor:pointer}.map-panel{white-space:normal;padding:12px;display:flex;flex-direction:column;gap:8px}.map-toolbar{display:flex;gap:6px;align-items:center;font-size:11px}.map-toolbar select{min-width:0;flex:1}.map-toolbar button{cursor:pointer}.map-viewport{overflow:auto;min-height:140px;flex:1;background:#080f16;border-radius:7px;position:relative}.map-viewport img{display:block;margin:0 auto;max-width:none;image-rendering:pixelated;height:auto}.map-status{font-size:12px;color:#b5ffe9}.map-credit{font-size:10px;color:#9caebc;line-height:1.4}.map-route{display:flex;gap:5px;align-items:center;overflow:auto;font-size:11px}.map-stop{border:1px dashed #54717b;border-radius:6px;padding:6px;min-width:95px;max-width:180px}.map-stop.here{border:1px solid #86decb;background:#86decb20}.map-note{font-size:10px;color:#d7bc8f}.map-empty{padding:18px;font-size:12px;color:#b8cadd}
+[hidden]{display:none!important}</style></head><body><div id="widgets"></div><script>
 (() => {
   const host=document.getElementById('widgets');
   let layouts={}, last='', locked=true, active=null;
   let openNodes=new Set(), followed=null, guideId=null;
+  let mapChoice=null, followMap=true, mapZoom=1, mapScroll={x:0,y:0}, mapGuide=null, mapObserver=null;
   const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
   function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts))}
@@ -22,9 +24,11 @@
     if(active)return;
     if(state.layouts)layouts={...state.layouts,...layouts};
     const items=[...(state.widgets||[])];
-    if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
-    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:state.guide,progress:state.progress,estimate:state.estimate,preparation:state.preparation}});
-    const signature=JSON.stringify(items);if(signature===last)return;last=signature;host.replaceChildren();
+    if(state.navigation)items.unshift({id:'location-map',title:(state.game||state.guide?.game||'Game')+' · Location map',content:{kind:'map',map:state.navigation.map,guide_id:state.guide?.id,location_status:state.navigation.location?.status}});
+    if(state.navigation?.guidance)items.unshift({id:'current-step',title:(state.navigation.guidance.requirements?.length?'Check prerequisite · ':'')+(state.current?.title||'Next action'),content:{kind:'guidance',guidance:state.navigation.guidance}});
+    else if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
+    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:state.guide,progress:{...state.progress,current_step:state.current?.id},estimate:{status:state.navigation?.location?.status||state.estimate?.status,detail:state.navigation?.location?.detail||state.estimate?.detail},preparation:state.preparation}});
+    const signature=JSON.stringify(items);if(signature===last)return;last=signature;mapObserver?.disconnect();host.replaceChildren();
     if(!items.length){const empty=text('div','','empty');empty.append(text('strong','Preparing your guide'),text('div','Finding references and building the walkthrough. Chapters and steps will appear here automatically.'));host.append(empty);return}
     items.forEach((item,i)=>{
       const node=text('section','','widget');node.dataset.widgetId=item.id;
@@ -34,9 +38,9 @@
       if(c.kind==='outline'){
         body.classList.add('tree');const g=c.guide,steps=g.steps||[],byId=new Map(steps.map(s=>[s.id,s])),children=new Map();
         if(guideId!==g.id){openNodes=new Set();followed=null;guideId=g.id}
-        const current=c.progress?.current_step, completed=new Set(c.progress?.completed||[]), changed=current!==followed;
+        const current=c.progress?.current_step, completed=new Set([...(c.progress?.completed||[]),...(c.progress?.reported_completed||[])]), changed=current!==followed;
         if(changed){followed=current;let s=byId.get(current);while(s?.parent_id){openNodes.add(s.parent_id);s=byId.get(s.parent_id)}}
-        body.append(text('div',current?'Current: '+(byId.get(current)?.title||current):'Locating player · no step confirmed yet','location'));
+        body.append(text('div',current?'Suggested task: '+(byId.get(current)?.title||current):'Locating player · no step confirmed yet','location'));
         if(c.estimate?.status && c.estimate.status!=='located')body.append(text('div',c.estimate.detail||'Location uncertain','preparation'));
         if(c.preparation)body.append(text('div',c.preparation.message,'preparation'));
         else if(g.coverage_notes?.length)body.append(text('div',g.coverage_notes[0],'preparation'));
@@ -44,13 +48,61 @@
         function branch(parent){const ul=document.createElement('ul');for(const s of children.get(parent)||[]){
           const li=document.createElement('li'), hasChildren=children.has(s.id), row=text(hasChildren?'summary':'button',(completed.has(s.id)?'✓ ':s.id===current?'▶ ':'')+s.title,hasChildren?'':'step');
           if(!hasChildren)row.type='button';row.dataset.stepId=s.id;if(s.id===current){row.classList.add('current');row.setAttribute('aria-current','step')}
-          if(completed.has(s.id))row.classList.add('done');
+          if(completed.has(s.id))row.classList.add('done');if(c.progress?.reported_completed?.includes(s.id))row.title='Completion reported by player';
           if(hasChildren){const details=document.createElement('details');details.open=openNodes.has(s.id);details.addEventListener('toggle',()=>{if(details.open)openNodes.add(s.id);else openNodes.delete(s.id)});details.append(row,branch(s.id));li.append(details)}
           else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(text('div',s.instructions,'instructions'))});li.append(row);if(s.id===current)li.append(text('div',s.instructions,'instructions'))}
           ul.append(li)
         }return ul}
         body.append(branch(''));
         if(changed)requestAnimationFrame(()=>body.querySelector('[aria-current="step"]')?.scrollIntoView({block:'nearest'}));
+      }
+      else if(c.kind==='guidance'){
+        body.classList.add('guidance');const advice=c.guidance||{};
+        body.append(text('div',advice.requirements?.length?'Prerequisite unconfirmed':advice.status==='ready'?'Now · suggested action':advice.status==='blocked'?'Plan needs attention':'Plan · location unconfirmed','eyebrow'));
+        body.append(text('div',advice.reason||'Waiting for game context.','reason'));
+        if(advice.now)body.append(text('div',advice.now.instructions,'advice'));
+        if(advice.requirements?.length)body.append(text('div','Unconfirmed: '+advice.requirements.map(s=>s.title).join(' · '),'map-note'));
+        if(advice.next?.length){body.append(text('div','After completion · preview','eyebrow'));for(const step of advice.next)body.append(text('div',step.title,'next-action'))}
+        if(advice.now){const done=text('button','I completed this','action-button');done.type='button';done.addEventListener('click',()=>console.info('GAMEBUDDY_COMPLETE '+advice.now.id));body.append(done)}
+      }
+      else if(c.kind==='map'){
+        body.classList.add('map-panel');const map=c.map||{},maps=map.maps||[],places=map.places||[];
+        if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0}}
+        const status=text('div',map.current_place?'Estimated room: '+map.current_place.label:'Locating player · no room selected','map-status');body.append(status);
+        body.append(text('div','Room estimate only · player coordinates unavailable','map-note'));
+        const toolbar=text('div','','map-toolbar'),select=document.createElement('select'),follow=text('button','Follow player');
+        select.setAttribute('aria-label','Reference map');follow.type='button';
+        for(const asset of maps){const option=document.createElement('option');option.value=asset.id;option.textContent=asset.title;select.append(option)}
+        toolbar.append(select,follow);body.append(toolbar);
+        const controls=text('div','','map-toolbar'),minus=text('button','−'),plus=text('button','+'),fit=text('button','Fit');
+        minus.type=plus.type=fit.type='button';minus.setAttribute('aria-label','Zoom out');plus.setAttribute('aria-label','Zoom in');controls.append(minus,plus,fit);body.append(controls);
+        const selectionNote=text('div','','map-note');body.append(selectionNote);
+        const viewport=text('div','','map-viewport'),credit=text('div','','map-credit'),image=document.createElement('img');image.alt='Reference area map';
+        const empty=text('div','','map-empty');viewport.append(image,empty);body.append(viewport,credit);
+        function zoom(){if(image.naturalWidth&&viewport.clientWidth){const fitted=Math.min(viewport.clientWidth,viewport.clientHeight*image.naturalWidth/image.naturalHeight);image.style.width=Math.max(1,fitted*mapZoom)+'px'}}
+        mapObserver=new ResizeObserver(zoom);mapObserver.observe(viewport);
+        function choose(id){
+          const asset=maps.find(m=>m.id===id);if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.value=id||'';follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
+          selectionNote.textContent=followMap&&id===map.selected_map_id?'Map association estimated from reference material.':'Browsing reference material; player location is unchanged.';
+          image.hidden=!asset;empty.hidden=!!asset;image.onload=()=>{zoom();viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y};
+          image.onerror=()=>{image.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. The room estimate and source attribution remain available.'};
+          if(asset){try{if(new URL(asset.url).protocol==='https:')image.src=asset.url;else throw Error('Invalid map URL')}catch{image.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
+          else{empty.textContent=map.status==='building'?'GameBuddy is building this atlas from your references…':'No reference map for this area yet. You can supply a map through voice chat; recognized places appear below.';credit.textContent=''}
+          zoom();
+        }
+        let selected=followMap&&maps.some(m=>m.id===map.selected_map_id)?map.selected_map_id:mapChoice;
+        if(!maps.some(m=>m.id===selected))selected=maps[0]?.id;
+        choose(selected);select.disabled=!maps.length;
+        select.addEventListener('change',()=>{followMap=false;choose(select.value)});
+        follow.addEventListener('click',()=>{followMap=true;choose(maps.some(m=>m.id===map.selected_map_id)?map.selected_map_id:mapChoice)});
+        minus.addEventListener('click',()=>{mapZoom=Math.max(1,mapZoom/1.5);zoom()});plus.addEventListener('click',()=>{mapZoom=Math.min(16,mapZoom*1.5);zoom()});fit.addEventListener('click',()=>{mapZoom=1;mapScroll={x:0,y:0};viewport.scrollTo(0,0);zoom()});
+        viewport.addEventListener('scroll',()=>{mapScroll={x:viewport.scrollLeft,y:viewport.scrollTop}});
+        const route=[...(map.current_place?[map.current_place.id]:[]),...(map.route_places||[])].filter((id,i,all)=>i===0||id!==all[i-1]);
+        if(route.length){body.append(text('div','Planned stops · physical connections unverified','eyebrow'));const row=text('div','','map-route');route.forEach((id,i)=>{const p=places.find(p=>p.id===id);if(!p)return;if(i)row.append(text('span','→'));const stop=text('div',p.label,'map-stop'+(id===map.current_place?.id?' here':''));stop.title=p.landmarks;row.append(stop)});body.append(row)}
+        const roomSelect=document.createElement('select');roomSelect.setAttribute('aria-label','Browse known places');const prompt=document.createElement('option');prompt.textContent='Browse '+places.length+' source-derived places';prompt.value='';roomSelect.append(prompt);
+        for(const p of places){const option=document.createElement('option');option.value=p.id;option.textContent=p.label;roomSelect.append(option)}
+        const rooms=text('div','','map-toolbar');rooms.append(roomSelect);body.append(rooms);roomSelect.addEventListener('change',()=>{const place=places.find(p=>p.id===roomSelect.value);if(!place)return;followMap=false;choose(maps.some(m=>m.id===place.map_id)?place.map_id:undefined);empty.textContent=place.landmarks||'No map associated with this place.';status.textContent='Browsing: '+place.label+' · player location unchanged'});
+        if(map.status!=='ready')body.append(text('div','Atlas '+(map.status||'pending')+' · '+(map.reviewed_steps||0)+' reviewed actions','map-note'));
       }
       else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach(row=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));table.append(tr)});body.append(table)}
       else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach(v=>ul.append(text('li',v)));body.append(ul)}
@@ -59,7 +111,7 @@
       else body.append(text('div',c.body||''));
       if(item.source_step_ids?.length)body.append(text('div','Guide: '+item.source_step_ids.join(', '),'source'));node.append(body);
       const handle=text('div','','resize');handle.addEventListener('pointerdown',e=>begin(e,node,item.id,true));node.append(handle);
-      const box=layouts[item.id]||(c.kind==='outline'?{x:Math.max(0,innerWidth-430),y:30,width:400,height:Math.min(550,innerHeight-60)}:{x:28+(Math.max(0,i-1)%2)*375,y:30+Math.floor(Math.max(0,i-1)/2)*290,width:350,height:260});place(node,box);host.append(node);
+      const box=layouts[item.id]||(c.kind==='outline'?{x:Math.max(0,innerWidth-430),y:30,width:400,height:Math.min(550,innerHeight-60)}:c.kind==='map'?{x:28,y:Math.min(310,innerHeight/2),width:Math.min(520,innerWidth-56),height:Math.max(240,Math.min(470,innerHeight-Math.min(310,innerHeight/2)-30))}:c.kind==='guidance'?{x:28,y:30,width:410,height:250}:{x:450+(i%2)*375,y:30+Math.floor(i/2)*290,width:350,height:260});place(node,box);host.append(node);
     });
   }};
 })();

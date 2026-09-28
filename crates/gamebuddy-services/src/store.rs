@@ -83,6 +83,7 @@ impl Store {
         let mut progress = self.progress(&old)?;
         progress.epoch += 1;
         progress.completed.retain(|id| unchanged(id));
+        progress.reported_completed.retain(|id| unchanged(id));
         if progress.current_step.as_deref().is_some_and(|id| {
             !unchanged(id) || guide.step(id).is_none_or(|s| !guide.step_enabled(s))
         }) {
@@ -175,6 +176,20 @@ impl Store {
         self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,serde_json::to_string(value)?])?;
         Ok(())
     }
+    /// Publish derived data only while the input guide revision is still current.
+    pub fn put_for_guide<T: Serialize>(&self, guide: &Guide, key: &str, value: &T) -> Result<()> {
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision,
+            "Outline changed while derived data was being built; retry preparation"
+        );
+        self.put(key, value)?;
+        transaction.commit()?;
+        Ok(())
+    }
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
         let body: Option<String> = self
             .connection
@@ -199,8 +214,57 @@ impl Store {
             .get(&format!("progress:{}:{}", guide.id, guide.revision))?
             .unwrap_or_default())
     }
+    pub fn report_complete(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        step_id: &str,
+        report: &str,
+    ) -> Result<Progress> {
+        ensure!(
+            !report.trim().is_empty() && report.len() <= 1000,
+            "Include the player's short explicit completion report"
+        );
+        ensure!(
+            guide.step(step_id).is_some_and(|s| guide.step_enabled(s)),
+            "Unknown or disabled task"
+        );
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision,
+            "Outline changed; read the current context"
+        );
+        let mut progress = self.progress(guide)?;
+        ensure!(
+            progress.epoch == epoch,
+            "Game progress changed; read the current context"
+        );
+        progress.reported_completed.insert(step_id.into());
+        progress.epoch += 1;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        self.connection.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'player_report',?2)",
+            params![
+                guide.id,
+                serde_json::json!({"step_id":step_id,"report":report,"progress":progress})
+                    .to_string()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(progress)
+    }
     pub fn save_progress(&self, guide: &Guide, progress: &Progress, kind: &str) -> Result<()> {
         let tx = self.connection.unchecked_transaction()?;
+        ensure!(
+            progress.epoch >= self.progress(guide)?.epoch,
+            "Newer player progress exists; discard this stale observation"
+        );
         let body = serde_json::to_string(progress)?;
         tx.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![format!("progress:{}:{}",guide.id,guide.revision),body])?;
         tx.execute(
@@ -215,6 +279,35 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn player_reports_survive_stale_capture_and_require_current_epoch() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Guide", "# Buy\nPurchase the spell.").unwrap();
+        store.save_guide(&guide).unwrap();
+        let report = store
+            .report_complete(&guide, 0, "step-1", "I bought the spell")
+            .unwrap();
+        assert_eq!(report.epoch, 1);
+        assert!(report.completed.is_empty());
+        assert!(report.reported_completed.contains("step-1"));
+        assert!(
+            store
+                .save_progress(&guide, &Progress::default(), "stale_capture")
+                .is_err()
+        );
+        assert!(
+            store
+                .report_complete(&guide, 0, "step-1", "Old turn")
+                .is_err()
+        );
+        assert!(gamebuddy_core::step_complete(
+            &guide,
+            &store.progress(&guide).unwrap(),
+            "step-1"
+        ));
+    }
     #[test]
     fn guide_and_progress_survive_reopen_and_revision_isolation() {
         let dir = tempfile::tempdir().unwrap();
