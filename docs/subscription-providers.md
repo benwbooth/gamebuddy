@@ -22,6 +22,31 @@ During a launched game, **Hands-free** starts listening automatically if the mic
 
 The voice web page is bundled with the application and served on a private, ephemeral localhost port. Only that exact origin receives microphone permission while microphone activation is on. The frameless transport requires an incoming audio clock for proactive output: a locally generated zero-valued Web Audio track supplies it while capture is off, without accessing an input device. Speech cues use the installed app-server’s `thread/realtime/appendSpeech`. Background observations use `session.context.append` with `channel: commentary` over the same WebRTC data channel, in Unicode-safe chunks of at most 500 bytes. App-server `appendText` currently defaults to speakable content even with a developer role, so it must not carry periodic observations. Unchanged context is suppressed. An unsupported CLI, lost connection or rejected account is reported in the companion; it does not silently enable robotic speech or switch billing providers.
 
+## Conversation continuity
+
+GameBuddy stores completed user and assistant voice transcripts immediately in
+its local `gamebuddy.sqlite`, alongside text-coach exchanges. History belongs
+to the game title (case and whitespace normalized), independently of the selected
+guide, guide revision, provider, voice connection, or capture session. Returning
+players receive a welcome-back greeting. A new voice session receives the recent
+dialogue; its reasoning handoff and the pluggable text coach receive the same
+history. The `get_conversation` tool searches and pages older exchanges.
+
+Startup history is bounded to 24 messages and 4 KB of serialized text, with
+explicitly marked excerpts for long messages. The full transcript remains in the
+database; this is retrieval-based memory, not an unlimited model context or an
+automatic summary. Existing guide-scoped text history is imported once. Voice
+exchanges made before this feature were not saved and cannot be recovered.
+
+Conversation recall does not restore emulator state or replay past location and
+completion reports. Historical dialogue is identified as such; current screen
+observations and new reports determine present location. Loading a save state is
+not currently an explicit emulator event received by GameBuddy. Assistant text
+records generated speech, which could have been muted or interrupted, and an
+utterance cut off before a final transcript arrives is not guaranteed to be saved.
+Raw microphone audio is not added to the conversation archive. Recent history and
+requested search results are sent to the selected conversation provider as context.
+
 ## Walkthrough preparation and screen awareness
 
 Preparation downloads/cache-reuses video and available captions, builds a visual index, divides uncompiled chapters into two-minute intervals, and asks the selected reasoning provider to interpret twelve ordered frames plus timed transcript evidence per interval. If captions are missing, local whisper.cpp transcribes that interval. Each successful section is saved immediately; failed sections can be retried on the next preparation. Player-created steps and existing compiled children are preserved.
@@ -45,6 +70,7 @@ Fingerprint retrieval separately matches reference frames. Repeated, sufficientl
 - `cargo run -p gamebuddy-services --example subscription_probe -- codex [image]`
 - `GAMEBUDDY_PROBE_MODEL=sonnet cargo run -p gamebuddy-services --example subscription_probe -- claude [image]`
 - `scripts/test-realtime` uses a subscription call and isolated virtual audio devices to check the real microphone-to-WebRTC-to-widget path.
+- `scripts/test-conversation` launches the real app twice with private virtual audio: the first session learns a phrase, and the second recalls it into a widget without the phrase in its request.
 - `scripts/test-gamescope` verifies the compositor and HTML widget interactions.
 
 Protocol reference: [Codex app-server](https://developers.openai.com/codex/app-server), version-matched schemas from `codex app-server generate-json-schema --experimental`. Subscription policy: [Claude Agent SDK and Claude plans](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). These interfaces and account policies can change.

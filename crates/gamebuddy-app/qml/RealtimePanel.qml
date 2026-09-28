@@ -27,6 +27,8 @@ WebEngineView {
     property double inputAt: 0
     property double outputAt: 0
     property bool waitingForReply: false
+    property bool returningPlayer: false
+    property string voiceGame: ""
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply)
     function clearActivity(){userSpeaking=false;assistantSpeaking=false;replyUntil=0;waitingForReply=false;transport.reset_speech()}
     onStartedChanged: if(!started)clearActivity()
@@ -44,13 +46,17 @@ WebEngineView {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
-            preparing:buddy.preparing, guide_revision:session.guide?.revision, microphone_active:voice.active,
+            preparing:buddy.preparing, guide_revision:session.guide?.revision, microphone_active:voice.active, returning_player:returningPlayer,
             instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})
     }
     function update() {
         if (!loaded) return
-        const wanted=enabledBackend && !failed && (voice.active || (automaticSession && spokenReplies && !proactivePaused && !!session.game))
+        if(started && voiceGame!==session.game){
+            started=false;connected=false;transport.disconnect();runJavaScript("gamebuddyVoice.stop()")
+        }
+        const wanted=enabledBackend && !failed && !!session.game && (voice.active || (automaticSession && spokenReplies && !proactivePaused))
         if(wanted && !started) {
+            voiceGame=session.game;returningPlayer=false
             started=true; status="Connecting live voice…"; lastContext=context()
             runJavaScript("gamebuddyVoice.muteOutput("+(!spokenReplies)+");gamebuddyVoice.start("+JSON.stringify(voice.device_name)+","+voice.active+")")
         } else if(!wanted && started) {
@@ -110,7 +116,8 @@ WebEngineView {
         onEvent_jsonChanged: {
             const event=JSON.parse(event_json), p=event.params || {}
             if(panel.trace && event.method==="thread/realtime/transcript/done")console.warn("GAMEBUDDY_REALTIME_TRANSCRIPT role="+p.role+" characters="+(p.text||"").length)
-            if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
+            if(event.method==="gamebuddy/conversation")panel.returningPlayer=p.returning_player===true
+            else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="thread/realtime/transcript/done") {

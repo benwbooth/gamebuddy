@@ -34,6 +34,9 @@ pub fn run(
     directory: &Path,
     screenshot: impl Fn(&str) -> Result<()>,
 ) -> Result<()> {
+    if let Ok(phase) = std::env::var("GAMEBUDDY_TEST_MEMORY") {
+        return memory(&phase);
+    }
     if std::env::var_os("GAMEBUDDY_TEST_REALTIME").is_some() {
         return realtime(conn, game, overlay, focus, screenshot);
     }
@@ -143,10 +146,12 @@ pub fn run(
     request.respond(tiny_http::Response::from_string(
         serde_json::json!({"message":{"content":answer}}).to_string(),
     ))?;
-    let guide: String = store.get("active_guide")?.context("active guide")?;
+    let guide_id: String = store.get("active_guide")?.context("active guide")?;
+    let guide = store.guide(&guide_id)?;
     wait("coach answer persisted", || {
-        let history = store.get::<serde_json::Value>(&format!("conversation:{guide}"))?;
-        Ok(history.is_some_and(|h| h.to_string().contains("Voice integration test complete")))
+        Ok(!store
+            .conversation_messages(&guide.game, "Voice integration test complete", None, 1)?
+            .is_empty())
     })?;
     ensure!(
         cardinal(conn, overlay, focus)? == 0,
@@ -200,6 +205,90 @@ pub fn run(
     println!(
         "GAMEBUDDY_VOICE_TEST_PASS muted startup, unmute/capture, passive focus, silence, mute/close, real VAD/Whisper guide command, delayed provider question/reply, resume, Stop listening stays stopped, explicit unmute resumes, ephemeral audio"
     );
+    Ok(())
+}
+
+/// Two separate application launches, with actual subscription WebRTC audio.
+/// The second request deliberately does not contain the phrase to be recalled.
+fn memory(phase: &str) -> Result<()> {
+    let sink = std::env::var("GAMEBUDDY_TEST_MIC_SINK")?;
+    ensure!(
+        sink.starts_with("gamebuddy_test_"),
+        "Private test audio required"
+    );
+    let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+    let log = std::env::var("GAMEBUDDY_TEST_LOG")?;
+    wait("memory voice connects", || {
+        Ok(std::fs::read_to_string(&log)?.contains("Live voice · speak naturally"))
+    })?;
+    wait("startup greeting persisted", || {
+        Ok(store
+            .conversation_messages(
+                "Faxanadu",
+                if phase == "recall" {
+                    "Welcome back"
+                } else {
+                    "I'm GameBuddy"
+                },
+                None,
+                1,
+            )?
+            .len()
+            == 1)
+    })?;
+    thread::sleep(Duration::from_secs(22)); // finish the greeting before speaking
+    ensure!(
+        Command::new("paplay")
+            .args([
+                "--device",
+                &sink,
+                &std::env::var("GAMEBUDDY_TEST_VOICE_WAV")?
+            ])
+            .status()?
+            .success(),
+        "Speech playback failed"
+    );
+    if phase == "save" {
+        wait("user phrase committed", || {
+            Ok(!store
+                .conversation_messages("Faxanadu", "silver lantern", None, 10)?
+                .iter()
+                .filter(|m| m.role == "user")
+                .collect::<Vec<_>>()
+                .is_empty())
+        })?;
+        wait("spoken acknowledgement committed", || {
+            Ok(store
+                .conversation_messages("Faxanadu", "silver lantern", None, 10)?
+                .iter()
+                .any(|m| m.role == "assistant"))
+        })?;
+    } else {
+        wait("recalled phrase appears in a new widget", || {
+            let id: String = store.get("active_guide")?.context("guide")?;
+            Ok(
+                gamebuddy_services::harness::widgets(&store, &store.guide(&id)?)?
+                    .iter()
+                    .any(|w| {
+                        w.title == "Memory Restored"
+                            && serde_json::to_string(&w.content)
+                                .unwrap_or_default()
+                                .to_lowercase()
+                                .contains("silver lantern")
+                    }),
+            )
+        })?;
+        let sessions: std::collections::HashSet<_> = store
+            .conversation_messages("Faxanadu", "", None, 50)?
+            .into_iter()
+            .map(|m| m.session_id)
+            .collect();
+        ensure!(
+            sessions.len() >= 2,
+            "Test did not cross a fresh voice session"
+        );
+    }
+    println!("GAMEBUDDY_MEMORY_TEST_PASS phase={phase}");
     Ok(())
 }
 

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Two fresh GameBuddy processes, a shared isolated DB and private virtual audio.
+# Uses the signed-in Codex subscription. Run inside nix develop.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-overlay --bin gamebuddy --bin gamebuddy-cli --examples
+runtime_dir="$(mktemp -d /tmp/gamebuddy-conversation-test-XXXXXXXX)"
+export GAMEBUDDY_TEST_DATA="$runtime_dir/data" GAMEBUDDY_TEST_REALTIME=1
+export GAMEBUDDY_TEST_MIC_SINK="gamebuddy_test_input_$$"
+export GAMEBUDDY_TEST_MIC_SOURCE="gamebuddy_test_mic_$$"
+export GAMEBUDDY_AUDIO_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE"
+export PULSE_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE" PULSE_SINK="gamebuddy_test_output_$$"
+modules=()
+cleanup(){ for module in "${modules[@]}"; do pactl unload-module "$module"; done; }
+trap cleanup EXIT
+modules+=("$(pactl load-module module-null-sink sink_name="$GAMEBUDDY_TEST_MIC_SINK")")
+modules+=("$(pactl load-module module-remap-source master="$GAMEBUDDY_TEST_MIC_SINK.monitor" source_name="$GAMEBUDDY_TEST_MIC_SOURCE")")
+modules+=("$(pactl load-module module-null-sink sink_name="$PULSE_SINK")")
+pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 0
+./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
+cat >"$runtime_dir/settings.json" <<'JSON'
+{"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
+JSON
+./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
+for phase in save recall; do
+  export GAMEBUDDY_TEST_MEMORY="$phase"
+  export GAMEBUDDY_TEST_VOICE_WAV="$runtime_dir/$phase.wav"
+  export GAMEBUDDY_TEST_LOG="$runtime_dir/$phase.log"
+  if [[ "$phase" == save ]]; then
+    utterance='Remember our route nickname: silver lantern. We want the cautious route. Please repeat the nickname.'
+  else
+    utterance='What route nickname did I ask you to remember in our last conversation? Put it in a text widget titled Memory Restored and tell me.'
+  fi
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" "$utterance"
+  ./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+    ./target/debug/examples/compositor_probe "$runtime_dir/$phase-proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
+  rg 'GAMEBUDDY_MEMORY_TEST_PASS' "$GAMEBUDDY_TEST_LOG"
+done
+printf 'Conversation restart evidence: %s\n' "$runtime_dir"

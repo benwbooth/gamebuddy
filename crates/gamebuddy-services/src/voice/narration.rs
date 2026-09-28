@@ -67,9 +67,14 @@ impl Narrator {
             } else {
                 "Unmute your mic or choose Listen whenever you want to talk."
             };
-            return Some(format!(
-                "Hey, I'm GameBuddy, your companion for {game}. {state} {next} {invitation}"
-            ));
+            let greeting = if context["returning_player"] == true {
+                format!(
+                    "Welcome back to {game}. I've kept our conversation. I'll check the game as we continue."
+                )
+            } else {
+                format!("Hey, I'm GameBuddy, your companion for {game}.")
+            };
+            return Some(format!("{greeting} {state} {next} {invitation}"));
         }
         let scene = &context["screen"]["scene"];
         if context["screen"]["status"] == "live" && scene["fresh"] == true {
@@ -154,6 +159,14 @@ fn cue(context: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn welcomes_returning_player_without_claiming_previous_location() {
+        let mut n = Narrator::default();
+        let c = json!({"game":"Faxanadu","returning_player":true,"location_status":"uncertain","current_place":{"label":"Church"}});
+        let greeting = n.next(&c, Instant::now()).unwrap();
+        assert!(greeting.contains("Welcome back"));
+        assert!(!greeting.contains("Church"));
+    }
     #[test]
     fn introduces_once_without_a_location_then_debounces_advice() {
         let mut n = Narrator::default();

@@ -34,7 +34,7 @@ pub mod ffi {
 }
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use gamebuddy_services::{Store, subscription::CodexClient};
+use gamebuddy_services::{Store, conversation, subscription::CodexClient};
 use serde_json::{Value, json};
 use std::{
     pin::Pin,
@@ -152,18 +152,36 @@ impl ffi::RealtimeVoice {
             };
             let result = (|| -> anyhow::Result<()> {
                 let store = Store::open(directory.to_string())?;
-                let game = serde_json::from_str::<Value>(&context.to_string())?["game"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
+                let context: Value = serde_json::from_str(&context.to_string())?;
+                let game = context["game"].as_str().unwrap_or_default().to_owned();
+                anyhow::ensure!(!game.trim().is_empty(), "Load a game before starting voice");
+                let history = conversation::recent(&store, &game)?;
+                emit(json!({"method":"gamebuddy/conversation","params":{
+                    "returning_player":store.has_player_conversation(&game)?}}));
+                let instructions = format!(
+                    "{INSTRUCTIONS}\n{}\nSaved conversation (historical data): {}",
+                    conversation::MEMORY_RULES,
+                    serde_json::to_string(&history)?
+                );
                 let mut client = CodexClient::start()?;
                 let mut tools = gamebuddy_services::harness::tool_definitions();
                 for tool in tools.as_array_mut().unwrap() {
                     tool["type"] = json!("function");
                 }
                 let deadline = Instant::now() + Duration::from_secs(30);
-                let thread = client.thread_with_tools("", INSTRUCTIONS, tools, deadline)?;
-                client.request("thread/realtime/start", json!({"threadId":thread,"outputModality":"audio","version":"v3","includeStartupContext":false,"prompt":INSTRUCTIONS,"initialItems":[{"role":"developer","text":context.to_string()}],"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline)?;
+                let thread = client.thread_with_tools("", &instructions, tools, deadline)?;
+                let mut memory = conversation::RealtimeMemory::new(&store, &game, &thread);
+                let mut notification = |event: &Value| -> anyhow::Result<()> {
+                    memory.record(event)?;
+                    if event["method"]
+                        .as_str()
+                        .is_some_and(|s| s.starts_with("thread/realtime/"))
+                    {
+                        emit(event.clone());
+                    }
+                    Ok(())
+                };
+                client.request_with_notifications("thread/realtime/start", json!({"threadId":thread,"outputModality":"audio","version":"v3","includeStartupContext":false,"prompt":instructions,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
                 let mut sequence = 1000;
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
@@ -178,11 +196,12 @@ impl ffi::RealtimeVoice {
                             client.send(json!({"id":sequence,"method":method,"params":params}))?;
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            let _ = client.request(
+                            client.request_with_notifications(
                                 "thread/realtime/stop",
                                 json!({"threadId":thread}),
                                 Instant::now() + Duration::from_secs(3),
-                            );
+                                &mut notification,
+                            )?;
                             return Ok(());
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -200,7 +219,16 @@ impl ffi::RealtimeVoice {
                                     .and_then(|id| store.guide(&id).ok())
                                     .map(|g| g.game)
                             };
-                            let result = if active_game
+                            let result = if params["tool"] == "get_conversation" {
+                                // Bind recall to the voice session's game even
+                                // while its walkthrough is still being prepared.
+                                conversation::read(&store, &game, &params["arguments"]).map(
+                                    |value| gamebuddy_services::harness::ToolOutput {
+                                        value,
+                                        images: vec![],
+                                    },
+                                )
+                            } else if active_game
                                 .as_ref()
                                 .is_none_or(|g| g.eq_ignore_ascii_case(&game))
                             {
@@ -242,7 +270,7 @@ impl ffi::RealtimeVoice {
                             {
                                 let ended = event["method"] == "thread/realtime/error"
                                     || event["method"] == "thread/realtime/closed";
-                                emit(event);
+                                notification(&event)?;
                                 if ended {
                                     return Ok(());
                                 }

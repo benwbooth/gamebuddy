@@ -114,6 +114,17 @@ impl CodexClient {
         Ok(())
     }
     pub fn request(&mut self, method: &str, params: Value, deadline: Instant) -> Result<Value> {
+        self.request_with_notifications(method, params, deadline, |_| Ok(()))
+    }
+    /// Startup/shutdown can interleave transcript/SDP notifications with RPC
+    /// responses. Give realtime a chance to persist/deliver every notification.
+    pub fn request_with_notifications(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+        mut notification: impl FnMut(&Value) -> Result<()>,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(json!({"id":id,"method":method,"params":params}))?;
@@ -125,6 +136,9 @@ impl CodexClient {
                     bail!("Codex {method}: {error}");
                 }
                 return Ok(value["result"].clone());
+            }
+            if value.get("id").is_none() {
+                notification(&value)?;
             }
         }
     }
