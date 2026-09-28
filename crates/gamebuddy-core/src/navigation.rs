@@ -149,6 +149,8 @@ pub struct PlaceTracker {
     pub reference_step_id: Option<String>,
     pub status: String,
     pub detail: String,
+    pub located_at_ms: u64,
+    pub session_id: String,
     pending: Option<String>,
     votes: u32,
     last_place: Option<String>,
@@ -156,6 +158,48 @@ pub struct PlaceTracker {
 }
 
 impl PlaceTracker {
+    pub fn for_session(session_id: String) -> Self {
+        Self {
+            session_id,
+            ..Default::default()
+        }
+    }
+    pub fn adopt_visual(&mut self, other: &Self, now: u64) {
+        if other.epoch != self.epoch
+            || other.status != "estimated"
+            || other.located_at_ms <= self.located_at_ms
+            || now.saturating_sub(other.located_at_ms) > 30_000
+        {
+            return;
+        }
+        self.located_at_ms = other.located_at_ms;
+        if self.status == "reported" && self.place_id == other.place_id {
+            return;
+        }
+        if self.place_id != other.place_id {
+            self.reference_step_id = other.reference_step_id.clone();
+            self.room_entry_step = other.reference_step_id.clone();
+        }
+        self.place_id = other.place_id.clone();
+        self.last_place = other.place_id.clone();
+        self.status = "estimated".into();
+        self.detail = other.detail.clone();
+    }
+    pub fn report(&mut self, place: &str, step: &str, epoch: u64, at: u64, report: &str) {
+        *self = Self {
+            epoch,
+            observed_at_ms: at,
+            located_at_ms: at,
+            place_id: Some(place.into()),
+            reference_step_id: Some(step.into()),
+            status: "reported".into(),
+            detail: format!("Your location report: {report}"),
+            last_place: Some(place.into()),
+            room_entry_step: Some(step.into()),
+            session_id: self.session_id.clone(),
+            ..Default::default()
+        };
+    }
     pub fn observe(
         &mut self,
         guide: &Guide,
@@ -167,13 +211,19 @@ impl PlaceTracker {
         if self.epoch != epoch {
             *self = Self {
                 epoch,
+                session_id: self.session_id.clone(),
                 ..Default::default()
             };
         }
+        let retained = self.place_id.is_some()
+            && (self.status == "reported" || now.saturating_sub(self.located_at_ms) <= 30_000);
         if estimate.epoch != epoch
             || estimate.observed_at_ms == 0
-            || now.saturating_sub(estimate.observed_at_ms) > 15_000
+            || now.saturating_sub(estimate.observed_at_ms) > 30_000
         {
+            if retained {
+                return;
+            }
             self.place_id = None;
             self.reference_step_id = None;
             self.pending = None;
@@ -188,8 +238,10 @@ impl PlaceTracker {
             return;
         }
         self.observed_at_ms = estimate.observed_at_ms;
-        self.place_id = None;
-        self.reference_step_id = None;
+        if !retained {
+            self.place_id = None;
+            self.reference_step_id = None;
+        }
         let direct = estimate
             .located_step
             .as_deref()
@@ -229,7 +281,13 @@ impl PlaceTracker {
                 self.pending = Some(place.clone());
                 self.votes = 1;
             }
-            if direct.is_some() || self.votes >= 2 {
+            // One frame must not overrule what the player just told us. Later
+            // repeated observations may move the location as play continues.
+            if (direct.is_some() && self.status != "reported") || self.votes >= 2 {
+                if self.status == "reported" && self.place_id.as_ref() == Some(&place) {
+                    self.located_at_ms = estimate.observed_at_ms;
+                    return;
+                }
                 // Keep the action cursor stable within a room. Repeated visits
                 // can have identical screenshots but different source steps.
                 if self.last_place.as_ref() != Some(&place) || estimate.status == "confirmed" {
@@ -238,6 +296,7 @@ impl PlaceTracker {
                 }
                 self.place_id = Some(place);
                 self.reference_step_id = self.room_entry_step.clone();
+                self.located_at_ms = estimate.observed_at_ms;
                 self.status = "estimated".into();
                 self.detail = "Estimated room from reference evidence; player position within the map is unknown.".into();
                 return;
@@ -245,6 +304,9 @@ impl PlaceTracker {
         } else {
             self.pending = None;
             self.votes = 0;
+        }
+        if retained {
+            return;
         }
         self.status = "uncertain".into();
         self.detail = "Location is uncertain; waiting for a repeated, distinct room match.".into();
@@ -431,6 +493,8 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
         "A prerequisite is still unconfirmed. Complete or confirm it before the target task."
     } else if goal.is_some() {
         "Following your selected goal and its prerequisites."
+    } else if location.status == "reported" {
+        "Suggested from the location you reported and unfinished walkthrough tasks."
     } else if location.place_id.is_some() {
         "Suggested from the estimated room and unfinished walkthrough tasks."
     } else {
@@ -687,13 +751,23 @@ mod tests {
         estimate.observed_at_ms = 300;
         estimate.candidates.push(candidate("step-1", 0.90));
         tracker.observe(&guide, &atlas, &estimate, 0, 300);
-        assert!(tracker.place_id.is_none());
+        assert_eq!(
+            tracker.place_id.as_deref(),
+            Some("shop"),
+            "One ambiguous frame retains a recent positive location"
+        );
+        let mut unknown = PlaceTracker::default();
+        unknown.observe(&guide, &atlas, &estimate, 0, 300);
+        assert!(
+            unknown.place_id.is_none(),
+            "Ambiguous evidence cannot establish a new location"
+        );
         estimate.located_step = Some("step-2".into());
         estimate.status = "located".into();
         estimate.observed_at_ms = 400;
         tracker.observe(&guide, &atlas, &estimate, 0, 400);
         assert!(tracker.place_id.is_some());
-        tracker.observe(&guide, &atlas, &estimate, 0, 20_000);
+        tracker.observe(&guide, &atlas, &estimate, 0, 31_000);
         assert!(
             tracker.place_id.is_none(),
             "Stale observations must clear live room selection"

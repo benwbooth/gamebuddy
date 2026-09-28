@@ -301,6 +301,14 @@ ApplicationWindow {
                 else if(message.startsWith("GAMEBUDDY_DISMISS "))buddy.set_widget_visible(message.slice(18),false)
                 else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
                 else if(message.startsWith("GAMEBUDDY_COMPLETE ")){buddy.select_step(message.slice(19));buddy.complete_step()}
+                else if(message.startsWith("GAMEBUDDY_MAP_REQUEST ")){
+                    const id=message.slice(22), preview=buddy.map_preview(id)
+                    if(preview.length)widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
+                }
+                else if(message.startsWith("GAMEBUDDY_SOURCE_OPEN ")){
+                    try { const url=JSON.parse(message.slice(22)); if(/^https?:\/\//.test(url)) Qt.openUrlExternally(url) } catch(e) {}
+                }
+                else if(root.appArguments.indexOf("--navigation-trace")>=0 && (message.startsWith("GAMEBUDDY_MAP_VIEW ") || message.startsWith("GAMEBUDDY_OUTLINE ") || message.startsWith("GAMEBUDDY_PICKER ") || message.startsWith("GAMEBUDDY_PROVENANCE ") || message.startsWith("GAMEBUDDY_WIDGET_SOURCES ")))console.warn(message)
             }
             onPermissionRequested: permission => permission.deny()
             onNavigationRequested: request => { if (request.url.toString() !== "about:blank" && !request.url.toString().startsWith("data:")) request.action = WebEngineView.IgnoreRequest }

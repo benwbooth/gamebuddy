@@ -2,6 +2,8 @@
 #[allow(dead_code)]
 pub mod crop_probe;
 #[allow(dead_code)]
+pub mod navigation_probe;
+#[allow(dead_code)]
 pub mod voice_probe;
 use std::{
     fs::{File, OpenOptions},

@@ -18,6 +18,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+pub mod placement;
+pub mod tracking;
+pub use tracking::{LocationReport, report_location};
+
+pub fn tracker_key(guide: &Guide) -> String {
+    format!("place-tracker:{}:{}", guide.id, guide.revision)
+}
+
 fn key(guide: &Guide) -> String {
     format!("atlas:{}", guide.id)
 }
@@ -425,11 +433,40 @@ fn build_atlas(
     Ok(atlas)
 }
 
+pub fn cached_map_path(store: &Store, map: &MapAsset) -> std::path::PathBuf {
+    store
+        .root
+        .join("maps")
+        .join(format!("{:x}.jpg", Sha256::digest(map.url.as_bytes())))
+}
+
+pub fn cached_preview(store: &Store, guide: &Guide, id: &str) -> Result<String> {
+    use base64::Engine;
+    let atlas = atlas(store, guide)?;
+    let map = atlas
+        .maps
+        .iter()
+        .find(|m| m.id == id && m.enabled)
+        .context("Unknown map")?;
+    let path = cached_map_path(store, map);
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+    ensure!(
+        std::fs::metadata(&path)?.len() <= 16_000_000,
+        "Cached map exceeds size limit"
+    );
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(std::fs::read(path)?)
+    ))
+}
+
 fn cached_map(store: &Store, map: &MapAsset) -> Result<std::path::PathBuf> {
     gamebuddy_core::public_https(&map.url)?;
     let directory = store.root.join("maps");
     std::fs::create_dir_all(&directory)?;
-    let path = directory.join(format!("{:x}.jpg", Sha256::digest(map.url.as_bytes())));
+    let path = cached_map_path(store, map);
     if path.is_file() {
         return Ok(path);
     }
@@ -639,15 +676,50 @@ pub fn context(
     estimate: &SyncEstimate,
 ) -> Result<Value> {
     let atlas = atlas(store, guide)?;
-    let tracker_key = format!("place-tracker:{}:{}", guide.id, guide.revision);
-    let mut tracker = store.get::<PlaceTracker>(&tracker_key)?.unwrap_or_default();
-    let before = tracker.clone();
+    let saved_progress = store.progress(guide)?;
+    let progress = if saved_progress.epoch > progress.epoch {
+        &saved_progress
+    } else {
+        progress
+    };
+    let tracker_key = tracker_key(guide);
+    let previous = store.get_versioned::<PlaceTracker>(&tracker_key)?;
+    let mut tracker = previous
+        .as_ref()
+        .map(|(t, _)| t.clone())
+        .unwrap_or_default();
+    let session = crate::screen::status(store)?["session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if tracker.session_id != session {
+        tracker = PlaceTracker::for_session(session);
+    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
     tracker.observe(guide, &atlas, estimate, progress.epoch, now);
-    if tracker != before {
-        store.put(&tracker_key, &tracker)?;
+    if let Some(scene) = store.get::<PlaceTracker>(&format!("scene-{tracker_key}"))?
+        && scene.session_id == tracker.session_id
+    {
+        tracker.adopt_visual(&scene, now);
+    }
+    if previous.as_ref().map(|(t, _)| t) != Some(&tracker) {
+        let saved = if let Some((_, version)) = previous {
+            store.replace_version(&tracker_key, &version, &tracker)?
+        } else {
+            store.put_if_absent(&tracker_key, &tracker)?
+        };
+        if !saved {
+            tracker = store.get(&tracker_key)?.unwrap_or_default();
+        }
     }
     let mut advice = guidance(guide, progress, &tracker);
+    let cursor = tracker
+        .reference_step_id
+        .as_deref()
+        .or(progress.current_step.as_deref())
+        .filter(|id| !gamebuddy_core::step_complete(guide, progress, id))
+        .and_then(|id| guide.step(id))
+        .or(advice.now.as_ref());
     let current_place = tracker
         .place_id
         .as_deref()
@@ -656,8 +728,17 @@ pub fn context(
         .now
         .as_ref()
         .and_then(|s| atlas.place_for_step(guide, &s.id));
-    let selected_map = current_place
-        .and_then(|p| p.map_id.as_ref())
+    let placement = current_place
+        .map(|p| placement::get(store, guide, &p.id))
+        .transpose()?
+        .flatten();
+    let marker = placement
+        .as_ref()
+        .and_then(|p| p.marker.as_ref())
+        .filter(|m| m.validate(&atlas).is_ok());
+    let selected_map = marker
+        .map(|m| &m.map_id)
+        .or_else(|| current_place.and_then(|p| p.map_id.as_ref()))
         .filter(|id| atlas.maps.iter().any(|m| &m.id == *id && m.enabled));
     if let (Some(current), Some(target)) = (current_place, target_place)
         && current.id != target.id
@@ -675,7 +756,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"guidance":advice,"map":{"status":atlas.status,"maps":maps,"places":atlas.places,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"map":{"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

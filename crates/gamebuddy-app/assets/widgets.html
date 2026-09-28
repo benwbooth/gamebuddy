@@ -7,42 +7,89 @@
 .tree{white-space:normal;font-size:12px}.tree ul{list-style:none;padding-left:15px}.tree li{margin:3px 0}.tree summary{cursor:pointer;padding:4px;border-radius:5px}.tree .step{display:block;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;padding:5px;border-radius:5px;width:100%}.tree .current{background:#86decb28;color:#b5ffe9;border-left:3px solid #86decb}.tree .done{color:#91a3b6}.tree .instructions{color:#b8cadd;font-size:11px;padding:4px 8px 10px}.preparation{white-space:normal;color:#efc783;font-size:11px;margin-bottom:12px}.location{color:#86decb;font-size:11px;margin-bottom:8px}
 .guidance{white-space:normal}.eyebrow{color:#86decb;font-size:10px;letter-spacing:1px;text-transform:uppercase;margin:0 0 7px}.advice{font-size:14px;line-height:1.5}.reason{color:#afc1cf;font-size:11px;margin:12px 0;line-height:1.4}.next-action{padding:7px 0;border-top:1px solid #ffffff16;font-size:12px}.action-button,.map-toolbar button,.map-toolbar select{background:#263d48;border:1px solid #567c87;border-radius:6px;color:#e8f8ff;padding:6px 9px;font:inherit}.action-button{margin-top:12px;cursor:pointer}.map-panel{white-space:normal;padding:12px;display:flex;flex-direction:column;gap:8px}.map-toolbar{display:flex;gap:6px;align-items:center;font-size:11px}.map-toolbar select{min-width:0;flex:1}.map-toolbar button{cursor:pointer}.map-viewport{overflow:auto;min-height:140px;flex:1;background:#080f16;border-radius:7px;position:relative}.map-viewport img{display:block;margin:0 auto;max-width:none;image-rendering:pixelated;height:auto}.map-status{font-size:12px;color:#b5ffe9}.map-credit{font-size:10px;color:#9caebc;line-height:1.4}.map-route{display:flex;gap:5px;align-items:center;overflow:auto;font-size:11px}.map-stop{border:1px dashed #54717b;border-radius:6px;padding:6px;min-width:95px;max-width:180px}.map-stop.here{border:1px solid #86decb;background:#86decb20}.map-note{font-size:10px;color:#d7bc8f}.map-empty{padding:18px;font-size:12px;color:#b8cadd}
 .widget header>div{flex:1;min-width:0}.dismiss{flex-shrink:0;border:0;border-radius:5px;background:#ffffff12;color:#c7dae2;font-size:21px;line-height:24px;width:28px;height:28px;cursor:pointer}.dismiss:hover{background:#ffffff30}.resize{width:28px;height:28px}
-[hidden]{display:none!important}</style></head><body><div id="widgets"></div><script>
+.picker{position:relative;min-width:0;flex:1}.picker>button{width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picker-menu{position:absolute;z-index:20;top:100%;left:0;right:0;max-height:180px;overflow:auto;background:#142130;border:1px solid #86decb;border-radius:6px;box-shadow:0 4px 14px #0009;padding:4px}.picker.upward .picker-menu{top:auto;bottom:100%}.picker-menu button{display:block;width:100%;text-align:left;white-space:normal;border:0;background:transparent;padding:8px}.picker-menu button:hover,.picker-menu button[aria-selected=true]{background:#31594f}.map-stage{position:relative;margin:0 auto}.map-stage img{width:100%;margin:0}.map-marker{position:absolute;border:2px solid #93ffdd;background:#65ffcb33;box-shadow:0 0 0 1px #071a12;pointer-events:none;min-width:8px;min-height:8px}.map-marker span{position:absolute;left:0;bottom:100%;padding:2px 5px;background:#123d30;color:#effff7;font:11px system-ui;white-space:nowrap}.map-marker span.below{bottom:auto;top:100%}.provenance{position:fixed;z-index:10000;width:380px;max-width:calc(100vw - 16px);max-height:60vh;overflow:auto;border:1px solid #86decb;background:#101d2b;box-shadow:0 8px 30px #000b;border-radius:9px;padding:13px;white-space:normal;font-size:12px;line-height:1.5}.provenance strong{color:#a8ffe4}.provenance .evidence-entry{padding:7px 0;border-bottom:1px solid #ffffff20}.provenance a{display:block;color:#9cdaff;overflow-wrap:anywhere}.provenance small{display:block;color:#acbfcc}.source-badge{cursor:help;color:#9bc7bf;font-size:10px;margin-left:5px}.map-marker{pointer-events:auto}[hidden]{display:none!important}</style></head><body><div id="widgets"></div><script>
 (() => {
   const host=document.getElementById('widgets');
-  let layouts={}, last='', locked=false, active=null;
+  let layouts={}, locked=false, active=null, latestState=null, pendingMap=null;
   let openNodes=new Set(), followed=null, guideId=null;
-  let mapChoice=null, followMap=true, mapZoom=1, mapScroll={x:0,y:0}, mapGuide=null, mapObserver=null;
+  let mapChoice=null, followMap=true, mapZoom=1, mapScroll={x:0,y:0}, mapGuide=null, mapObserver=null, browsedPlace=null, mapLocatedKey=null;
   const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
+  const bounds=n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]};
   const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  // Tooltips must live in this surface too; native Qt popups are not composited.
+  const tip=text('aside','','provenance');tip.id='source-provenance';tip.hidden=true;tip.setAttribute('role','tooltip');document.body.append(tip);
+  let tipOwner=null, tipTimer=null;
+  const urlFor=(raw,at)=>{try{const u=new URL(raw);if(!['https:','http:'].includes(u.protocol)||u.username||u.password)return null;if(at!=null&&['youtube.com','www.youtube.com','youtu.be','www.youtube-nocookie.com'].includes(u.hostname))u.searchParams.set('t',String(Math.floor(at/1000))+'s');return u.href}catch{return null}};
+  const time=ms=>{const t=Math.floor(ms/1000);return (t>=3600?Math.floor(t/3600)+':':'')+String(Math.floor(t/60)%60).padStart(2,'0')+':'+String(t%60).padStart(2,'0')};
+  function stepEvidence(ids){
+    const g=latestState?.guide, entries=[],seen=new Set();
+    for(const id of ids||[]){const step=g?.steps?.find(s=>s.id===id);if(!step)continue;
+      for(const a of step.anchors||[]){const source=g.sources?.find(s=>s.id===a.source_id);if(!source)continue;const key=JSON.stringify(a);if(seen.has(key))continue;seen.add(key);
+        entries.push({title:source.title,detail:({youtube:'YouTube walkthrough',video:'Video reference',text:'Text walkthrough'}[source.kind]||'Reference')+(a.start_ms!=null?' · '+time(a.start_ms)+(a.end_ms!=null?'–'+time(a.end_ms):''):'')+(a.section?' · '+a.section:'')+(g.reference_preferences?.some(p=>p.source_id===source.id&&!p.enabled)?' · Disabled reference':''),url:urlFor(source.url,a.start_ms)});
+      }
+      if(!step.anchors?.length)entries.push({title:step.title,detail:'No reference attached to this step. It may contain player additions or AI suggestions.'});
+    }
+    return entries.length?entries:[{title:'No reference attached',detail:'Player input or GameBuddy suggestion; no walkthrough source is cited.'}];
+  }
+  const mapEvidence=m=>m?[{title:m.title,detail:'Reference map · '+(m.credit||'Author not supplied'),url:urlFor(m.source_url)},{title:'Original map image',url:urlFor(m.url)}]:[];
+  const placeEvidence=p=>p?[{title:p.label,detail:p.landmarks},...stepEvidence((latestState?.navigation?.map?.bindings||[]).filter(b=>b.place_id===p.id).map(b=>b.step_id))]:[];
+  const locationEvidence=()=>{const l=latestState?.navigation?.location;return [{title:l?.status==='reported'?'Player-reported location':'Visual location estimate',detail:(l?.detail||'Location is not established.')+(l?.located_at_ms?' · '+new Date(l.located_at_ms).toISOString():'')},...(l?.reference_step_id?stepEvidence([l.reference_step_id]):[])]};
+  function evidence(node,title,entries){node.dataset.evidence=title;node.evidenceEntries=typeof entries==='function'?entries:()=>entries;return node}
+  function hideTip(){clearTimeout(tipTimer);tipOwner?.removeAttribute('aria-describedby');tipOwner=null;tip.hidden=true;regions()}
+  function showTip(node){if(!node.isConnected||active)return;tipOwner?.removeAttribute('aria-describedby');tipOwner=node;tip.replaceChildren(text('strong',node.dataset.evidence));const entries=node.evidenceEntries();
+    for(const entry of entries){const row=text('div','','evidence-entry');row.append(text('div',entry.title||'Source'));if(entry.detail)row.append(text('small',entry.detail));if(entry.url){const a=text('a',entry.url);a.href=entry.url;a.addEventListener('click',e=>{e.preventDefault();console.info('GAMEBUDDY_SOURCE_OPEN '+JSON.stringify(entry.url))});row.append(a)}tip.append(row)}
+    tip.hidden=false;const r=node.getBoundingClientRect();tip.style.left=clamp(r.left,8,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=clamp(r.bottom+8,8,innerHeight-tip.offsetHeight-8)+'px';node.setAttribute('aria-describedby',tip.id);regions();console.info('GAMEBUDDY_PROVENANCE '+JSON.stringify({title:node.dataset.evidence,entries,rect:bounds(tip)}));
+  }
+  document.addEventListener('pointerover',e=>{if(tip.contains(e.target)){clearTimeout(tipTimer);return}const n=e.target.closest('[data-evidence]');if(!n)return;clearTimeout(tipTimer);if(n!==tipOwner)tipTimer=setTimeout(()=>showTip(n),250)});
+  document.addEventListener('pointerout',e=>{const n=e.target.closest('[data-evidence]');if((n&&!n.contains(e.relatedTarget))||(tip.contains(e.target)&&!tip.contains(e.relatedTarget))){clearTimeout(tipTimer);tipTimer=setTimeout(hideTip,160)}});
+  document.addEventListener('focusin',e=>{const n=e.target.closest('[data-evidence]');if(n)showTip(n)});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')hideTip()});
+  // Native <select> popups create another Qt window outside the Gamescope
+  // overlay plane. Keep menus in the same HTML surface as the widget.
+  function picker(label, options, onChange, upward=false){
+    const root=text('div','','picker'+(upward?' upward':'')),button=text('button',''),menu=text('div','','picker-menu');
+    button.type='button';button.setAttribute('aria-label',label);button.setAttribute('aria-haspopup','listbox');button.setAttribute('aria-expanded','false');
+    menu.hidden=true;menu.setAttribute('role','listbox');menu.setAttribute('aria-label',label+' choices');root.append(button,menu);
+    function close(){menu.hidden=true;root.classList.remove('open');button.setAttribute('aria-expanded','false');if(latestState)queueMicrotask(()=>window.gamebuddy.render(latestState))}
+    button.addEventListener('click',()=>{if(!menu.hidden){close();return}menu.hidden=false;root.classList.add('open');button.setAttribute('aria-expanded','true');menu.querySelector('[aria-selected=true]')?.scrollIntoView({block:'nearest'});requestAnimationFrame(()=>console.info('GAMEBUDDY_PICKER '+JSON.stringify({label,options:[...menu.children].map(n=>({id:n.dataset.value,rect:bounds(n)}))})))});
+    root.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close()}});
+    for(const option of options){const row=text('button',option.label);row.type='button';row.dataset.value=option.id;row.setAttribute('role','option');row.addEventListener('click',()=>{onChange(option.id);close()});menu.append(row)}
+    return {node:root,set(value){button.textContent=(options.find(o=>o.id===value)?.label||'Choose…')+' ▾';for(const row of menu.children)row.setAttribute('aria-selected',String(row.dataset.value===value));button.disabled=!options.length}};
+  }
   function fitBox(box){const width=clamp(box.width,230,innerWidth),height=clamp(box.height,130,innerHeight);return {x:clamp(box.x,0,innerWidth-width),y:clamp(box.y,0,innerHeight-height),width,height}}
-  function regions(){console.info('GAMEBUDDY_REGIONS '+JSON.stringify([...host.querySelectorAll('.widget')].map(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})))}
+  function regions(){console.info('GAMEBUDDY_REGIONS '+JSON.stringify([...host.querySelectorAll('.widget'),...(!tip.hidden?[tip]:[])].map(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})))}
   function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts));regions()}
   function place(node,box){box=fitBox(box);node.style.left=box.x+'px';node.style.top=box.y+'px';node.style.width=box.width+'px';node.style.height=box.height+'px'}
-  function begin(event,node,id,resize){if(locked)return;event.preventDefault();const b=node.getBoundingClientRect();active={node,id,resize,x:event.clientX,y:event.clientY,box:{x:b.x,y:b.y,width:b.width,height:b.height}};event.currentTarget.setPointerCapture(event.pointerId)}
+  function begin(event,node,id,resize){if(locked)return;hideTip();event.preventDefault();const b=node.getBoundingClientRect();active={node,id,resize,x:event.clientX,y:event.clientY,box:{x:b.x,y:b.y,width:b.width,height:b.height}};event.currentTarget.setPointerCapture(event.pointerId)}
   document.addEventListener('pointermove',e=>{if(!active)return;const a=active,dx=e.clientX-a.x,dy=e.clientY-a.y;let box={...a.box};if(a.resize){box.width=clamp(box.width+dx,230,innerWidth-box.x);box.height=clamp(box.height+dy,130,innerHeight-box.y)}else{box.x+=dx;box.y+=dy}box=fitBox(box);layouts[a.id]=box;place(a.node,box)});
-  function finish(){if(active){active=null;save()}}
+  function finish(){if(active){active=null;save();if(latestState)window.gamebuddy.render(latestState)}}
   document.addEventListener('pointerup',finish);
   document.addEventListener('pointercancel',finish);
   document.addEventListener('lostpointercapture',finish);
   addEventListener('blur',finish);
   addEventListener('resize',()=>{finish();for(const n of host.querySelectorAll('.widget')){const r=n.getBoundingClientRect();place(n,{x:r.x,y:r.y,width:r.width,height:r.height})}regions()});
-  window.gamebuddy={render(state){
+  window.gamebuddy={mapPreview(id,data){if(pendingMap?.id===id && pendingMap.image.isConnected && data.startsWith('data:image/jpeg;base64,')){pendingMap.stage.hidden=false;pendingMap.empty.hidden=true;pendingMap.image.src=data}},render(state){
+    latestState=state;
     locked=!!state.locked;document.body.classList.toggle('locked',locked);
     if(active)return;
     if(state.layouts)layouts={...state.layouts,...layouts};
     let items=[...(state.widgets||[])];
-    if(state.navigation)items.unshift({id:'location-map',title:(state.game||state.guide?.game||'Game')+' · Location map',content:{kind:'map',map:state.navigation.map,guide_id:state.guide?.id,location_status:state.navigation.location?.status}});
+    if(state.navigation)items.unshift({id:'location-map',title:(state.game||state.guide?.game||'Game')+' · Location map',content:{kind:'map',map:state.navigation.map,guide_id:state.guide?.id,location_status:state.navigation.location?.status,location_detail:state.navigation.location?.detail}});
     if(state.navigation?.guidance)items.unshift({id:'current-step',title:(state.navigation.guidance.requirements?.length?'Check prerequisite · ':'')+(state.current?.title||'Next action'),content:{kind:'guidance',guidance:state.navigation.guidance}});
     else if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
-    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:state.guide,progress:{...state.progress,current_step:state.current?.id},estimate:{status:state.navigation?.location?.status||state.estimate?.status,detail:state.navigation?.location?.detail||state.estimate?.detail},preparation:state.preparation}});
+    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:state.guide,progress:{...state.progress,current_step:state.navigation?.cursor?.id || state.current?.id || state.progress?.current_step},estimate:{status:state.navigation?.location?.status||state.estimate?.status,detail:state.navigation?.location?.detail||state.estimate?.detail},preparation:state.preparation}});
     const hasWidgets=items.length>0;
     items=items.filter(w=>state.widget_visibility?.[w.id]!==false);
-    const signature=JSON.stringify(items);if(signature===last)return;last=signature;mapObserver?.disconnect();host.replaceChildren();
+    const ids=new Set(items.map(w=>w.id));
+    for(const node of [...host.children])if(!ids.has(node.dataset.widgetId)){if(node.dataset.widgetId==='location-map'){mapObserver?.disconnect();pendingMap=null}node.remove()}
     if(hasWidgets&&!items.length){regions();return}
     if(!items.length){const empty=text('div','','empty');empty.append(text('strong','Preparing your guide'),text('div','Finding references and building the walkthrough. Chapters and steps will appear here automatically.'));host.append(empty);regions();return}
     items.forEach((item,i)=>{
-      const node=text('section','','widget');node.dataset.widgetId=item.id;
+      const old=[...host.children].find(n=>n.dataset.widgetId===item.id), signature=JSON.stringify(item);
+      if(old && (old.signature===signature || old.querySelector('.picker.open')))return;
+      const previousScroll=old?.querySelector('.body')?.scrollTop || 0;
+      if(item.content?.kind==='map')mapObserver?.disconnect();
+      const node=text('section','','widget');node.dataset.widgetId=item.id;node.signature=signature;
       const header=text('header',''),titles=text('div','');titles.append(text('div','GAMEBUDDY','brand'),text('div',item.title,'title'));header.append(titles);
       header.title='Drag to move';header.addEventListener('pointerdown',e=>begin(e,node,item.id,false));node.append(header);
       const dismiss=text('button','×','dismiss');dismiss.type='button';dismiss.title='Return to GameBuddy';dismiss.setAttribute('aria-label','Dismiss '+item.title);dismiss.addEventListener('pointerdown',e=>e.stopPropagation());dismiss.addEventListener('click',()=>console.info('GAMEBUDDY_DISMISS '+item.id));header.append(dismiss);
@@ -52,7 +99,7 @@
         if(guideId!==g.id){openNodes=new Set();followed=null;guideId=g.id}
         const current=c.progress?.current_step, completed=new Set([...(c.progress?.completed||[]),...(c.progress?.reported_completed||[])]), changed=current!==followed;
         if(changed){followed=current;let s=byId.get(current);while(s?.parent_id){openNodes.add(s.parent_id);s=byId.get(s.parent_id)}}
-        body.append(text('div',current?'Suggested task: '+(byId.get(current)?.title||current):'Locating player · no step confirmed yet','location'));
+        body.append(text('div',current?'Current step: '+(byId.get(current)?.title||current):'Locating player · no step confirmed yet','location'));
         if(c.estimate?.status && c.estimate.status!=='located')body.append(text('div',c.estimate.detail||'Location uncertain','preparation'));
         if(c.preparation)body.append(text('div',c.preparation.message,'preparation'));
         else if(g.coverage_notes?.length)body.append(text('div',g.coverage_notes[0],'preparation'));
@@ -60,71 +107,84 @@
         function branch(parent){const ul=document.createElement('ul');for(const s of children.get(parent)||[]){
           const li=document.createElement('li'), hasChildren=children.has(s.id), row=text(hasChildren?'summary':'button',(completed.has(s.id)?'✓ ':s.id===current?'▶ ':'')+s.title,hasChildren?'':'step');
           if(!hasChildren)row.type='button';row.dataset.stepId=s.id;if(s.id===current){row.classList.add('current');row.setAttribute('aria-current','step')}
-          if(completed.has(s.id))row.classList.add('done');if(c.progress?.reported_completed?.includes(s.id))row.title='Completion reported by player';
+          if(completed.has(s.id))row.classList.add('done');evidence(row,'Step sources',()=>stepEvidence([s.id]));
           if(hasChildren){const details=document.createElement('details');details.open=openNodes.has(s.id);details.addEventListener('toggle',()=>{if(details.open)openNodes.add(s.id);else openNodes.delete(s.id)});details.append(row,branch(s.id));li.append(details)}
-          else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(text('div',s.instructions,'instructions'))});li.append(row);if(s.id===current)li.append(text('div',s.instructions,'instructions'))}
+          else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))});li.append(row);if(s.id===current)li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))}
           ul.append(li)
         }return ul}
-        body.append(branch(''));
+        body.append(branch(''));requestAnimationFrame(()=>console.info('GAMEBUDDY_OUTLINE '+JSON.stringify({current:current||null,rows:[...body.querySelectorAll('[data-step-id]')].map(n=>({id:n.dataset.stepId,rect:bounds(n)}))})));
+        body.prepend(text('div','Hover over any step to inspect its sources.','source'));
+        if(!changed)requestAnimationFrame(()=>body.scrollTop=previousScroll);
         if(changed)requestAnimationFrame(()=>body.querySelector('[aria-current="step"]')?.scrollIntoView({block:'nearest'}));
       }
       else if(c.kind==='guidance'){
-        body.classList.add('guidance');const advice=c.guidance||{};
+        body.classList.add('guidance');const advice=c.guidance||{};evidence(titles,'Suggested action sources',()=>stepEvidence(advice.now?[advice.now.id]:[]));
         body.append(text('div',advice.requirements?.length?'Prerequisite unconfirmed':advice.status==='ready'?'Now · suggested action':advice.status==='blocked'?'Plan needs attention':'Plan · location unconfirmed','eyebrow'));
         body.append(text('div',advice.reason||'Waiting for game context.','reason'));
-        if(advice.now)body.append(text('div',advice.now.instructions,'advice'));
-        if(advice.requirements?.length)body.append(text('div','Unconfirmed: '+advice.requirements.map(s=>s.title).join(' · '),'map-note'));
-        if(advice.next?.length){body.append(text('div','After completion · preview','eyebrow'));for(const step of advice.next)body.append(text('div',step.title,'next-action'))}
+        if(advice.now)body.append(evidence(text('div',advice.now.instructions,'advice'),'Suggested action sources',()=>stepEvidence([advice.now.id])));
+        if(advice.requirements?.length)body.append(evidence(text('div','Unconfirmed: '+advice.requirements.map(s=>s.title).join(' · '),'map-note'),'Prerequisite sources',()=>stepEvidence(advice.requirements.map(s=>s.id))));
+        if(advice.next?.length){body.append(text('div','After completion · preview','eyebrow'));for(const step of advice.next)body.append(evidence(text('div',step.title,'next-action'),'Next action sources',()=>stepEvidence([step.id])))}
         if(advice.now){const done=text('button','I completed this','action-button');done.type='button';done.addEventListener('click',()=>console.info('GAMEBUDDY_COMPLETE '+advice.now.id));body.append(done)}
       }
       else if(c.kind==='map'){
         body.classList.add('map-panel');const map=c.map||{},maps=map.maps||[],places=map.places||[];
-        if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0}}
-        const status=text('div',map.current_place?'Estimated room: '+map.current_place.label:'Locating player · no room selected','map-status');body.append(status);
-        body.append(text('div','Room estimate only · player coordinates unavailable','map-note'));
-        const toolbar=text('div','','map-toolbar'),select=document.createElement('select'),follow=text('button','Follow player');
-        select.setAttribute('aria-label','Reference map');follow.type='button';
-        for(const asset of maps){const option=document.createElement('option');option.value=asset.id;option.textContent=asset.title;select.append(option)}
-        toolbar.append(select,follow);body.append(toolbar);
+        if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0};browsedPlace=null;mapLocatedKey=null}
+        const status=evidence(text('div','','map-status'),'Location evidence',locationEvidence);body.append(status);
+        const precision=text('div',c.location_detail||'Waiting for a location report or a visual match.','map-note');body.append(evidence(precision,'Location evidence',locationEvidence));
+        const toolbar=text('div','','map-toolbar'),follow=text('button','Follow player');follow.type='button';
+        const select=picker('Reference map',maps.map(m=>({id:m.id,label:m.title})),id=>{followMap=false;browsedPlace=null;choose(id)});
+        toolbar.append(select.node,follow);body.append(toolbar);
         const controls=text('div','','map-toolbar'),minus=text('button','−'),plus=text('button','+'),fit=text('button','Fit');
         minus.type=plus.type=fit.type='button';minus.setAttribute('aria-label','Zoom out');plus.setAttribute('aria-label','Zoom in');controls.append(minus,plus,fit);body.append(controls);
         const selectionNote=text('div','','map-note');body.append(selectionNote);
-        const viewport=text('div','','map-viewport'),credit=text('div','','map-credit'),image=document.createElement('img');image.alt='Reference area map';
-        const empty=text('div','','map-empty');viewport.append(image,empty);body.append(viewport,credit);
-        function zoom(){if(image.naturalWidth&&viewport.clientWidth){const fitted=Math.min(viewport.clientWidth,viewport.clientHeight*image.naturalWidth/image.naturalHeight);image.style.width=Math.max(1,fitted*mapZoom)+'px'}}
+        const viewport=text('div','','map-viewport'),credit=text('div','','map-credit'),stage=text('div','','map-stage'),image=document.createElement('img');image.alt='Reference area map';
+        const marker=text('div','','map-marker'),markerLabel=text('span','You are here · approximate area');marker.append(markerLabel);stage.append(image,marker);
+        const empty=text('div','','map-empty');viewport.append(stage,empty);body.append(viewport,credit);
+        function zoom(){if(image.naturalWidth&&viewport.clientWidth){const fitted=Math.min(viewport.clientWidth,viewport.clientHeight*image.naturalWidth/image.naturalHeight);stage.style.width=Math.max(1,fitted*mapZoom)+'px'}}
         mapObserver=new ResizeObserver(zoom);mapObserver.observe(viewport);
         function choose(id){
-          const asset=maps.find(m=>m.id===id);if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.value=id||'';follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
-          selectionNote.textContent=followMap&&id===map.selected_map_id?'Map association estimated from reference material.':'Browsing reference material; player location is unchanged.';
-          image.hidden=!asset;empty.hidden=!!asset;image.onload=()=>{zoom();viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y};
-          image.onerror=()=>{image.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. The room estimate and source attribution remain available.'};
-          if(asset){try{if(new URL(asset.url).protocol==='https:')image.src=asset.url;else throw Error('Invalid map URL')}catch{image.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
-          else{empty.textContent=map.status==='building'?'GameBuddy is building this atlas from your references…':'No reference map for this area yet. You can supply a map through voice chat; recognized places appear below.';credit.textContent=''}
+          const asset=maps.find(m=>m.id===id);if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
+          const browsing=places.find(p=>p.id===browsedPlace);
+          status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'Estimated location: ')+map.current_place.label:'Locating player')+(browsing?' · Browsing '+browsing.label:'');
+          const region=map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null;
+          marker.hidden=!region;
+          if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
+          selectionNote.textContent=followMap?(region?'Highlighted area estimated from map landmarks.':map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
+          stage.hidden=!asset;empty.hidden=!!asset;
+          image.onload=()=>{zoom();const key=region?region.place_id+':'+region.map_id:null;if(followMap&&key&&key!==mapLocatedKey){const r=region.region;viewport.scrollLeft=(r.x+r.width/2)*stage.clientWidth-viewport.clientWidth/2;viewport.scrollTop=(r.y+r.height/2)*stage.clientHeight-viewport.clientHeight/2;mapLocatedKey=key}else{viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y}};
+          image.onerror=()=>{stage.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. Location and source attribution remain available.'};
+          evidence(image,'Map sources',()=>mapEvidence(asset));evidence(credit,'Map sources',()=>mapEvidence(asset));
+          if(asset){try{if(new URL(asset.url).protocol==='https:')image.src=asset.url;else throw Error('Invalid map URL')}catch{stage.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}evidence(titles,'Map sources',()=>mapEvidence(asset));image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
+          else{empty.textContent=map.current_place?'No map association for this room yet. Your location and current step still update.':'Tell GameBuddy where you are, or keep playing while it matches visible landmarks.';credit.textContent=''}
+          pendingMap=asset?{id,image,stage,empty}:null;if(asset)console.info('GAMEBUDDY_MAP_REQUEST '+id);
+          requestAnimationFrame(()=>console.info('GAMEBUDDY_MAP_VIEW '+JSON.stringify({map:id||null,following:followMap,place:map.current_place?.id||null,marker:!!region,mapPicker:bounds(select.node),placePicker:bounds(roomSelect.node),followButton:bounds(follow),credit:bounds(credit),markerBounds:bounds(marker)})));
           zoom();
         }
-        let selected=followMap&&maps.some(m=>m.id===map.selected_map_id)?map.selected_map_id:mapChoice;
-        if(!maps.some(m=>m.id===selected))selected=maps[0]?.id;
-        choose(selected);select.disabled=!maps.length;
-        select.addEventListener('change',()=>{followMap=false;choose(select.value)});
-        follow.addEventListener('click',()=>{followMap=true;choose(maps.some(m=>m.id===map.selected_map_id)?map.selected_map_id:mapChoice)});
+        let selected=followMap?(map.selected_map_id || (map.current_place?undefined:mapChoice||maps[0]?.id)):mapChoice;
+        if(selected&&!maps.some(m=>m.id===selected))selected=undefined;
+        choose(selected);
+        follow.addEventListener('click',()=>{followMap=true;browsedPlace=null;choose(map.selected_map_id || (map.current_place?undefined:mapChoice))});
         minus.addEventListener('click',()=>{mapZoom=Math.max(1,mapZoom/1.5);zoom()});plus.addEventListener('click',()=>{mapZoom=Math.min(16,mapZoom*1.5);zoom()});fit.addEventListener('click',()=>{mapZoom=1;mapScroll={x:0,y:0};viewport.scrollTo(0,0);zoom()});
         viewport.addEventListener('scroll',()=>{mapScroll={x:viewport.scrollLeft,y:viewport.scrollTop}});
         const route=[...(map.current_place?[map.current_place.id]:[]),...(map.route_places||[])].filter((id,i,all)=>i===0||id!==all[i-1]);
-        if(route.length){body.append(text('div','Planned stops · physical connections unverified','eyebrow'));const row=text('div','','map-route');route.forEach((id,i)=>{const p=places.find(p=>p.id===id);if(!p)return;if(i)row.append(text('span','→'));const stop=text('div',p.label,'map-stop'+(id===map.current_place?.id?' here':''));stop.title=p.landmarks;row.append(stop)});body.append(row)}
-        const roomSelect=document.createElement('select');roomSelect.setAttribute('aria-label','Browse known places');const prompt=document.createElement('option');prompt.textContent='Browse '+places.length+' source-derived places';prompt.value='';roomSelect.append(prompt);
-        for(const p of places){const option=document.createElement('option');option.value=p.id;option.textContent=p.label;roomSelect.append(option)}
-        const rooms=text('div','','map-toolbar');rooms.append(roomSelect);body.append(rooms);roomSelect.addEventListener('change',()=>{const place=places.find(p=>p.id===roomSelect.value);if(!place)return;followMap=false;choose(maps.some(m=>m.id===place.map_id)?place.map_id:undefined);empty.textContent=place.landmarks||'No map associated with this place.';status.textContent='Browsing: '+place.label+' · player location unchanged'});
+        if(route.length){body.append(text('div','Planned stops','eyebrow'));const row=text('div','','map-route');route.forEach((id,i)=>{const p=places.find(p=>p.id===id);if(!p)return;if(i)row.append(text('span','→'));const stop=text('div',p.label,'map-stop'+(id===map.current_place?.id?' here':''));evidence(stop,'Place references',()=>placeEvidence(p));row.append(stop)});body.append(row)}
+        const roomSelect=picker('Browse known places',[{id:'',label:'Browse '+places.length+' known places'},...places.map(p=>({id:p.id,label:p.label}))],id=>{const place=places.find(p=>p.id===id);if(!place)return;followMap=false;browsedPlace=id;roomSelect.set(id);choose(place.map_id);empty.textContent=place.landmarks||'No map associated with this place.'},true);
+        roomSelect.set(browsedPlace||'');const rooms=text('div','','map-toolbar');rooms.append(roomSelect.node);body.append(rooms);
         if(map.status!=='ready')body.append(text('div','Atlas '+(map.status||'pending')+' · '+(map.reviewed_steps||0)+' reviewed actions','map-note'));
       }
-      else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach(row=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));table.append(tr)});body.append(table)}
-      else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach(v=>ul.append(text('li',v)));body.append(ul)}
+      else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach((row,index)=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));evidence(tr,'Row sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids));table.append(tr)});body.append(table)}
+      else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach((v,index)=>ul.append(evidence(text('li',v),'Item sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids))));body.append(ul)}
       else if(c.kind==='image'){const img=document.createElement('img');if(new URL(c.url).protocol==='https:')img.src=c.url;img.alt=c.caption||item.title;body.append(img,text('div',c.caption||''))}
       else if(c.kind==='video'){const u=new URL(c.url),id=u.hostname==='youtu.be'?u.pathname.slice(1):u.searchParams.get('v');if(/^[A-Za-z0-9_-]{11}$/.test(id)){const frame=document.createElement('iframe');frame.src='https://www.youtube-nocookie.com/embed/'+id+'?start='+Math.floor(c.start_seconds||0);frame.allow='fullscreen';frame.title=item.title;body.append(frame)}}
       else body.append(text('div',c.body||''));
-      if(item.source_step_ids?.length)body.append(text('div','Guide: '+item.source_step_ids.join(', '),'source'));node.append(body);
+      const itemEvidence=()=>{const result=stepEvidence([...(item.source_step_ids||[]),...(item.item_sources||[]).flatMap(s=>s.source_step_ids)]);if(['image','video'].includes(c.kind)&&urlFor(c.url))result.push({title:c.kind==='video'?'Displayed video':'Displayed image',url:urlFor(c.url,c.start_seconds*1000)});return result};
+      if(!['map','outline','guidance'].includes(c.kind)){evidence(titles,'Widget sources',itemEvidence);const badge=evidence(text('span','ⓘ Sources · hover','source-badge'),'Widget sources',itemEvidence);badge.tabIndex=0;body.append(badge);if(c.kind==='text'||c.kind==='image'||c.kind==='video')evidence(body,'Widget sources',itemEvidence)}
+      node.append(body);
+      if(item.item_sources?.length)requestAnimationFrame(()=>console.info('GAMEBUDDY_WIDGET_SOURCES '+JSON.stringify({id:item.id,rows:[...body.querySelectorAll('tr[data-evidence],li[data-evidence]')].map(bounds)})));
       const handle=text('div','','resize');handle.title='Drag to resize';handle.setAttribute('aria-label','Resize '+item.title);handle.addEventListener('pointerdown',e=>begin(e,node,item.id,true));node.append(handle);
-      const box=layouts[item.id]||(c.kind==='outline'?{x:Math.max(0,innerWidth-430),y:30,width:400,height:Math.min(550,innerHeight-60)}:c.kind==='map'?{x:28,y:Math.min(310,innerHeight/2),width:Math.min(520,innerWidth-56),height:Math.max(240,Math.min(470,innerHeight-Math.min(310,innerHeight/2)-30))}:c.kind==='guidance'?{x:28,y:30,width:410,height:250}:{x:450+(i%2)*375,y:30+Math.floor(i/2)*290,width:350,height:260});place(node,box);host.append(node);
+      const box=layouts[item.id]||(c.kind==='outline'?{x:Math.max(0,innerWidth-430),y:30,width:400,height:Math.min(550,innerHeight-60)}:c.kind==='map'?{x:28,y:Math.min(310,innerHeight/2),width:Math.min(520,innerWidth-56),height:Math.max(240,Math.min(470,innerHeight-Math.min(310,innerHeight/2)-30))}:c.kind==='guidance'?{x:28,y:30,width:410,height:250}:{x:450+(i%2)*375,y:30+Math.floor(i/2)*290,width:350,height:260});place(node,box);if(old)old.replaceWith(node);else host.append(node);
     });
+    if(tipOwner&&!tipOwner.isConnected)hideTip();
     regions();
   }};
 })();

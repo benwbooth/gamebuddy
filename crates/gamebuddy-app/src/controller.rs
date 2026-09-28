@@ -90,6 +90,8 @@ pub mod ffi {
         #[qinvokable]
         fn realtime_transcript(self: Pin<&mut Buddy>, text: QString);
         #[qinvokable]
+        fn map_preview(self: &Buddy, id: QString) -> QString;
+        #[qinvokable]
         fn discard_voice(self: &Buddy, path: QString);
         #[qsignal]
         fn voice_command(self: Pin<&mut Buddy>, action: i32);
@@ -132,6 +134,7 @@ pub struct BuddyRust {
     scene_inflight: bool,
     last_scene_at: u64,
     last_scene_image: String,
+    map_inflight: bool,
 }
 impl Default for BuddyRust {
     fn default() -> Self {
@@ -160,6 +163,7 @@ impl Default for BuddyRust {
             scene_inflight: false,
             last_scene_at: 0,
             last_scene_image: String::new(),
+            map_inflight: false,
         }
     }
 }
@@ -233,7 +237,7 @@ impl ffi::Buddy {
                 self.as_mut().set_message(q(
                     "Ready. Load a game to prepare its walkthrough automatically.",
                 ));
-                if argument("--game").is_some()
+                if (argument("--game").is_some() || argument("--game-pid").is_some())
                     && !std::env::args().any(|arg| arg == "--no-prepare")
                 {
                     self.prepare_game();
@@ -759,6 +763,9 @@ impl ffi::Buddy {
                                     object.as_mut().set_message(q(format!(
                                         "Could not save observation: {e:#}"
                                     )));
+                                    object.as_mut().poll_widgets();
+                                    object.observe_screen();
+                                    return;
                                 }
                                 object.as_mut().rust_mut().sync = sync;
                                 object.as_mut().rust_mut().estimate = estimate;
@@ -806,16 +813,46 @@ impl ffi::Buddy {
             return;
         };
         let config = settings.unwrap_or_default().vision;
+        let guide = self.rust().guide.clone();
+        let epoch = self.rust().sync.progress.epoch;
+        let location_context = guide
+            .as_ref()
+            .and_then(|g| {
+                let atlas = services::navigation::atlas(&store, g).ok()?;
+                let tracker = store
+                    .get::<gamebuddy_core::PlaceTracker>(&services::navigation::tracker_key(g))
+                    .ok()?;
+                Some(json!({"places":atlas.places,"last_location":tracker}))
+            })
+            .unwrap_or_else(|| json!({"places":[]}));
         self.as_mut().rust_mut().scene_inflight = true;
         self.as_mut().rust_mut().last_scene_at = now;
         self.as_mut().rust_mut().last_scene_image = snapshot.jpeg.clone();
         let thread = self.qt_thread();
         std::thread::spawn(move || {
             let result = HttpProvider::new(config).and_then(|provider| {
-                services::screen::observe(&provider, &snapshot, snapshot.metadata.get("scene"))
+                services::screen::observe(
+                    &provider,
+                    &snapshot,
+                    snapshot.metadata.get("scene"),
+                    &location_context,
+                )
             });
             let saved = Store::open(&root)
                 .and_then(|store| services::screen::save_observation(&store, &snapshot, &result));
+            if saved.is_ok()
+                && let (Some(guide), Ok(scene)) = (&guide, &result)
+            {
+                let _ = Store::open(&root).and_then(|store| {
+                    services::navigation::tracking::observe_place(
+                        &store,
+                        guide,
+                        &snapshot,
+                        scene.location.as_ref(),
+                        epoch,
+                    )
+                });
+            }
             if std::env::args().any(|a| a == "--voice-trace") {
                 eprintln!(
                     "GAMEBUDDY_SCREEN_OBSERVATION success={} saved={} elapsed_ms={}",
@@ -899,13 +936,20 @@ impl ffi::Buddy {
                 if let Some(id)=id {
                     let votes=object.rust().vision_votes.as_ref().filter(|(last,_)|last==&id).map(|(_,n)|n+1).unwrap_or(1);
                     object.as_mut().rust_mut().vision_votes=Some((id.clone(),votes));
-                    if votes>=2 && object.rust().sync.progress.current_step.as_deref()!=Some(&id) {
-                        let _=object.as_mut().rust_mut().sync.confirm_step(&guide,&id);
+                    if votes>=2 {
+                        let mut updated = object.rust().sync.clone();
+                        if updated.confirm_step(&guide,&id).is_err() { return; }
+                        if Store::open(&root).and_then(|s|s.save_progress(&guide,&updated.progress,"vision_location_estimate")).is_err() {
+                            object.as_mut().rust_mut().vision_votes=None;
+                            object.poll_widgets();
+                            return;
+                        }
+                        object.as_mut().rust_mut().sync=updated;
                         object.as_mut().rust_mut().estimate.status="vision_estimate".into();
+                        object.as_mut().rust_mut().estimate.observed_at_ms=at;
                         object.as_mut().rust_mut().estimate.located_step=Some(id.clone());
                         object.as_mut().rust_mut().estimate.detail="Repeated local vision match. Location is an estimate; objective completion is unverified.".into();
                         object.as_mut().rust_mut().selected=id.clone();
-                        let _=Store::open(&root).and_then(|s|s.save_progress(&guide,&object.rust().sync.progress,"vision_location_estimate"));
                     }
                 } else {object.as_mut().rust_mut().vision_votes=None;}
                 object.as_mut().rust_mut().vision_evidence=Some(verdict);
@@ -1125,6 +1169,14 @@ impl ffi::Buddy {
         }
         self.set_transcript(text);
     }
+    pub fn map_preview(&self, id: QString) -> QString {
+        let preview = self.rust().guide.as_ref().and_then(|guide| {
+            Store::open(&self.rust().root)
+                .and_then(|s| services::navigation::cached_preview(&s, guide, &id.to_string()))
+                .ok()
+        });
+        q(preview.unwrap_or_default())
+    }
     pub fn poll_widgets(mut self: Pin<&mut Self>) {
         if self.rust().root.as_os_str().is_empty() {
             return;
@@ -1159,6 +1211,29 @@ impl ffi::Buddy {
             }
         }
         self.as_mut().refresh();
+        if !self.rust().map_inflight
+            && !std::env::args().any(|a| a == "--no-prepare")
+            && let Some(guide) = self.rust().guide.clone()
+            && let Ok(state) =
+                serde_json::from_str::<serde_json::Value>(&self.state_json().to_string())
+            && let Some(place) = state["navigation"]["location"]["place_id"]
+                .as_str()
+                .map(str::to_owned)
+            && let Ok(store) = Store::open(&self.rust().root)
+            && services::navigation::placement::needed(&store, &guide, &place)
+        {
+            self.as_mut().rust_mut().map_inflight = true;
+            let root = self.rust().root.clone();
+            let thread = self.qt_thread();
+            std::thread::spawn(move || {
+                let _ = Store::open(root)
+                    .and_then(|s| services::navigation::placement::prepare(&s, &guide, &place));
+                let _ = thread.queue(|mut object| {
+                    object.as_mut().rust_mut().map_inflight = false;
+                    object.refresh()
+                });
+            });
+        }
         // Atlas preparation belongs to the application lifecycle, including
         // imported guides, changed goals/references, and newly supplied maps.
         if !*self.preparing()

@@ -38,7 +38,11 @@ impl Narrator {
             };
         }
         let guidance = &context["guidance"];
-        let ready = guidance["status"] == "ready" && context["location_status"] == "estimated";
+        let ready = guidance["status"] == "ready"
+            && matches!(
+                context["location_status"].as_str(),
+                Some("estimated" | "reported")
+            );
         let action = if ready {
             field(&guidance["now"], "id")
         } else {
@@ -129,6 +133,8 @@ fn cue(context: &Value) -> String {
     let place = field(&context["current_place"], "label");
     let location = if place.is_empty() {
         String::new()
+    } else if context["location_status"] == "reported" {
+        format!("Based on your report, you're at {place}. ")
     } else {
         format!("Looks like you're at {place}. ")
     };

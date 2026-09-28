@@ -176,6 +176,12 @@ impl Store {
         self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,serde_json::to_string(value)?])?;
         Ok(())
     }
+    pub fn put_if_absent<T: Serialize>(&self, key: &str, value: &T) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
+            params![key, serde_json::to_string(value)?],
+        )? == 1)
+    }
     /// Atomically replace a document only if its complete previous value matches.
     pub fn compare_exchange<T: Serialize>(
         &self,
@@ -207,14 +213,29 @@ impl Store {
         Ok(())
     }
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        Ok(self.get_versioned(key)?.map(|(value, _)| value))
+    }
+    /// Retain the original serialized value for CAS, including documents saved
+    /// before new serde-default fields were added.
+    pub fn get_versioned<T: DeserializeOwned>(&self, key: &str) -> Result<Option<(T, String)>> {
         let body: Option<String> = self
             .connection
             .query_row("SELECT body FROM documents WHERE key=?1", [key], |r| {
                 r.get(0)
             })
             .optional()?;
-        body.map(|s| serde_json::from_str(&s).map_err(Into::into))
-            .transpose()
+        body.map(|s| Ok((serde_json::from_str(&s)?, s))).transpose()
+    }
+    pub fn replace_version<T: Serialize>(
+        &self,
+        key: &str,
+        version: &str,
+        value: &T,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE documents SET body=?3 WHERE key=?1 AND body=?2",
+            params![key, version, serde_json::to_string(value)?],
+        )? == 1)
     }
     pub fn index(&self, guide: &Guide) -> Result<Option<VisualIndex>> {
         self.get(&format!("index:{}:{}", guide.id, guide.revision))
@@ -259,6 +280,16 @@ impl Store {
             "Game progress changed; read the current context"
         );
         progress.reported_completed.insert(step_id.into());
+        if progress.current_step.is_none() {
+            progress.current_step = Some(step_id.into());
+        }
+        let tracker_key = crate::navigation::tracker_key(guide);
+        if let Some(mut tracker) = self.get::<gamebuddy_core::PlaceTracker>(&tracker_key)?
+            && tracker.epoch == progress.epoch
+        {
+            tracker.epoch += 1;
+            self.put(&tracker_key, &tracker)?;
+        }
         progress.epoch += 1;
         self.put(
             &format!("progress:{}:{}", guide.id, guide.revision),
@@ -273,6 +304,46 @@ impl Store {
             ],
         )?;
         transaction.commit()?;
+        Ok(progress)
+    }
+    /// Commit a player location and its task cursor together. Incrementing the
+    /// epoch rejects any screen comparison that began before this report.
+    pub(crate) fn report_location(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        mut tracker: gamebuddy_core::PlaceTracker,
+        report: &str,
+    ) -> Result<Progress> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision,
+            "Outline changed; read the current context"
+        );
+        let mut progress = self.progress(guide)?;
+        ensure!(
+            progress.epoch == epoch,
+            "Game progress changed; read the current context"
+        );
+        progress.current_step = tracker.reference_step_id.clone();
+        progress.epoch += 1;
+        tracker.epoch = progress.epoch;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        self.put(&crate::navigation::tracker_key(guide), &tracker)?;
+        tx.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'player_location',?2)",
+            params![
+                guide.id,
+                serde_json::json!({"report":report,"location":tracker}).to_string()
+            ],
+        )?;
+        tx.commit()?;
         Ok(progress)
     }
     pub fn save_progress(&self, guide: &Guide, progress: &Progress, kind: &str) -> Result<()> {

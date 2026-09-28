@@ -41,7 +41,7 @@ WebEngineView {
     settings.localContentCanAccessFileUrls: false
     settings.javascriptCanOpenWindows: false
     function context() {
-        return JSON.stringify({game:session.game, screen:session.screen, current:session.current, location_status:session.navigation?.location?.status,
+        return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
             preparing:buddy.preparing, guide_revision:session.guide?.revision, microphone_active:voice.active,

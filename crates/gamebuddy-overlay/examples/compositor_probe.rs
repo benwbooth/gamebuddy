@@ -44,6 +44,9 @@ fn main() -> anyhow::Result<()> {
             "widget-layout",
             &serde_json::json!({"compositor-test":{"x":600,"y":80,"width":350,"height":260}}),
         )?;
+        if std::env::var_os("GAMEBUDDY_TEST_NAVIGATION").is_some() {
+            support::navigation_probe::prepare(&store)?;
+        }
         return Ok(());
     }
     let _screenshot_lock = support::screenshot_lock()?;
@@ -263,6 +266,10 @@ fn main() -> anyhow::Result<()> {
         support::voice_probe::run(&conn, window, overlay, focus, &directory, screenshot)?;
         return Ok(());
     }
+    if std::env::var_os("GAMEBUDDY_TEST_NAVIGATION").is_some() {
+        support::navigation_probe::run(&conn, root, screenshot)?;
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_CROP").is_some() {
         support::crop_probe::run(&conn, window, overlay, focus, root, toggle, screenshot)?;
         return Ok(());
@@ -288,18 +295,33 @@ fn main() -> anyhow::Result<()> {
     );
     if let Some(data_root) = std::env::var_os("GAMEBUDDY_TEST_DATA") {
         let mouse = |kind, detail, x, y| -> anyhow::Result<()> {
-            conn.xtest_fake_input(kind, detail, 0, root, x, y, 0)?
-                .check()?;
-            conn.flush()?;
+            // Motion must continue through Gamescope's asynchronous input
+            // focus transfer; a single warp may be consumed by the old surface.
+            for offset in 0..if kind == MOTION_NOTIFY_EVENT { 8 } else { 1 } {
+                conn.xtest_fake_input(kind, detail, 0, root, x + offset % 2, y, 0)?
+                    .check()?;
+                conn.flush()?;
+                thread::sleep(Duration::from_millis(50));
+            }
             pause();
             Ok(())
         };
         // Drag directly while collapsed: no Arrange button or focus shortcut.
         toggle()?;
         mouse(MOTION_NOTIFY_EVENT, 0, 650, 104)?;
+        if cardinal(&conn, overlay, focus)? != 2 {
+            screenshot("widget-hover-failure.png")?;
+        }
         ensure!(
             cardinal(&conn, overlay, focus)? == 2,
-            "Widget hover did not acquire pointer-only focus"
+            "Widget hover did not acquire pointer-only focus: mode={}, cursor_visible={}, pointer={:?}",
+            cardinal(&conn, overlay, focus)?,
+            cardinal(
+                &conn,
+                root,
+                atom(&conn, "GAMESCOPE_CURSOR_VISIBLE_FEEDBACK")?
+            )?,
+            conn.query_pointer(root)?.reply()?
         );
         send_key(a, true)?;
         send_key(a, false)?;
@@ -424,6 +446,9 @@ fn main() -> anyhow::Result<()> {
     conn.flush()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while cardinal(&conn, overlay, focus)? != 2 {
+        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 76, 130, 0)?
+            .check()?;
+        conn.flush()?;
         ensure!(
             Instant::now() < deadline,
             "Orb hover did not acquire pointer-only focus (mode={}, cursor_visible={}, pointer={:?})",
