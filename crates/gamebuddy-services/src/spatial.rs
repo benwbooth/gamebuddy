@@ -1297,7 +1297,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
                 if let Err(error) = crate::telemetry::observe(&store, &snapshot, epoch) {
                     let _ = store.put("emulator-error", &error.to_string());
                 }
-                if let Err(error) = observe(&store, &guide, &snapshot) {
+                if let Err(error) = observe(&store, &guide, &snapshot, epoch) {
                     store.put(&format!("world-error:{}", guide.id), &error.to_string())?;
                 }
                 store.put(&format!("world-message:{}", guide.id), &"")?;
@@ -1315,15 +1315,24 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
     });
 }
 
-pub fn observe(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Result<Value> {
+pub fn observe(
+    store: &Store,
+    guide: &Guide,
+    snapshot: &screen::Snapshot,
+    capture_progress_epoch: u64,
+) -> Result<Value> {
     use base64::Engine as _;
+    let progress = store.progress(guide)?;
+    ensure!(
+        progress.epoch == capture_progress_epoch,
+        "Discard queued frame: player progress changed after capture"
+    );
     let Some(world) = load(store, guide)? else {
         return Ok(json!({"status":"not_prepared"}));
     };
     if world.status != "ready" {
         return Ok(json!({"status":world.status}));
     }
-    let progress = store.progress(guide)?;
     let tracker_key = format!("world-tracker:{}", guide.id);
     let prior = store.get_versioned::<Tracker>(&tracker_key)?;
     let mut tracker = prior.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
@@ -1455,6 +1464,39 @@ fn ground_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_frames_cannot_cross_a_player_progress_edit() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(directory.path())?;
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# Enter\nEnter town.")?;
+        store.save_guide(&guide)?;
+        let ticket = screen::start(&store, &guide.game, true)?;
+        let snapshot = screen::Snapshot {
+            ticket,
+            captured_at_ms: screen::now_ms(),
+            jpeg: String::new(),
+            metadata: json!({}),
+        };
+        let progress = gamebuddy_core::Progress {
+            epoch: 1,
+            reported_completed: std::collections::HashSet::from(["step-1".into()]),
+            ..Default::default()
+        };
+        store.save_progress(&guide, &progress, "player edit")?;
+        assert!(
+            observe(&store, &guide, &snapshot, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("progress changed")
+        );
+        assert_eq!(json!(store.progress(&guide)?), json!(progress));
+        assert!(
+            store
+                .get::<Value>(&format!("world-observation:{}", guide.id))?
+                .is_none()
+        );
+        Ok(())
+    }
     #[test]
     fn atlas_geometry_names_a_place_without_selecting_an_ambiguous_task() -> Result<()> {
         let directory = tempfile::tempdir()?;
