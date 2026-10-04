@@ -22,15 +22,27 @@ WebEngineView {
     property bool trace: false
     property string pageOrigin: ""
     property bool userSpeaking: false
+    property bool detectedSpeech: false
     property bool assistantSpeaking: false
-    property double replyUntil: 0
+    property bool backendBusy: false
     property double inputAt: 0
     property double outputAt: 0
     property bool waitingForReply: false
     property bool returningPlayer: false
     property string voiceGame: ""
-    readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply)
-    function clearActivity(){userSpeaking=false;assistantSpeaking=false;replyUntil=0;waitingForReply=false;transport.reset_speech()}
+    property string pendingCue: ""
+    readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
+    function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";transport.reset_speech()}
+    function updateStatus() {
+        if(!started || !connected || failed)return
+        status=userSpeaking?"Listening…":assistantSpeaking?(capturing?"Speaking · you can interrupt":"Speaking · microphone off"):
+            backendBusy?"Checking your request…":waitingForReply?"Waiting for voice…":
+            capturing?"Live voice · speak naturally":"Guide voice ready · mic off"
+    }
+    onUserSpeakingChanged: updateStatus()
+    onAssistantSpeakingChanged: updateStatus()
+    onWaitingForReplyChanged: updateStatus()
+    onBackendBusyChanged: updateStatus()
     onStartedChanged: if(!started)clearActivity()
     onStatusChanged: if(trace)console.warn("GAMEBUDDY_REALTIME_STATUS " + status)
     signal transcript(string text)
@@ -103,6 +115,7 @@ WebEngineView {
                 // This cue already contains the selected words. Appending
                 // commentary here can race and cancel its queued speech.
                 // Authorize playback before the cue can produce remote audio.
+                pendingCue=text
                 runJavaScript("gamebuddyVoice.allowReply('cue')",()=>transport.speak(text))
             }
         }
@@ -115,9 +128,8 @@ WebEngineView {
         interval:100;repeat:true;running:panel.started
         onTriggered:{
             const now=Date.now()
-            if(now-panel.inputAt>1000 && panel.userSpeaking){panel.userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")}
+            if(now-panel.inputAt>1000 && panel.detectedSpeech){panel.detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")}
             if(now-panel.outputAt>1000)panel.assistantSpeaking=false
-            panel.waitingForReply=panel.replyUntil>now
         }
     }
     RealtimeVoice {
@@ -126,7 +138,10 @@ WebEngineView {
             const event=JSON.parse(event_json), p=event.params || {}
             if(panel.trace && event.method==="thread/realtime/transcript/done")console.warn("GAMEBUDDY_REALTIME_TRANSCRIPT role="+p.role+" characters="+(p.text||"").length)
             if(event.method==="gamebuddy/conversation")panel.returningPlayer=p.returning_player===true
-            else if(event.method==="gamebuddy/reasoning")panel.runJavaScript("gamebuddyVoice.setBackendBusy("+(p.active===true)+")")
+            else if(event.method==="gamebuddy/reasoning"){
+                panel.backendBusy=p.active===true
+                panel.runJavaScript("gamebuddyVoice.setBackendBusy("+panel.backendBusy+")")
+            }
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
@@ -155,25 +170,32 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
+        if(trace && !["input-pcm","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
+        if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
         if(event.type==="input-pcm"){
             if(!capturing)return
             inputAt=Date.now()
             const speaking=transport.detect_speech(JSON.stringify(event.value))
-            if(speaking!==userSpeaking){
+            if(speaking!==detectedSpeech){
                 runJavaScript("gamebuddyVoice.playerSpeech("+speaking+")")
-                if(speaking)updateContext()
             }
-            if(speaking && !userSpeaking){replyUntil=Date.now()+20000;waitingForReply=true}
-            if(!speaking && userSpeaking && waitingForReply)replyUntil=Date.now()+20000
-            userSpeaking=speaking
+            detectedSpeech=speaking
+        }
+        else if(event.type==="input-active"){
+            userSpeaking=event.value
+            if(userSpeaking)pendingCue=""
+            transport.player_speech(userSpeaking)
+            if(userSpeaking)updateContext()
         }
         else if(event.type==="output-active"){
+            if(event.value)pendingCue=""
             if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started")
             outputAt=Date.now();assistantSpeaking=event.value
-            if(assistantSpeaking){replyUntil=0;waitingForReply=false;if(userSpeaking){userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")}}
         }
+        else if(event.type==="reply-pending")waitingForReply=event.value
+        else if(event.type==="cue-retry" && pendingCue.length)transport.speak(pendingCue)
+        else if(event.type==="cue-timeout"){pendingCue="";status="Voice cue unavailable · you can still speak"}
         else if(event.type==="playback-allowed" || event.type==="reply-permit"){if(trace)console.warn("GAMEBUDDY_VOICE_GATE "+event.type+" "+event.value)}
         else if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
         else if(event.type==="error")fail(event.value)
@@ -185,7 +207,7 @@ WebEngineView {
     }
     onEnabledBackendChanged: update()
     onSpokenRepliesChanged: { if(spokenReplies){failed=false;proactivePaused=false};if(loaded)runJavaScript("gamebuddyVoice.muteOutput("+(!spokenReplies)+")");update() }
-    onCapturingChanged: if(connected)status=capturing?"Live voice · speak naturally":"Guide voice ready · mic off"
+    onCapturingChanged: updateStatus()
     Connections { target: panel.voice; function onActiveChanged(){
         if(panel.voice.active){panel.failed=false;panel.proactivePaused=false}
         const wasStarted=panel.started

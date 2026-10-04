@@ -563,6 +563,12 @@ ApplicationWindow {
                             } }
                         }
                         CheckBox {
+                            text:"Faster Codex voice replies";checked:JSON.parse(buddy.settings_json).fast_voice !== false;Layout.leftMargin:24
+                            palette.windowText:"#c7fff0";palette.text:"#c7fff0";palette.base:"#254c49"
+                            onClicked:{const s=JSON.parse(buddy.settings_json);s.fast_voice=checked;buddy.save_settings(JSON.stringify(s));settingsEditor.text=JSON.stringify(s,null,2)}
+                        }
+                        Text { text:"Uses Codex Fast mode when available, with higher quota use. Applies to the next voice connection.";color:root.muted;font.pixelSize:12;Layout.leftMargin:24;Layout.rightMargin:24;Layout.fillWidth:true;wrapMode:Text.WordWrap }
+                        CheckBox {
                             text:"Lower game volume during conversations";checked:root.duckGameAudio;Layout.leftMargin:24
                             palette.windowText:"#c7fff0";palette.text:"#c7fff0";palette.base:"#254c49"
                             onClicked:{const s=JSON.parse(buddy.settings_json);s.duck_game_audio=checked;buddy.save_settings(JSON.stringify(s));settingsEditor.text=JSON.stringify(s,null,2)}

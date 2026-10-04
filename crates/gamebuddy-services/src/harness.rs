@@ -6,10 +6,11 @@ use anyhow::{Context, Result, bail, ensure};
 use gamebuddy_core::{Guide, Widget};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+mod context;
 
 pub fn tool_definitions() -> Value {
     let mut definitions = json!([
-        {"name":"set_next_action","description":"Publish the next action you are advising so the voice, Now card and outline agree. Call before giving or changing gameplay instructions. Use an existing unfinished leaf step from get_outline; instructions are one or two concise sentences grounded in that step and the latest screen/player request. This changes the suggested plan action only, never location or completion. Do not use for acknowledgments or generic conversation. Requires the current guide revision and progress epoch from get_game_context.","inputSchema":{}},
+        {"name":"set_next_action","description":"Publish the next action you are advising so the voice, Now card and outline agree. Call before giving or changing gameplay instructions. Use an eligible unfinished leaf step from get_game_context.nearby_actions or search_guide; instructions are one or two concise sentences grounded in that step and the latest screen/player request. This changes the suggested plan action only, never location or completion. Do not use for acknowledgments or generic conversation. Requires the current guide revision and progress epoch from get_game_context.","inputSchema":{}},
         {"name":"get_spatial_context","description":"Read geometric place hypotheses, source timestamps, 2D camera footprint or 3D place evidence, and preparation diagnostics. Room identity never proves inventory or objective completion. Missing spatial evidence is not missing screen access.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"prepare_world","description":"Build or resume spatial references inside GameBuddy from enabled walkthrough videos. Automatically calibrates video borders/HUD and 2D/3D camera type. This may take minutes; existing outline and gameplay remain available.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"pin_walkthrough","description":"Remember an exact player-selected YouTube walkthrough for this game and platform. Future preparation uses this video without substituting search results. Does not delete older guides.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"platform":{"type":"string"}},"required":["url","platform"],"additionalProperties":false}},
@@ -21,10 +22,10 @@ pub fn tool_definitions() -> Value {
         {"name":"set_map_enabled","description":"Enable or disable a reference map according to player preference.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["id","enabled"],"additionalProperties":false}},
         {"name":"report_step_complete","description":"Record an explicit PLAYER statement that a task is already done. First read get_game_context. Supply the player's own report; never use your advice, walkthrough text, room similarity, or assumed inventory as a report. This is stored as player-reported progress, not independently verified completion.","inputSchema":{"type":"object","properties":{"step_id":{"type":"string"},"player_report":{"type":"string"},"expected_revision":{"type":"integer"},"epoch":{"type":"integer"}},"required":["step_id","player_report","expected_revision","epoch"],"additionalProperties":false}},
         {"name":"get_game_context","description":"Read the current game, player-location hypotheses, guide, progress and latest screenshot as native image content when capture is live. Call first for gameplay questions and player corrections; inspect the image rather than relying on an older scene summary.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"search_guide","description":"Find source-backed steps in the active walkthrough.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}},
+        {"name":"search_guide","description":"Find source-backed steps and their current action eligibility in the active walkthrough. Use this focused search when the nearby actions from get_game_context do not answer the question; no need to load the entire outline.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}},
         {"name":"show_widget","description":"Show or replace a draggable OSD widget. Widget fields: id, title, source_step_ids, item_sources, content. Cite supporting guide step IDs in source_step_ids; their original source links/timestamps appear on hover. For mixed-source tables/checklists provide item_sources entries {item_index: zero-based row/item, source_step_ids: [IDs]}. An empty per-item list explicitly means no attached reference. Never invent citations; player goals and unsourced advice are labelled accordingly. Content kind is text (body), table (columns and rows), checklist (items), image (HTTPS url and caption), or video (YouTube url and start_seconds). Never invent a map or source URL.","inputSchema":{"type":"object","properties":{"widget":{"type":"object"}},"required":["widget"],"additionalProperties":false}},
         {"name":"remove_widget","description":"Remove a model-created OSD widget by ID.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}}
-        ,{"name":"get_outline","description":"Read the editable outline, goals, source preferences and revision history before changing the plan.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}
+        ,{"name":"get_outline","description":"Read the editable outline before changing the route, goals or available actions. For a targeted edit supply step_ids from nearby_actions or search_guide: returns complete selected nodes and their ancestors, plus guide metadata. Omit step_ids only when the entire outline is needed; large walkthroughs can contain hundreds of steps. Ordinary next-action advice uses set_next_action and does not need this tool.","inputSchema":{"type":"object","properties":{"step_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":20}},"additionalProperties":false}}
         ,{"name":"read_reference","description":"Read timestamped captions (up to ten minutes) and imported text for an enabled source. Never assume captions exist.","inputSchema":{"type":"object","properties":{"source_id":{"type":"string"},"start_ms":{"type":"integer"},"end_ms":{"type":"integer"}},"required":["source_id","start_ms","end_ms"],"additionalProperties":false}}
         ,{"name":"edit_plan","description":"Adapt the outline to the player's request. Requires expected_revision and summary. Optional upsert_steps contains complete Step objects from get_outline; remove_step_ids removes nodes (repair all incoming links and goals in the same edit). Optional goals replaces the goals list: id, description, step_ids. Optional reference_preferences replaces preferences: source_id, enabled, preference. Keep stable IDs for unchanged tasks. Edits cannot mark progress complete.","inputSchema":{"type":"object","properties":{"expected_revision":{"type":"integer"},"summary":{"type":"string"},"upsert_steps":{"type":"array","items":{"type":"object"}},"remove_step_ids":{"type":"array","items":{"type":"string"}},"goals":{"type":"array","items":{"type":"object"}},"reference_preferences":{"type":"array","items":{"type":"object"}}},"required":["expected_revision","summary"],"additionalProperties":false}}
         ,{"name":"restore_plan","description":"Restore a previous outline as a new revision. Confirmed progress is retained only for unchanged steps; undo does not resurrect old completion claims.","inputSchema":{"type":"object","properties":{"expected_revision":{"type":"integer"},"restore_revision":{"type":"integer"}},"required":["expected_revision","restore_revision"],"additionalProperties":false}}
@@ -62,6 +63,16 @@ pub struct ToolOutput {
     pub images: Vec<String>,
 }
 impl ToolOutput {
+    /// Native turn/steer input uses a different tagged shape than tool output.
+    pub fn codex_input(&self, label: &str) -> Vec<Value> {
+        let mut input = vec![json!({"type":"text","text":format!("{label}\n{}",self.value)})];
+        input.extend(
+            self.images.iter().map(
+                |image| json!({"type":"image","url":format!("data:image/jpeg;base64,{image}")}),
+            ),
+        );
+        input
+    }
     pub fn codex_content(&self) -> Value {
         let mut items = vec![json!({"type":"inputText","text":self.value.to_string()})];
         items.extend(self.images.iter().map(|image|json!({"type":"inputImage","imageUrl":format!("data:image/jpeg;base64,{image}")})));
@@ -138,8 +149,12 @@ pub fn call_tool_with_images(store: &Store, name: &str, arguments: Value) -> Res
         value["image_labels"] = json!(labels);
         return Ok(ToolOutput { value, images });
     }
+    let mut value = call_tool(store, name, arguments)?;
+    if value["navigation"].is_object() {
+        value["navigation"] = context::navigation(&value["navigation"]);
+    }
     Ok(ToolOutput {
-        value: call_tool(store, name, arguments)?,
+        value,
         images: vec![],
     })
 }
@@ -229,11 +244,19 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
                 .and_then(|s| serde_json::from_value(s["estimate"].clone()).ok())
                 .unwrap_or_default();
             let navigation = crate::navigation::context(store, &guide, &progress, &estimate)?;
+            let nearby_actions =
+                context::nearby_actions(&guide, &progress, &navigation["guidance"]["now"]);
+            let navigation = context::navigation(&navigation);
+            let coverage_notes: Vec<_> = guide
+                .coverage_notes
+                .iter()
+                .skip(guide.coverage_notes.len().saturating_sub(6))
+                .collect();
             Ok(
-                json!({"game":guide.game,"guide_id":guide.id,"guide_revision":guide.revision,"guide_title":guide.title,"progress":progress,"current_step":navigation["guidance"]["now"],"navigation":navigation,"screen":crate::screen::status(store)?,"sources":guide.sources,"goals":guide.goals,"reference_preferences":guide.reference_preferences,"coverage_notes":guide.coverage_notes,"observation":session,"widgets":widgets(store,&guide)?}),
+                json!({"game":guide.game,"guide_id":guide.id,"guide_revision":guide.revision,"guide_title":guide.title,"progress":progress,"current_step":navigation["guidance"]["now"],"nearby_actions":nearby_actions,"navigation":navigation,"screen":crate::screen::status(store)?,"sources":guide.sources,"goals":guide.goals,"reference_preferences":guide.reference_preferences,"coverage_notes":coverage_notes,"coverage_note_count":guide.coverage_notes.len(),"widgets":widgets(store,&guide)?}),
             )
         }
-        "get_outline" => Ok(json!({"guide":guide,"history":store.revision_history(&guide.id)?})),
+        "get_outline" => context::outline(store, &guide, &arguments),
         "read_reference" => {
             let id = arguments["source_id"]
                 .as_str()
@@ -352,7 +375,15 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
                 .filter(|(score, _)| *score > 0)
                 .collect();
             scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-            Ok(json!({"steps":scored.into_iter().take(12).map(|(_,step)|step).collect::<Vec<_>>()}))
+            let progress = store.progress(&guide)?;
+            let steps: Vec<_> = scored.into_iter().take(12).map(|(_, step)| step).collect();
+            let status: std::collections::BTreeMap<_, _> = steps
+                .iter()
+                .map(|s| (&s.id, context::action_status(&guide, &progress, &s.id)))
+                .collect();
+            Ok(
+                json!({"steps":steps,"action_status":status,"guide_revision":guide.revision,"epoch":progress.epoch}),
+            )
         }
         "show_widget" => {
             let widget: Widget = serde_json::from_value(arguments["widget"].clone())?;

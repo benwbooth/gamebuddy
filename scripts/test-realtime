@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-overlay --bin gamebuddy --bin gamebuddy-cli --examples
 runtime_dir="$(mktemp -d /tmp/gamebuddy-realtime-test-XXXXXXXX)"
+printf 'Realtime voice fixture: %s\n' "$runtime_dir"
 export GAMEBUDDY_TEST_DATA="$runtime_dir/data" GAMEBUDDY_TEST_REALTIME=1
 export GAMEBUDDY_TEST_SCREEN=1
 export GAMEBUDDY_TEST_MIC_SINK="gamebuddy_test_input_$$"
@@ -13,9 +14,10 @@ export GAMEBUDDY_AUDIO_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE"
 export PULSE_SOURCE="$GAMEBUDDY_TEST_MIC_SOURCE" PULSE_SINK="gamebuddy_test_output_$$"
 export GAMEBUDDY_TEST_VOICE_WAV="$runtime_dir/request.wav"
 export GAMEBUDDY_TEST_LOG="$runtime_dir/runtime.log"
-modules=(); recorder=""
+modules=(); recorder=""; player=""
 cleanup(){
   if [[ -n "$recorder" ]]; then kill -INT "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true; fi
+  if [[ -n "$player" ]]; then kill "$player" 2>/dev/null || true; wait "$player" 2>/dev/null || true; fi
   for ((i=${#modules[@]}-1;i>=0;i--)); do pactl unload-module "${modules[i]}"; done
 }
 trap cleanup EXIT
@@ -28,12 +30,33 @@ modules+=("$(pactl load-module module-loopback source="$PULSE_SINK.monitor" sink
 # Already unmuted before launch: the fixture must talk without any UI action
 # or post-launch mute/unmute gesture. test-voice covers initially muted startup.
 pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 0
+# Keep synthetic player speech outside the launched game's process tree so
+# game-volume ducking cannot attenuate the test microphone during interruption.
+export GAMEBUDDY_TEST_PLAY_SOCKET="$runtime_dir/player.sock"
+node --input-type=module - "$GAMEBUDDY_TEST_PLAY_SOCKET" "$GAMEBUDDY_TEST_MIC_SINK" <<'JS' &
+import net from 'node:net';
+import {spawn} from 'node:child_process';
+const [socket,sink]=process.argv.slice(2);
+net.createServer(client=>{let text='';client.on('data',data=>{text+=data;if(!text.includes('\n'))return;client.removeAllListeners('data');const path=JSON.parse(text.trim());const child=spawn('paplay',['--device',sink,path]);child.on('error',e=>client.end(String(e)));child.on('exit',code=>client.end(code===0?'ok':`paplay exit ${code}`));});}).listen(socket);
+JS
+player=$!
+for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
+  export GAMEBUDDY_TEST_STORY_WAV="$runtime_dir/story.wav" GAMEBUDDY_TEST_INTERRUPT_WAV="$runtime_dir/interrupt.wav" GAMEBUDDY_TEST_STOP_WAV="$runtime_dir/stop.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STORY_WAV" 'Tell me a five paragraph forest adventure at least two hundred and fifty words long ending with the exact words the silver lantern glows.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_INTERRUPT_WAV" 'Stop the story. What color is the tall rectangle on my screen? Put the answer in a text widget titled Interruption Works, then tell me briefly.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STOP_WAV" 'Stop.'
+fi
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
 cat >"$runtime_dir/settings.json" <<'JSON'
 {"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
 JSON
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
+if [[ -n "${GAMEBUDDY_TEST_VOICE_MODEL:-}" ]]; then
+  node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.reasoning.model=process.env.GAMEBUDDY_TEST_VOICE_MODEL;fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"
+  ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
+fi
 parec --device="$PULSE_SINK.monitor" --file-format=wav "$runtime_dir/response.wav" & recorder=$!
 ./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
     ./target/debug/examples/compositor_probe "$runtime_dir/proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
@@ -48,6 +71,9 @@ for chunk in "$runtime_dir"/heard-*.wav; do
 done
 rg -qi '\bred\b' "$runtime_dir/heard.txt"
 rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
+  rg -qi 'silver lantern glows' "$runtime_dir/heard.txt"
+fi
 # Keep a separate tail excerpt for the later selected visual feedback.
 ffmpeg -nostdin -hide_banner -loglevel error -y -sseof -30 -i "$runtime_dir/response.wav" "$runtime_dir/feedback.wav"
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$runtime_dir/feedback.wav" >"$runtime_dir/feedback-heard.txt"

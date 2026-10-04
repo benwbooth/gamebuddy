@@ -1,7 +1,9 @@
 //! Microphone activation and bounded, local speech turn detection.
 pub mod duck;
+pub mod input;
 pub mod mute;
 pub mod narration;
+pub mod prompts;
 use std::{collections::VecDeque, path::Path};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
@@ -85,6 +87,12 @@ impl Default for Segmenter {
 impl Segmenter {
     pub fn speaking(&self) -> bool {
         self.voiced >= 3 && self.silence < END_SILENCE
+    }
+    /// Streaming voice already has server-side endpointing. Release its local
+    /// playback mask promptly so the first words of a quick reply are audible;
+    /// the longer pause used to finalize a Whisper recording is independent.
+    pub fn live_speaking(&self) -> bool {
+        self.voiced >= 3 && self.silence < 10
     }
     pub fn feed(&mut self, samples: &[i16]) -> Option<Vec<i16>> {
         self.pending.extend(samples);
@@ -257,6 +265,30 @@ mod tests {
         gate.observe("mic1", Some(true));
         gate.observe("mic1", Some(false));
         assert!(gate.active, "An explicit unmute resumes hands-free mode");
+    }
+    #[test]
+    fn live_voice_releases_playback_before_the_recording_endpoint() {
+        let mut s = Segmenter::default();
+        let frame = [1000; FRAME];
+        for _ in 0..MIN_VOICED {
+            s.frame(&frame, true);
+        }
+        assert!(s.live_speaking());
+        for _ in 0..9 {
+            assert!(s.frame(&frame, false).is_none());
+        }
+        assert!(s.live_speaking());
+        assert!(s.frame(&frame, false).is_none());
+        assert!(
+            !s.live_speaking(),
+            "streaming replies can start after 200 ms"
+        );
+        assert!(
+            s.speaking(),
+            "local recording still tolerates a longer pause"
+        );
+        assert!(s.frame(&frame, true).is_none());
+        assert!(s.live_speaking(), "continued speech resumes immediately");
     }
     #[test]
     fn silence_and_clicks_do_not_submit_but_a_pause_ends_speech() {

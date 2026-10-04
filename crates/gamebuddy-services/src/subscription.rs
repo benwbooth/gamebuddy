@@ -152,12 +152,71 @@ impl CodexClient {
         tools: Value,
         deadline: Instant,
     ) -> Result<String> {
+        self.thread_with_tools_at_tier(model, instructions, tools, None, deadline)
+    }
+    pub fn voice_thread(
+        &mut self,
+        model: &str,
+        instructions: &str,
+        tools: Value,
+        fast: bool,
+        deadline: Instant,
+    ) -> Result<String> {
+        let priority = fast
+            && self
+                .request("model/list", json!({}), deadline)
+                .ok()
+                .and_then(|models| {
+                    models["data"]
+                        .as_array()?
+                        .iter()
+                        .find(|m| {
+                            if model.is_empty() {
+                                m["isDefault"] == true
+                            } else {
+                                m["model"] == model || m["id"] == model
+                            }
+                        })
+                        .map(|m| {
+                            m["serviceTiers"].as_array().is_some_and(|tiers| {
+                                tiers.iter().any(|tier| tier["id"] == "priority")
+                            })
+                        })
+                })
+                .unwrap_or(false);
+        self.thread_with_tools_at_tier(
+            model,
+            instructions,
+            tools,
+            priority.then_some("priority"),
+            deadline,
+        )
+    }
+    fn thread_with_tools_at_tier(
+        &mut self,
+        model: &str,
+        instructions: &str,
+        tools: Value,
+        tier: Option<&str>,
+        deadline: Instant,
+    ) -> Result<String> {
         let mut params = json!({"ephemeral":true,"cwd":self._directory.path(),"environments":[],"approvalPolicy":"never","sandbox":"read-only","baseInstructions":instructions,"config":{"model_reasoning_effort":"low"}});
+        if let Some(tier) = tier {
+            params["serviceTier"] = json!(tier)
+        }
         params["dynamicTools"] = tools;
         if !model.is_empty() {
             params["model"] = json!(model);
         }
         let value = self.request("thread/start", params, deadline)?;
+        if std::env::args().any(|a| a == "--voice-trace") {
+            eprintln!(
+                "GAMEBUDDY_CODEX_THREAD model={} effort={} service_tier={}",
+                value["model"].as_str().unwrap_or_default(),
+                value["reasoningEffort"].as_str().unwrap_or_default(),
+                value["serviceTier"].as_str().unwrap_or("default")
+            );
+        }
         Ok(value["thread"]["id"]
             .as_str()
             .context("Codex did not return a thread ID")?

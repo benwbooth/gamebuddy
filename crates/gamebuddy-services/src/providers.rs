@@ -43,6 +43,11 @@ pub struct Settings {
     pub speech: SpeechBackend,
     #[serde(default = "ducking_enabled")]
     pub duck_game_audio: bool,
+    #[serde(default = "fast_voice_enabled")]
+    pub fast_voice: bool,
+}
+fn fast_voice_enabled() -> bool {
+    true
 }
 fn ducking_enabled() -> bool {
     true
@@ -54,6 +59,7 @@ impl Default for Settings {
             vision: ProviderConfig::default(),
             speech: SpeechBackend::default(),
             duck_game_audio: true,
+            fast_voice: true,
         }
     }
 }

@@ -4,27 +4,69 @@
   let peer=null, mic=null, sender=null, silence=null, audioContext=null, events=null, pendingContext='', generation=0, captureGeneration=0;
   let inputMeter=null,outputMeter=null,meterTimer=null,meterTick=0;
   const speaker=document.getElementById('speaker');
-  let outputMuted=false,replyUntil=0,replyAudioMs=0,replyBudgetMs=0,lastReplyAudio=0;
-  let backendBusy=false,playerSpeaking=false,micBlockedUntil=0,playbackAllowed=false,sampledAt=0;
-  const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
+  let outputMuted=false,replyUntil=0,lastReplyAudio=0,assistantDoneAt=0,awaitingAnswer=false;
+  let backendBusy=false,playerSpeaking=false,localSpeech=false,confirmedInputUntil=0,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
+  let cueWaitingAt=0,cueRetried=false;
+  const assistantTurns=new Set();
+  const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value,at:Date.now()}));
   // Frameless voice can generate audio without a player turn. Enforce playback
-  // locally: a real VAD turn or an explicit app cue grants one bounded reply.
+  // locally: a real VAD turn or an explicit app cue grants one reply. Its
+  // native turn completion, not a word-count timer, determines when it ends.
   function allowReply(kind){
-    replyUntil=Date.now()+(kind==='cue'?20000:60000);replyAudioMs=0;
-    replyBudgetMs=kind==='cue'?12000:20000;lastReplyAudio=0;
+    replyUntil=Date.now()+90000;lastReplyAudio=0;assistantDoneAt=0;awaitingAnswer=false;
+    assistantTurns.clear();
+    cueWaitingAt=kind==='cue'?Date.now():0;cueRetried=false;
     emit('reply-permit',kind);
+    emit('reply-pending',true);
   }
   function playerSpeech(active){
-    if(active&&Date.now()<micBlockedUntil)return;
+    localSpeech=active;
+    // AEC can briefly leave residual echo while it converges. During playback,
+    // require the server's recognized input as well as local speech activity
+    // before cutting off the speaker. Audio keeps streaming throughout.
+    if(active&&Date.now()-lastReplyAudio<1000&&Date.now()>confirmedInputUntil){pendingOverlapUntil=Date.now()+2500;return}
+    if(active)pendingOverlapUntil=0;
     if(active&&!playerSpeaking)allowReply('player');
+    if(active!==playerSpeaking)emit('input-active',active);
     playerSpeaking=active;
-    if(!active&&replyUntil)replyUntil=Date.now()+60000;
+    if(!active&&replyUntil)replyUntil=Date.now()+90000;
   }
   function setBackendBusy(active){
     // A handoff may acknowledge the question, pause for tools, then answer.
     // Backend work cannot grant itself permission to start speaking.
-    if(backendBusy&&!active&&replyUntil){lastReplyAudio=0;replyUntil=Date.now()+30000}
+    if(backendBusy&&!active&&replyUntil){awaitingAnswer=true;replyUntil=Date.now()+90000}
     backendBusy=active;
+  }
+  function wire(v){
+    emit('wire',{type:v.type,role:v.turn?.role,start_ms:v.start_ms,end_ms:v.end_ms});
+    if(v.type==='session.started'){
+      sessionReady=true;if(pendingContext)updateContext(pendingContext);emit('ready',true);
+    }
+    if(v.type==='delegation.created')setBackendBusy(true);
+    if(v.type==='input_transcript.added'&&mic&&v.item?.text?.trim()){
+      confirmedInputUntil=Date.now()+1500;
+      // A short "stop" can end before its transcript arrives. Preserve that
+      // recent local overlap so its answer is not silently denied playback.
+      if(localSpeech||Date.now()<pendingOverlapUntil){
+        const stillSpeaking=localSpeech;pendingOverlapUntil=0;
+        playerSpeech(true);if(!stillSpeaking)playerSpeech(false);
+      }
+    }
+    if(v.type==='turn.created'&&v.turn?.role==='assistant'){
+      assistantTurns.add(v.turn.id);assistantDoneAt=0;cueWaitingAt=0;
+    }
+    if(v.type==='output_transcript.added'&&replyUntil){awaitingAnswer=false;replyUntil=Date.now()+90000}
+    if(v.type==='turn.done'&&v.turn?.role==='assistant'){
+      // Completion of a turn interrupted by a newer request must not close
+      // that newer request's playback permission.
+      if(assistantTurns.delete(v.turn.id))assistantDoneAt=Date.now();
+    }
+    if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
+      // An exact completed stop command needs no spoken acknowledgment. Wait
+      // for completion so "stop ... and show me X" remains a normal request.
+      replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
+    }
+    if(v.type==='error')emit('error',v.error?.message||'Voice transport error');
   }
   function disconnectMeter(meter){if(meter){meter.source.disconnect();meter.analyser.disconnect();meter.zero.disconnect()}}
   function meter(stream){
@@ -33,20 +75,25 @@
     return {source,analyser,zero,data:new Float32Array(analyser.fftSize)};
   }
   function sampleMeters(){
-    const now=Date.now(),elapsed=sampledAt?Math.max(0,now-sampledAt):20;sampledAt=now;let rms=0;
+    const now=Date.now();let rms=0;
     if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
-    if(playerSpeaking&&replyUntil)replyUntil=now+60000;
-    if(replyUntil&&(now>=replyUntil||replyAudioMs>=replyBudgetMs||(!backendBusy&&!playerSpeaking&&lastReplyAudio&&now-lastReplyAudio>=2500)))replyUntil=0;
+    if(replyUntil&&(playerSpeaking||backendBusy))replyUntil=now+90000;
+    // Some new sessions acknowledge an app cue without generating a turn.
+    // Retry that exact cue once, only before any speech starts. Never repeat
+    // a player request or tool action, or replace an answer already in flight.
+    if(cueWaitingAt&&!backendBusy&&!playerSpeaking){
+      if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true)}
+      else if(now-cueWaitingAt>=6000&&!cueRetried){cueRetried=true;emit('cue-retry',true)}
+    }
+    if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&lastReplyAudio&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
     const allowed=!outputMuted&&!playerSpeaking&&replyUntil>now;
     if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
     speaker.muted=!allowed;
     const audible=allowed&&rms>0.002;
-    if(audible){lastReplyAudio=now;replyAudioMs+=elapsed;micBlockedUntil=now+800}
-    // Keep the selected device owned, but send silence during playback and its
-    // acoustic tail. Echo cannot become a new VAD turn and reopen the reply gate.
-    const inputAllowed=now>=micBlockedUntil;
-    if(mic)mic.getAudioTracks().forEach(t=>t.enabled=inputAllowed);
-    if(inputMeter&&inputAllowed){
+    if(audible){lastReplyAudio=now;awaitingAnswer=false;replyUntil=now+90000;cueWaitingAt=0}
+    // Chromium's acoustic echo cancellation processes the microphone before
+    // this meter and the sender. Keep it live so a player can interrupt speech.
+    if(inputMeter){
       inputMeter.analyser.getFloatTimeDomainData(inputMeter.data);
       // Send a 20 ms, 16 kHz PCM slice to the existing Rust/WebRTC speech
       // detector. The Qt console handler consumes this local IPC message;
@@ -60,12 +107,17 @@
       emit('input-pcm',pcm);
     }
     if(++meterTick%5===0)emit('output-active',audible);
+    const own=generation;
+    if(meterTick%250===0&&peer)peer.getStats().then(stats=>{
+      if(own!==generation)return;
+      const summary=[];stats.forEach(s=>{if((s.type==='inbound-rtp'||s.type==='outbound-rtp')&&s.kind==='audio')summary.push({type:s.type,packets:s.packetsSent??s.packetsReceived,bytes:s.bytesSent??s.bytesReceived,concealed:s.concealedSamples})});emit('transport-stats',summary);
+    }).catch(()=>{});
   }
-  function closeMic(){captureGeneration++;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
-  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;replyUntil=0;lastReplyAudio=0;replyAudioMs=0;backendBusy=false;playerSpeaking=false;micBlockedUntil=0;playbackAllowed=false;speaker.muted=true;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;speaker.srcObject=null}
+  function closeMic(){captureGeneration++;pendingOverlapUntil=0;confirmedInputUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
+  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;replyUntil=0;lastReplyAudio=0;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;playbackAllowed=false;sessionReady=false;speaker.muted=true;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;speaker.srcObject=null}
   function updateContext(text){
     pendingContext=text;
-    if(events?.readyState!=='open')return;
+    if(events?.readyState!=='open'||!sessionReady)return;
     // Frameless v3 appendText defaults to speakable even for developer messages.
     // Observations must use the quiet commentary channel on the same WebRTC session.
     // Match Codex's 500-byte context chunks without splitting a Unicode character.
@@ -93,7 +145,7 @@
         if(stale()){stream.getTracks().forEach(t=>t.stop());return}
       }
       mic=stream;
-      mic.getAudioTracks().forEach(t=>t.enabled=Date.now()>=micBlockedUntil);
+      mic.getAudioTracks().forEach(t=>t.enabled=true);
       await sender.replaceTrack(stream.getAudioTracks()[0]);
       if(!stale()){inputMeter=meter(stream);emit('capture',true)}
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
@@ -115,8 +167,7 @@
         if(own!==generation)return;
         meterTimer=setInterval(sampleMeters,20);
         events=pc.createDataChannel('oai-events');
-        events.onopen=()=>{if(own===generation){if(pendingContext)updateContext(pendingContext);emit('ready',true)}};
-        events.onmessage=e=>{if(own!==generation)return;try{const v=JSON.parse(e.data);if(v.type==='error')emit('error',v.error?.message||'Voice transport error')}catch{}};
+        events.onmessage=e=>{if(own!==generation)return;try{wire(JSON.parse(e.data))}catch{}};
         pc.ontrack=e=>{if(own!==generation)return;const stream=e.streams[0]||new MediaStream([e.track]);disconnectMeter(outputMeter);outputMeter=meter(stream);document.getElementById('speaker').srcObject=stream;document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
         pc.onconnectionstatechange=()=>{if(own===generation)emit('connection',pc.connectionState)};
         if(capture)await setMicrophone(true,deviceName);

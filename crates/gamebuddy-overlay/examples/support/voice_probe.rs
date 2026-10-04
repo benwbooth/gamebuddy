@@ -415,17 +415,14 @@ fn realtime(
         !game_audio.ducked()?,
         "An unmuted but silent mic lowered the game"
     );
-    let mut request = Command::new("paplay")
-        .args(["--device", &sink, &wave])
-        .spawn()?;
+    let request = thread::spawn(move || play_player(&wave));
     wait("microphone speech lowers game audio", || {
         game_audio.ducked()
     })?;
     println!("GAMEBUDDY_AUDIO_MIC_PASS");
-    ensure!(
-        request.wait()?.success(),
-        "Synthetic speech playback failed"
-    );
+    request
+        .join()
+        .map_err(|_| anyhow::anyhow!("Player audio worker failed"))??;
     let started = Instant::now();
     wait("spoken request reaches GameBuddy widget tool", || {
         let id: String = store.get("active_guide")?.context("active guide")?;
@@ -446,7 +443,8 @@ fn realtime(
                 .iter()
                 .any(|name| log_text.contains(&format!(
                     "GAMEBUDDY_VOICE_TOOL name={name} success=true images=1"
-                ))),
+                )))
+                || log_text.contains("GAMEBUDDY_VOICE_CONTEXT images=1"),
             "Voice never inspected native screenshot content"
         );
         let id: String = store.get("active_guide")?.unwrap();
@@ -462,6 +460,10 @@ fn realtime(
     thread::sleep(Duration::from_secs(3)); // allow the OSD's regular store poll
     screenshot("realtime-widget.png")?;
     quiet()?;
+    if std::env::var_os("GAMEBUDDY_TEST_RESPONSIVE").is_some() {
+        responsive(&store, &log)?;
+        quiet()?;
+    }
     pactl(&["set-source-mute", &source, "1"])?;
     wait("mute leaves guidance available", || {
         Ok(std::fs::read_to_string(&log)?
@@ -510,6 +512,147 @@ fn realtime(
     Ok(())
 }
 
+/// Speak into the same echo-looped virtual microphone while a long reply is
+/// playing, then let a second long reply finish. No direct transport shortcuts.
+fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
+    let story = std::env::var("GAMEBUDDY_TEST_STORY_WAV")?;
+    let interrupt = std::env::var("GAMEBUDDY_TEST_INTERRUPT_WAV")?;
+    let playback_count = || -> Result<usize> {
+        Ok(std::fs::read_to_string(log)?
+            .matches("GAMEBUDDY_VOICE_PLAYBACK started")
+            .count())
+    };
+    let before = playback_count()?;
+    play_player(&story)?;
+    let started = Instant::now();
+    wait("long reply starts", || Ok(playback_count()? > before))?;
+    println!(
+        "GAMEBUDDY_RESPONSIVE_STORY_START latency_seconds={:.1}",
+        started.elapsed().as_secs_f32()
+    );
+    thread::sleep(Duration::from_secs(6));
+    let text = std::fs::read_to_string(log)?;
+    ensure!(
+        text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
+            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false"),
+        "The story ended before the interruption test"
+    );
+    play_player(&interrupt)?;
+    let started = Instant::now();
+    wait("interruption reaches the tool backend", || {
+        let id: String = store.get("active_guide")?.context("guide")?;
+        Ok(
+            gamebuddy_services::harness::widgets(store, &store.guide(&id)?)?
+                .iter()
+                .any(|w| {
+                    w.title.eq_ignore_ascii_case("Interruption Works")
+                        && serde_json::to_string(&w.content)
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains("green")
+                }),
+        )
+    })?;
+    println!(
+        "GAMEBUDDY_RESPONSIVE_INTERRUPT_PASS latency_seconds={:.1}",
+        started.elapsed().as_secs_f32()
+    );
+    wait("interrupted answer finishes", || {
+        let text = std::fs::read_to_string(log)?;
+        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+    })?;
+    let before = playback_count()?;
+    let last_message = store
+        .conversation_messages("Faxanadu", "", None, 1)?
+        .last()
+        .map(|m| m.id)
+        .unwrap_or(0);
+    play_player(&story)?;
+    let started = Instant::now();
+    wait(
+        "second long reply starts",
+        || Ok(playback_count()? > before),
+    )?;
+    let spoken_started = Instant::now();
+    // The request is at least 250 words; a naturally paced five-paragraph
+    // response can legitimately exceed a minute and a half.
+    let deadline = started + Duration::from_secs(180);
+    loop {
+        if store
+            .conversation_messages("Faxanadu", "silver lantern glows", None, 10)?
+            .iter()
+            .any(|m| m.id > last_message && m.role == "assistant")
+        {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "Long reply did not finish its final words"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    ensure!(
+        spoken_started.elapsed() >= Duration::from_secs(22),
+        "Reply was too short to exercise the former 20-second cutoff"
+    );
+    println!(
+        "GAMEBUDDY_RESPONSIVE_LONG_REPLY_PASS duration_seconds={:.1}; verify final words in the recorded output",
+        spoken_started.elapsed().as_secs_f32()
+    );
+    wait("long reply audio drains", || {
+        let text = std::fs::read_to_string(log)?;
+        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+    })?;
+    let before = playback_count()?;
+    play_player(&story)?;
+    wait("speech for a short interruption", || {
+        Ok(playback_count()? > before)
+    })?;
+    thread::sleep(Duration::from_secs(3));
+    let prior_input = std::fs::read_to_string(log)?
+        .matches("\"type\":\"input-active\",\"value\":true")
+        .count();
+    play_player(&std::env::var("GAMEBUDDY_TEST_STOP_WAV")?)?;
+    let stopped = Instant::now();
+    wait(
+        "one-word interruption silences speech and returns to waiting",
+        || {
+            let text = std::fs::read_to_string(log)?;
+            Ok(text
+                .matches("\"type\":\"input-active\",\"value\":true")
+                .count()
+                > prior_input
+                && text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+                    > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
+                && text.rfind("GAMEBUDDY_REALTIME_STATUS Live voice · speak naturally")
+                    > text.rfind("GAMEBUDDY_REALTIME_STATUS Listening…"))
+        },
+    )?;
+    ensure!(
+        stopped.elapsed() < Duration::from_secs(5),
+        "Short interruption took too long"
+    );
+    println!(
+        "GAMEBUDDY_RESPONSIVE_SHORT_STOP_PASS latency_seconds={:.1}",
+        stopped.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+fn play_player(path: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(std::env::var("GAMEBUDDY_TEST_PLAY_SOCKET")?)?;
+    stream.set_read_timeout(Some(Duration::from_secs(45)))?;
+    writeln!(stream, "{}", serde_json::to_string(path)?)?;
+    let mut result = String::new();
+    stream.read_to_string(&mut result)?;
+    ensure!(result == "ok", "Synthetic player speech failed: {result}");
+    Ok(())
+}
+
 /// A silent audio stream belonging to the fixture game, on the test's private
 /// output sink. Actual attenuation is measured by audio_duck_probe separately.
 struct DuckingAudio(std::process::Child);
@@ -528,6 +671,7 @@ impl DuckingAudio {
                 "--channels=2",
                 "--format=s16le",
                 "--latency-msec=50",
+                "--volume=65536",
                 "--device",
                 &sink,
             ])
@@ -556,9 +700,15 @@ impl DuckingAudio {
                         })
                         == Some(self.0.id() as u64)
             });
-        Ok(node
-            .and_then(|n| n["info"]["params"]["Props"][0]["softVolumes"][0].as_f64())
-            .is_some_and(|v| v < 0.6))
+        let props = node.map(|n| &n["info"]["params"]["Props"][0]);
+        Ok(props
+            .and_then(|p| {
+                Some((
+                    p["channelVolumes"][0].as_f64()?,
+                    p["softVolumes"][0].as_f64()?,
+                ))
+            })
+            .is_some_and(|(base, soft)| base > 0. && soft < base * 0.6))
     }
 }
 impl Drop for DuckingAudio {
