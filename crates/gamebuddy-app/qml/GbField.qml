@@ -6,8 +6,8 @@ TextField {
     placeholderTextColor: "#7e91a5"
     selectByMouse: true
     selectionColor: "#3e786e"
-    font.pixelSize: 13
-    implicitHeight: 38
+    font.pixelSize: 15
+    implicitHeight: 40
     leftPadding: 12
     background: Rectangle {
         radius: 6

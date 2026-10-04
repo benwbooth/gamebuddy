@@ -385,7 +385,7 @@ fn main() -> anyhow::Result<()> {
         toggle()?;
         // Open the production tray, then restore its fifth item (the custom
         // widget, following the outline, guide library, next action and map).
-        mouse(MOTION_NOTIFY_EVENT, 0, 380, 575)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 414, 648)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widget-tray.png")?;
@@ -401,10 +401,10 @@ fn main() -> anyhow::Result<()> {
         let restored: serde_json::Value = store.get("widget-layout")?.unwrap();
         ensure!(restored == layout, "Restoring a widget lost its layout");
         screenshot("widget-restored.png")?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 365, 215)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 420, 215)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 140, 575)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 140, 648)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widgets-hidden.png")?;

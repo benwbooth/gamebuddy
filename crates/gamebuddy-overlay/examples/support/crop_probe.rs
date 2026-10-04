@@ -94,7 +94,7 @@ pub fn run(
     };
     toggle()?;
     screenshot("crop-entry.png")?;
-    click(&serde_json::json!([382, 343]))?;
+    click(&serde_json::json!([422, 358]))?;
     wait(|| Ok(geometry().is_ok()))?;
     ensure!(
         cardinal(conn, overlay, focus)? == 1,
@@ -143,7 +143,7 @@ pub fn run(
         "Crop still contains the red bezel"
     );
     // Move the persisted selection, then resize its lower-right corner.
-    click(&serde_json::json!([382, 343]))?;
+    click(&serde_json::json!([422, 358]))?;
     thread::sleep(Duration::from_millis(400));
     mouse(MOTION_NOTIFY_EVENT, 0, x + w * 0.5, y + h * 0.5)?;
     mouse(BUTTON_PRESS_EVENT, 1, 0., 0.)?;
@@ -156,7 +156,7 @@ pub fn run(
         (crop.width - 0.5).abs() < 0.005 && (crop.y - 0.15).abs() < 0.005,
         "Moving changed the selection size: {crop:?}"
     );
-    click(&serde_json::json!([382, 343]))?;
+    click(&serde_json::json!([422, 358]))?;
     thread::sleep(Duration::from_millis(400));
     mouse(
         MOTION_NOTIFY_EVENT,
@@ -178,7 +178,7 @@ pub fn run(
         "Corner resizing produced the wrong crop: {crop:?}"
     );
     // Reopen, reset the draft, cancel: saved preference must survive.
-    click(&serde_json::json!([382, 343]))?;
+    click(&serde_json::json!([422, 358]))?;
     thread::sleep(Duration::from_millis(400));
     let g = geometry()?;
     click(&g["reset"])?;
@@ -187,7 +187,7 @@ pub fn run(
         screen::game_crop(&store, "Faxanadu")? == crop,
         "Cancel changed the saved crop"
     );
-    click(&serde_json::json!([382, 343]))?;
+    click(&serde_json::json!([422, 358]))?;
     thread::sleep(Duration::from_millis(400));
     let g = geometry()?;
     screenshot("crop-reopened.png")?;

@@ -4,7 +4,7 @@ import QtQuick.Controls
 Button {
     id: control
     property bool accent: false
-    implicitHeight: 36
+    implicitHeight: 40
     implicitWidth: Math.max(80, label.implicitWidth + 28)
     leftPadding: 14
     rightPadding: 14
@@ -19,7 +19,7 @@ Button {
         text: control.text
         color: control.accent ? "#102b29" : "#dce6ee"
         opacity: control.enabled ? 1 : 0.4
-        font.pixelSize: 12
+        font.pixelSize: 14
         font.weight: Font.DemiBold
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter

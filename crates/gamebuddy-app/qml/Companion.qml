@@ -33,8 +33,8 @@ Item {
     property var widgetCatalog: []
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
-    width: expanded ? 410 : 80
-    height: expanded ? 525 : 80
+    width: expanded ? 450 : 80
+    height: expanded ? 600 : 80
 
     onExpandedChanged: {
         if(!expanded)widgetTray.close()
@@ -147,23 +147,23 @@ Item {
             Layout.leftMargin: 62; Layout.fillWidth: true; Layout.preferredHeight: 46
             ColumnLayout {
                 spacing: 1
-                Text { text: "GameBuddy"; color: "#e6f1f6"; font.pixelSize: 18; font.weight: Font.DemiBold }
-                Text { text: companion.session.game || "Your game companion"; color: "#91a9b9"; font.pixelSize: 12 }
+                Text { text: "GameBuddy"; color: "#e6f1f6"; font.pixelSize: 20; font.weight: Font.DemiBold }
+                Text { text: companion.session.game || "Your game companion"; color: "#91a9b9"; font.pixelSize: 14 }
             }
             Item { Layout.fillWidth: true }
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
         }
         Text {
             Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || voice.error || (companion.realtimeEnabled ? companion.realtimeStatus || voice.status : voice.status)
-            color: companion.microphoneError || voice.error ? "#f6b7a5" : "#a9c0cf"; font.pixelSize: 12; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
+            color: companion.microphoneError || voice.error ? "#f6b7a5" : "#a9c0cf"; font.pixelSize: 14; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
         }
         Rectangle {
             Layout.fillWidth: true; Layout.preferredHeight: 62; radius: 13
             color: companion.recording ? "#724840" : "#254c49"; border.color: "#68bda9"
             Column {
                 anchors.centerIn: parent; spacing: 3
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? (voice.active ? "Voice chat active" : "Start voice chat") : companion.recording ? "Listening" : buddy.busy ? "Thinking…" : voice.active ? "Speak naturally" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 17; font.weight: Font.DemiBold }
-                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? "Talk naturally · change goals while you play" : voice.active ? "Pause when you're done · no click needed" : "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 11 }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? (voice.active ? "Voice chat active" : "Start voice chat") : companion.recording ? "Listening" : buddy.busy ? "Thinking…" : voice.active ? "Speak naturally" : "Hold to talk"; color: "#c7fff0"; font.pixelSize: 20; font.weight: Font.DemiBold }
+                Text { anchors.horizontalCenter: parent.horizontalCenter; text: companion.realtimeEnabled ? "Talk naturally · change goals while you play" : voice.active ? "Pause when you're done · no click needed" : "Ask for help, a strategy, or a widget"; color: "#9fcec3"; font.pixelSize: 14 }
             }
             MouseArea { anchors.fill: parent; enabled: !buddy.busy && !companion.voiceTurnPending; onPressed: companion.startTalking(); onReleased: companion.stopTalking(); onCanceled: companion.stopTalking() }
         }
@@ -171,7 +171,7 @@ Item {
             Layout.fillWidth: true
             GbButton { text: voice.active ? "Stop listening" : "Listen"; Layout.fillWidth: true; onClicked: voice.toggle_listening() }
             CheckBox {
-                text: "Hands-free"; checked: voice.armed; onToggled: voice.armed = checked
+                text: "Hands-free"; font.pixelSize: 14; checked: voice.armed; onToggled: voice.armed = checked
                 palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
                 ToolTip.visible: hovered; ToolTip.text: "Listen automatically at game launch and when you unmute your microphone."
             }
@@ -181,7 +181,7 @@ Item {
             Text {
             Layout.fillWidth: true
             text: companion.session.screen?.status === "live" ? "Watching game · " + (companion.session.screen.scene_error ? "visual analysis unavailable; screenshots ready" : companion.session.screen.scene?.fresh ? companion.session.screen.scene.summary : "interpreting the scene…") : "Screen " + (companion.session.screen?.status || "waiting") + " · " + (companion.session.screen?.error || buddy.message)
-            color: "#a9c0cf"; font.pixelSize: 11; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
+            color: "#a9c0cf"; font.pixelSize: 14; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
             }
             GbButton {text:"Crop…";enabled:!!companion.session.frame_url;onClicked:companion.cropRequested()}
         }
@@ -189,8 +189,8 @@ Item {
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             Column {
                 width: parent.width; spacing: 10
-                Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 12; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { width: parent.width; text: buddy.answer || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 14; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 14; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { width: parent.width; text: buddy.answer || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 16; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             }
         }
         RowLayout {
@@ -214,14 +214,14 @@ Item {
     Popup {
         id: widgetTray
         parent: companion
-        x: 20; y: 90; width: 370
-        height: Math.min(350, 130+companion.widgetCatalog.length*52)
+        x: 20; y: 90; width: companion.width-40
+        height: Math.min(410, 150+companion.widgetCatalog.length*52)
         padding: 14
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle { color:"#162c35";radius:12;border.color:"#86decb" }
         contentItem: ColumnLayout {
             RowLayout {
-                Text { text:"Your widgets";color:"#c7fff0";font.pixelSize:16;Layout.fillWidth:true }
+                Text { text:"Your widgets";color:"#c7fff0";font.pixelSize:18;Layout.fillWidth:true }
                 GbButton { text:"Done";onClicked:widgetTray.close() }
             }
             ScrollView {
@@ -244,13 +244,13 @@ Item {
                                 Text { anchors.centerIn:parent;text:widgetToggle.checked?"✓":"";color:"#142130" }
                             }
                             background: Rectangle { color:widgetToggle.hovered?"#27434c":"transparent";radius:5 }
-                            contentItem: Text { text:widgetToggle.text;color:"#e3edf5";font.pixelSize:12;verticalAlignment:Text.AlignVCenter;rightPadding:40;elide:Text.ElideRight }
+                            contentItem: Text { text:widgetToggle.text;color:"#e3edf5";font.pixelSize:14;verticalAlignment:Text.AlignVCenter;rightPadding:40;elide:Text.ElideRight }
                             onClicked:companion.widgetVisibilityChanged(modelData.id,checked)
                         }
                     }
                 }
             }
-            Text { text:"Dismissed widgets stay here. Use − to minimize a widget; drag its header or corner to arrange it.";color:"#a9c0cf";font.pixelSize:11;wrapMode:Text.WordWrap;Layout.fillWidth:true }
+            Text { text:"Dismissed widgets stay here. Use − to minimize a widget; drag its header or corner to arrange it.";color:"#a9c0cf";font.pixelSize:14;wrapMode:Text.WordWrap;Layout.fillWidth:true }
         }
     }
     Shortcut { sequence: "Escape"; enabled: !companion.embedded; onActivated: { companion.stopTalking(); companion.arranging = false; companion.arrangementChanged(false); companion.expanded = false } }
