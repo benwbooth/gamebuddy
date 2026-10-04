@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use gamebuddy_core::*;
+use gamebuddy_services::spatial;
 use gamebuddy_services::*;
 use std::path::PathBuf;
 
@@ -18,6 +19,62 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Index the pixels of cached 2D maps for geometric viewport registration.
+    PrepareMapPixels {
+        guide: String,
+    },
+    /// Upgrade retained video views with learned features and revisit matching.
+    EnhanceWorld {
+        guide: String,
+    },
+    /// Attach read-only memory evidence to the current capture session (Linux).
+    AttachRetroarch {
+        rom: PathBuf,
+        pid: u32,
+        #[arg(long, default_value = "127.0.0.1:55355")]
+        endpoint: std::net::SocketAddr,
+    },
+    /// Read the optional verified Faxanadu memory layout for diagnostics.
+    ReadRetroarch {
+        rom: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:55355")]
+        endpoint: std::net::SocketAddr,
+    },
+    /// Calibrate and build/resume the geometric place graph from enabled videos.
+    PrepareWorld {
+        guide: String,
+    },
+    /// Configure an optional local learned feature worker (JSON executable/arguments).
+    SpatialWorker {
+        path: PathBuf,
+    },
+    /// Set the video viewport/HUD calibration and 2D/3D camera type.
+    SpatialProfile {
+        guide: String,
+        path: PathBuf,
+    },
+    /// Localize one already-cropped frame without altering live progress.
+    Locate {
+        guide: String,
+        image: PathBuf,
+    },
+    /// Register an already-cropped frame against enabled 2D atlas pixels.
+    LocateMap {
+        guide: String,
+        image: PathBuf,
+    },
+    /// Replay independently labelled gameplay frames, including session/epoch resets.
+    EvaluateWorld {
+        guide: String,
+        manifest: PathBuf,
+    },
+    /// Select an exact walkthrough; future preparation cannot choose a substitute.
+    PinReference {
+        game: String,
+        url: String,
+        #[arg(long, default_value = "")]
+        platform: String,
+    },
     /// Build/resume a source-derived location atlas with the configured LLM.
     PrepareAtlas {
         guide: String,
@@ -100,6 +157,10 @@ enum Action {
         #[arg(long)]
         vision: bool,
     },
+    /// Resume automatic compilation of unfinished video sections.
+    CompileWalkthrough {
+        guide: String,
+    },
     CompileSegment {
         guide: String,
         step: String,
@@ -126,6 +187,91 @@ fn main() -> Result<()> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let notify = |text: String| eprintln!("{text}");
     match args.command {
+        Action::PrepareMapPixels { guide } => println!(
+            "{} map tiles",
+            spatial_maps::prepare(&store, &store.guide(&guide)?, &notify)?
+        ),
+        Action::EnhanceWorld { guide } => {
+            let w = spatial::enhance(&store, &store.guide(&guide)?, &notify)?;
+            println!(
+                "{}",
+                serde_json::json!({"places":w.rooms.len(),"views":w.views.len(),"encoder":w.encoder})
+            );
+        }
+        Action::AttachRetroarch { rom, pid, endpoint } => println!(
+            "{}",
+            serde_json::to_string_pretty(&telemetry::attach(&store, &rom, pid, endpoint)?)?
+        ),
+        Action::ReadRetroarch { rom, endpoint } => {
+            telemetry::identify(&rom)?;
+            println!("{}", telemetry::read_state(&rom, endpoint)?);
+        }
+        Action::PrepareWorld { guide } => {
+            let guide = store.guide(&guide)?;
+            let world = gamebuddy_services::spatial::build(&store, &guide, &notify)?;
+            println!(
+                "{}",
+                serde_json::json!({"rooms":world.rooms.len(),"views":world.views.len(),"transitions":world.transitions.len(),"status":world.status,"dimension":world.profile.dimension,"encoder":world.encoder})
+            );
+        }
+        Action::SpatialWorker { path } => {
+            let config: spatial_worker::WorkerConfig =
+                serde_json::from_slice(&std::fs::read(path)?)?;
+            store.put("spatial-worker", &config)?;
+        }
+        Action::SpatialProfile { guide, path } => spatial::set_profile(
+            &store,
+            &store.guide(&guide)?,
+            serde_json::from_slice(&std::fs::read(path)?)?,
+        )?,
+        Action::LocateMap { guide, image } => {
+            let guide = store.guide(&guide)?;
+            let world = spatial::load(&store, &guide)?.context("Prepare the world first")?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&spatial_maps::locate(
+                    &store,
+                    &guide,
+                    &world,
+                    &image::open(image)?
+                )?)?
+            );
+        }
+        Action::Locate { guide, image } => {
+            let guide = store.guide(&guide)?;
+            let world = spatial::load(&store, &guide)?.context("Prepare the world first")?;
+            let mut engine = spatial::Engine::for_world(&store, &world, "evaluation")?;
+            let mut tracker = gamebuddy_core::spatial::Tracker::default();
+            let result = spatial::locate(
+                &world,
+                &guide,
+                &image::open(image)?,
+                &mut tracker,
+                spatial::FrameContext {
+                    session: "diagnostic",
+                    epoch: 0,
+                    at_ms: 1,
+                },
+                &mut engine,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Action::EvaluateWorld { guide, manifest } => println!(
+            "{}",
+            serde_json::to_string_pretty(&spatial::evaluate(
+                &store,
+                &store.guide(&guide)?,
+                &manifest
+            )?)?
+        ),
+        Action::PinReference {
+            game,
+            url,
+            platform,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&pin_reference(&store, &game, &platform, &url)?)?
+        ),
         Action::PrepareAtlas { guide, platform } => {
             let guide = store.guide(&guide)?;
             let atlas =
@@ -292,6 +438,15 @@ fn main() -> Result<()> {
                 )?;
                 println!("{}", serde_json::to_string_pretty(&verdict)?);
             }
+        }
+        Action::CompileWalkthrough { guide } => {
+            let guide = preparation::compile_walkthrough(&store, &store.guide(&guide)?, &notify)?;
+            walkthrough::export_book(
+                &store,
+                &guide,
+                &store.root.join("walkthroughs").join(&guide.id),
+            )?;
+            println!("{}", guide.revision);
         }
         Action::CompileSegment { guide, step } => {
             let g = store.guide(&guide)?;

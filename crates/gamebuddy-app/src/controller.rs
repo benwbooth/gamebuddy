@@ -708,6 +708,11 @@ impl ffi::Buddy {
                         "shared_frame"
                     },
                 )?;
+                if let Some(guide) = &guide
+                    && let Ok(snapshot) = services::screen::snapshot(&store)
+                {
+                    services::spatial::schedule(&store, guide, snapshot, sync.progress.epoch);
+                }
                 let matching = if let Some(guide) = &guide {
                     if let Some(index) = store.index(guide)? {
                         let vector = fingerprint(&image::open(&path)?, ticket.crop)?;
@@ -822,7 +827,7 @@ impl ffi::Buddy {
                 let tracker = store
                     .get::<gamebuddy_core::PlaceTracker>(&services::navigation::tracker_key(g))
                     .ok()?;
-                Some(json!({"places":atlas.places,"last_location":tracker}))
+                Some(json!({"places":atlas.places,"last_location":tracker,"geometric_location":services::spatial::context(&store,g).ok()}))
             })
             .unwrap_or_else(|| json!({"places":[]}));
         self.as_mut().rust_mut().scene_inflight = true;
@@ -1172,7 +1177,14 @@ impl ffi::Buddy {
     pub fn map_preview(&self, id: QString) -> QString {
         let preview = self.rust().guide.as_ref().and_then(|guide| {
             Store::open(&self.rust().root)
-                .and_then(|s| services::navigation::cached_preview(&s, guide, &id.to_string()))
+                .and_then(|s| {
+                    let id = id.to_string();
+                    if let Some(room) = id.strip_prefix("spatial:") {
+                        services::spatial::preview(&s, guide, room)
+                    } else {
+                        services::navigation::cached_preview(&s, guide, &id)
+                    }
+                })
                 .ok()
         });
         q(preview.unwrap_or_default())

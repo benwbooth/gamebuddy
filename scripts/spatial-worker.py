@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Optional learned image features. Rust owns ingestion, graph, tracking and UI.
+
+JSON-lines protocol; stdout is protocol only. DINO retrieves candidate views,
+DISK/LightGlue supplies correspondences, and RANSAC verifies geometry. 3D uses
+epipolar geometry; it never invents a metric pose from an uncalibrated video.
+"""
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+import sys
+from functools import lru_cache
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--cache", type=Path, required=True)
+parser.add_argument("--model", default="facebook/dinov2-small")
+parser.add_argument("--device", default="auto")
+args = parser.parse_args()
+args.cache.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("HF_HOME", str(args.cache / "weights"))
+if Path("/etc/ssl/certs/ca-certificates.crt").exists():
+    os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+
+with contextlib.redirect_stdout(sys.stderr):
+    from spatial_geometry import verify
+    import numpy as np
+    import torch
+    from PIL import Image
+    from lightglue import DISK, LightGlue
+    from lightglue.utils import rbd
+    from transformers import AutoImageProcessor, AutoModel
+
+    torch.set_num_threads(4)
+    torch.hub.set_dir(str(args.cache / "weights"))
+    device = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") if args.device == "auto" else args.device
+    processor = AutoImageProcessor.from_pretrained(args.model, cache_dir=str(args.cache / "weights"))
+    encoder = AutoModel.from_pretrained(args.model, cache_dir=str(args.cache / "weights")).eval().to(device)
+    extractor = DISK(max_num_keypoints=512).eval().to(device)
+    matcher = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(device)
+    digest = hashlib.sha256()
+    for model in (encoder, extractor, matcher):
+        for name, tensor in model.state_dict().items():
+            digest.update(name.encode())
+            digest.update(tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+    identity = args.model + ":sha256:" + digest.hexdigest() + ":disk512-lightglue-v1"
+
+
+@lru_cache(maxsize=128)
+def features(key):
+    with np.load(args.cache / (key + ".npz"), allow_pickle=False) as data:
+        return {k: torch.from_numpy(data[k]).to(device) for k in ("keypoints", "descriptors", "image_size")}
+
+
+@torch.inference_mode()
+def extract(path):
+    raw = Path(path).read_bytes()
+    key = hashlib.sha256(identity.encode() + raw).hexdigest()
+    dest = args.cache / (key + ".npz")
+    if dest.exists():
+        with np.load(dest, allow_pickle=False) as data:
+            embedding = data["embedding"].tolist()
+    else:
+        image = Image.open(path).convert("RGB").resize((256, 192))
+        inputs = {k: v.to(device) for k, v in processor(images=image, return_tensors="pt").items()}
+        embedded = encoder(**inputs).last_hidden_state[:, 0]
+        embedded = torch.nn.functional.normalize(embedded, dim=-1)
+        embedding = embedded[0].cpu().tolist()
+        tensor = torch.from_numpy(np.asarray(image).copy()).permute(2, 0, 1).float().to(device) / 255
+        local = extractor.extract(tensor, resize=None)
+        tmp = dest.with_suffix(f".{os.getpid()}.pending.npz")
+        np.savez_compressed(tmp, embedding=embedding, **{k: local[k].cpu().numpy() for k in ("keypoints", "descriptors", "image_size")})
+        tmp.replace(dest)
+    return {"embedding": embedding, "learned_key": key, "model": identity, "device": device}
+
+
+@torch.inference_mode()
+def register(query, reference, dimension):
+    a, b = features(query), features(reference)
+    result = rbd(matcher({"image0": a, "image1": b}))
+    pairs = result["matches"].cpu().numpy()
+    if len(pairs) < 16:
+        return None
+    p = a["keypoints"][0].cpu().numpy()[pairs[:, 0]].astype(np.float32)
+    q = b["keypoints"][0].cpu().numpy()[pairs[:, 1]].astype(np.float32)
+    return verify(p, q, dimension)
+
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+        with contextlib.redirect_stdout(sys.stderr):
+            if request["op"] == "info":
+                answer = {"model": identity, "device": device}
+            elif request["op"] == "extract":
+                answer = extract(request["path"])
+            elif request["op"] == "register":
+                answer = register(request["query"], request["reference"], request["dimension"])
+            else:
+                raise ValueError("Unknown spatial operation")
+        print(json.dumps({"result": answer}, allow_nan=False), flush=True)
+    except Exception as error:
+        print(json.dumps({"error": str(error)}), flush=True)

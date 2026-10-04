@@ -10,7 +10,7 @@
 .picker{position:relative;min-width:0;flex:1}.picker>button{width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picker-menu{position:absolute;z-index:20;top:100%;left:0;right:0;max-height:180px;overflow:auto;background:#142130;border:1px solid #86decb;border-radius:6px;box-shadow:0 4px 14px #0009;padding:4px}.picker.upward .picker-menu{top:auto;bottom:100%}.picker-menu button{display:block;width:100%;text-align:left;white-space:normal;border:0;background:transparent;padding:8px}.picker-menu button:hover,.picker-menu button[aria-selected=true]{background:#31594f}.map-stage{position:relative;margin:0 auto}.map-stage img{width:100%;margin:0}.map-marker{position:absolute;border:2px solid #93ffdd;background:#65ffcb33;box-shadow:0 0 0 1px #071a12;pointer-events:none;min-width:8px;min-height:8px}.map-marker span{position:absolute;left:0;bottom:100%;padding:2px 5px;background:#123d30;color:#effff7;font:11px system-ui;white-space:nowrap}.map-marker span.below{bottom:auto;top:100%}.provenance{position:fixed;z-index:10000;width:380px;max-width:calc(100vw - 16px);max-height:60vh;overflow:auto;border:1px solid #86decb;background:#101d2b;box-shadow:0 8px 30px #000b;border-radius:9px;padding:13px;white-space:normal;font-size:12px;line-height:1.5}.provenance strong{color:#a8ffe4}.provenance .evidence-entry{padding:7px 0;border-bottom:1px solid #ffffff20}.provenance a{display:block;color:#9cdaff;overflow-wrap:anywhere}.provenance small{display:block;color:#acbfcc}.source-badge{cursor:help;color:#9bc7bf;font-size:10px;margin-left:5px}.map-marker{pointer-events:auto}[hidden]{display:none!important}</style></head><body><div id="widgets"></div><script>
 (() => {
   const host=document.getElementById('widgets');
-  let layouts={}, locked=false, active=null, latestState=null, pendingMap=null;
+  let layouts={}, locked=false, active=null, latestState=null, pendingMap=null, pendingSpatial=null;
   let openNodes=new Set(), followed=null, guideId=null;
   let mapChoice=null, followMap=true, mapZoom=1, mapScroll={x:0,y:0}, mapGuide=null, mapObserver=null, browsedPlace=null, mapLocatedKey=null;
   const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
@@ -68,7 +68,7 @@
   document.addEventListener('lostpointercapture',finish);
   addEventListener('blur',finish);
   addEventListener('resize',()=>{finish();for(const n of host.querySelectorAll('.widget')){const r=n.getBoundingClientRect();place(n,{x:r.x,y:r.y,width:r.width,height:r.height})}regions()});
-  window.gamebuddy={mapPreview(id,data){if(pendingMap?.id===id && pendingMap.image.isConnected && data.startsWith('data:image/jpeg;base64,')){pendingMap.stage.hidden=false;pendingMap.empty.hidden=true;pendingMap.image.src=data}},render(state){
+  window.gamebuddy={mapPreview(id,data){if(pendingSpatial?.id===id && pendingSpatial.image.isConnected && data.startsWith('data:image/jpeg;base64,'))pendingSpatial.image.src=data;if(pendingMap?.id===id && pendingMap.image.isConnected && data.startsWith('data:image/jpeg;base64,')){pendingMap.stage.hidden=false;pendingMap.empty.hidden=true;pendingMap.image.src=data}},render(state){
     latestState=state;
     locked=!!state.locked;document.body.classList.toggle('locked',locked);
     if(active)return;
@@ -145,13 +145,15 @@
         function choose(id){
           const asset=maps.find(m=>m.id===id);if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
           const browsing=places.find(p=>p.id===browsedPlace);
-          status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'Estimated location: ')+map.current_place.label:'Locating player')+(browsing?' · Browsing '+browsing.label:'');
-          const region=map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null;
+          status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'Estimated location: ')+map.current_place.label:(map.geometric_marker?'Camera area matched':map.spatial?.observation?.tracker?.status==='tracked'?'Visual place matched':'Locating player'))+(browsing?' · Browsing '+browsing.label:'');
+          const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;
+          const region=geometric || (map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null);
+          markerLabel.textContent=geometric?'Matched camera view':'You are here · approximate area';
           marker.hidden=!region;
-          if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
-          selectionNote.textContent=followMap?(region?'Highlighted area estimated from map landmarks.':map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
+          if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:geometric?'Geometric map registration':'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
+          selectionNote.textContent=followMap?(region?(geometric?'Visible area aligned to map pixels.':'Highlighted area estimated from map landmarks.'):map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
           stage.hidden=!asset;empty.hidden=!!asset;
-          image.onload=()=>{zoom();const key=region?region.place_id+':'+region.map_id:null;if(followMap&&key&&key!==mapLocatedKey){const r=region.region;viewport.scrollLeft=(r.x+r.width/2)*stage.clientWidth-viewport.clientWidth/2;viewport.scrollTop=(r.y+r.height/2)*stage.clientHeight-viewport.clientHeight/2;mapLocatedKey=key}else{viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y}};
+          image.onload=()=>{zoom();const key=region?(region.place_id||'camera')+':'+region.map_id+(geometric?':'+region.region.x.toFixed(3)+':'+region.region.y.toFixed(3):''):null;if(followMap&&key&&key!==mapLocatedKey){const r=region.region;viewport.scrollLeft=(r.x+r.width/2)*stage.clientWidth-viewport.clientWidth/2;viewport.scrollTop=(r.y+r.height/2)*stage.clientHeight-viewport.clientHeight/2;mapLocatedKey=key}else{viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y}};
           image.onerror=()=>{stage.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. Location and source attribution remain available.'};
           evidence(image,'Map sources',()=>mapEvidence(asset));evidence(credit,'Map sources',()=>mapEvidence(asset));
           if(asset){try{if(new URL(asset.url).protocol==='https:')image.src=asset.url;else throw Error('Invalid map URL')}catch{stage.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}evidence(titles,'Map sources',()=>mapEvidence(asset));image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
@@ -171,6 +173,26 @@
         const roomSelect=picker('Browse known places',[{id:'',label:'Browse '+places.length+' known places'},...places.map(p=>({id:p.id,label:p.label}))],id=>{const place=places.find(p=>p.id===id);if(!place)return;followMap=false;browsedPlace=id;roomSelect.set(id);choose(place.map_id);empty.textContent=place.landmarks||'No map associated with this place.'},true);
         roomSelect.set(browsedPlace||'');const rooms=text('div','','map-toolbar');rooms.append(roomSelect.node);body.append(rooms);
         if(map.status!=='ready')body.append(text('div','Atlas '+(map.status||'pending')+' · '+(map.reviewed_steps||0)+' reviewed actions','map-note'));
+        const spatial=map.spatial||{},observation=spatial.observation,prep=spatial.preparation||{};
+        const spatialPanel=text('details','','spatial-panel');spatialPanel.open=true;
+        spatialPanel.append(text('summary','Visual world · '+(observation?.tracker?.status || prep.status || 'not prepared')));
+        spatialPanel.append(text('div',(prep.places||0)+' places · '+(prep.views||0)+' indexed views · '+(prep.dimension==='three_d'?'3D place recognition':'2D geometric matching'),'map-note'));
+        if(spatial.map_preparation)spatialPanel.append(text('div','Map landmarks · '+spatial.map_preparation.status+' · '+(spatial.map_preparation.tiles||0)+' tiles'+(spatial.map_preparation.current_map?' · '+spatial.map_preparation.current_map:'')+(spatial.map_preparation.error?' · '+spatial.map_preparation.error:''),'map-note'));
+        if(spatial.error)spatialPanel.append(text('div',spatial.error,'map-note'));
+        if(observation?.tracker?.status==='tracked' && observation.room){
+          const room=observation.room,reference=observation.reference,visual=text('div','','map-stage'),view=document.createElement('img');view.alt=observation.dimension==='three_d'?'Matched reference viewpoint':room.mosaic_path?'Stitched reference views':'Matched reference view';visual.append(view);
+          const provenance=()=>[{title:'Matched walkthrough view',url:urlFor(reference?.url,reference?.at_ms),detail:'Source '+reference?.source_id+' at '+time(reference?.at_ms||0)+'. Geometry establishes place identity; it does not verify objectives.'}];
+          evidence(visual,'Visual world provenance',provenance);spatialPanel.append(visual);
+          if(observation.camera_footprint && room.mosaic_path && room.bounds?.[2]>0){
+            const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),polygon=document.createElementNS(svg.namespaceURI,'polygon');
+            svg.setAttribute('viewBox',room.bounds.join(' '));Object.assign(svg.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none'});
+            polygon.setAttribute('points',observation.camera_footprint.map(p=>p.join(',')).join(' '));polygon.setAttribute('fill','#65ffcb33');polygon.setAttribute('stroke','#a5ffdc');polygon.setAttribute('stroke-width','3');svg.append(polygon);visual.append(svg);
+          }
+          spatialPanel.append(text('div',observation.dimension==='three_d'?'Matched place/viewpoint. Exact 3D position is not established.':'The highlighted region is the camera view; the player’s exact position is not established.','map-note'));
+          const id='spatial:'+room.id+':'+reference.view_id;pendingSpatial={id,image:view};console.info('GAMEBUDDY_MAP_REQUEST '+id);
+          if(observation.connections?.length){const list=text('ul','');for(const edge of observation.connections)list.append(evidence(text('li',edge.from+' → '+edge.to+' · video sequence; connection unverified'),'Transition source',()=>[{title:edge.kind,url:urlFor(edge.source_url,edge.before_ms),detail:time(edge.before_ms)+'–'+time(edge.after_ms)}]));spatialPanel.append(list)}
+        }else spatialPanel.append(text('div','Waiting for distinctive landmarks in successive frames. Ambiguous matches remain unconfirmed.','map-note'));
+        body.append(spatialPanel);
       }
       else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach((row,index)=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));evidence(tr,'Row sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids));table.append(tr)});body.append(table)}
       else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach((v,index)=>ul.append(evidence(text('li',v),'Item sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids))));body.append(ul)}

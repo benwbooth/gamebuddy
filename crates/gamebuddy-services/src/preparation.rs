@@ -165,7 +165,17 @@ pub fn compile_walkthrough(
         );
         store.put(&key, &json!({"phase":"compiling","reviewed":reviewed,"total":pending.len(),"message":message,"errors":failed}))?;
         progress(message);
-        match compile_segment(&provider, &guide, id, &store.root.join("work")).and_then(|g| {
+        let first = compile_segment(&provider, &guide, id, &store.root.join("work"));
+        let compiled = match first {
+            Ok(g) => Ok(g),
+            Err(first_error) => {
+                progress(format!(
+                    "Retrying section after validation/provider failure: {first_error}"
+                ));
+                compile_segment(&provider, &guide, id, &store.root.join("work"))
+            }
+        };
+        match compiled.and_then(|g| {
             store.revise_guide(&g, guide.revision, "Compile automatic walkthrough section")?;
             Ok(g)
         }) {

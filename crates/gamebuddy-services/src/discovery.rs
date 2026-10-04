@@ -26,6 +26,38 @@ pub struct GuideChoice {
     pub full_walkthrough: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceSelection {
+    pub url: String,
+    pub video_id: String,
+}
+
+pub fn reference_key(game: &str, platform: &str) -> String {
+    format!(
+        "reference-selection:{}:{}",
+        game.trim().to_lowercase(),
+        platform.trim().to_lowercase()
+    )
+}
+
+/// A player selection outranks both discovery and a previously cached guide.
+/// Keep the previous edition on disk; never silently replace its provenance.
+pub fn pin_reference(
+    store: &Store,
+    game: &str,
+    platform: &str,
+    url: &str,
+) -> Result<ReferenceSelection> {
+    ensure!(!game.trim().is_empty(), "Game identity required");
+    let video_id = youtube_id(url)?;
+    let selection = ReferenceSelection {
+        url: format!("https://www.youtube.com/watch?v={video_id}"),
+        video_id,
+    };
+    store.put(&reference_key(game, platform), &selection)?;
+    Ok(selection)
+}
+
 pub fn discover_walkthroughs(game: &str, platform: &str) -> Result<Vec<WalkthroughCandidate>> {
     ensure!(
         !game.trim().is_empty(),
@@ -130,20 +162,36 @@ pub fn prepare_game(
         .and_then(|id| store.guide(&id).ok());
     let active = store.get::<String>("active_guide")?;
     let library = store.guides()?;
+    let selected: Option<ReferenceSelection> = store.get(&reference_key(game, platform))?;
+    let matches_selection = |g: &Guide| {
+        selected
+            .as_ref()
+            .is_none_or(|pin| g.sources.iter().any(|s| s.url.as_deref() == Some(&pin.url)))
+    };
     let existing = library
         .iter()
-        .find(|g| g.game.eq_ignore_ascii_case(game) && Some(&g.id) == active.as_ref())
+        .find(|g| {
+            g.game.eq_ignore_ascii_case(game)
+                && Some(&g.id) == active.as_ref()
+                && matches_selection(g)
+        })
         .cloned()
-        .or(cached)
+        .or(cached.filter(&matches_selection))
         .or_else(|| {
             library
                 .iter()
-                .find(|g| g.game.eq_ignore_ascii_case(game))
+                .find(|g| g.game.eq_ignore_ascii_case(game) && matches_selection(g))
                 .cloned()
         });
     let guide = if let Some(guide) = existing {
         progress(format!("Using saved walkthrough: {}", guide.title));
         guide
+    } else if let Some(selection) = &selected {
+        progress(format!(
+            "Importing your selected walkthrough: {}",
+            selection.url
+        ));
+        import_youtube(store, game, &selection.url, progress)?
     } else {
         progress(format!("Finding complete walkthroughs for {game}…"));
         let candidates = discover_walkthroughs(game, platform)?;
@@ -181,6 +229,17 @@ pub fn prepare_game(
         progress("Preparing visual references for automatic synchronization…".into());
         index_video(store, &guide, Crop::default(), 10, progress)?;
     }
+    // Both consumers run inside GameBuddy's first-load preparation workflow.
+    let spatial_root = store.root.clone();
+    let spatial_guide = guide.clone();
+    let spatial_task = std::thread::spawn(move || -> Result<()> {
+        let store = Store::open(spatial_root)?;
+        let notify = |message: String| {
+            let _ = store.put(&format!("world-message:{}", spatial_guide.id), &message);
+            eprintln!("{message}");
+        };
+        crate::spatial::build(&store, &spatial_guide, &notify).map(|_| ())
+    });
     let guide = crate::preparation::compile_walkthrough(store, &guide, progress)?;
     if store.index(&guide)?.is_some() {
         crate::walkthrough::export_book(
@@ -191,6 +250,28 @@ pub fn prepare_game(
         if let Err(error) = crate::navigation::prepare_atlas(store, &guide, platform, progress) {
             progress(format!(
                 "Walkthrough is available; location atlas preparation can be retried: {error:#}"
+            ));
+        }
+        if crate::spatial::profile(store, &guide)?.dimension == crate::spatial::Dimension::TwoD
+            && store
+                .get::<crate::spatial_worker::WorkerConfig>("spatial-worker")?
+                .is_some()
+            && let Err(error) = crate::spatial_maps::prepare(store, &guide, progress)
+        {
+            progress(format!("Map image registration needs attention: {error:#}"));
+        }
+    }
+    match spatial_task.join() {
+        Ok(Ok(())) => {}
+        other => {
+            let error = match other {
+                Ok(Err(e)) => format!("{e:#}"),
+                Err(_) => "Spatial preparation worker stopped".into(),
+                _ => unreachable!(),
+            };
+            store.put(&format!("world-error:{}", guide.id), &error)?;
+            progress(format!(
+                "Walkthrough available; spatial preparation needs attention: {error}"
             ));
         }
     }

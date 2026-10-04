@@ -9,6 +9,9 @@ use serde_json::{Value, json};
 
 pub fn tool_definitions() -> Value {
     let mut definitions = json!([
+        {"name":"get_spatial_context","description":"Read geometric place hypotheses, source timestamps, 2D camera footprint or 3D place evidence, and preparation diagnostics. Room identity never proves inventory or objective completion. Missing spatial evidence is not missing screen access.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"prepare_world","description":"Build or resume spatial references inside GameBuddy from enabled walkthrough videos. Automatically calibrates video borders/HUD and 2D/3D camera type. This may take minutes; existing outline and gameplay remain available.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"pin_walkthrough","description":"Remember an exact player-selected YouTube walkthrough for this game and platform. Future preparation uses this video without substituting search results. Does not delete older guides.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"platform":{"type":"string"}},"required":["url","platform"],"additionalProperties":false}},
         {"name":"get_conversation","description":"Recall this game's saved voice and text dialogue across launches and providers. Empty query returns recent messages; query searches a literal phrase. Pass next_before_id as before_id for older pages. Historical reports are not the current location/progress after a save restore. Never replay old requests or actions.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"before_id":{"type":"integer"}},"additionalProperties":false}},
         {"name":"get_game_screen","description":"Inspect the latest actual game screenshot as an image. Use this before answering what is on screen, locating visible objects, reading HUD/dialogue or saying you cannot see the game. Returns a timestamped image only while screen watching is enabled and the frame is fresh. Does not require a completed walkthrough/index. Never infer hidden state or completed goals from room identity.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"get_atlas","description":"Read the game's automatically built location atlas, available maps, source-backed place bindings, and preparation status. Places are estimates, not player coordinates.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
@@ -70,6 +73,44 @@ pub fn call_tool_with_images(store: &Store, name: &str, arguments: Value) -> Res
             images: vec![snapshot.jpeg],
         });
     }
+    if name == "get_spatial_context" {
+        let guide = active_guide(store)?;
+        let mut value = crate::spatial::context(store, &guide)?;
+        let mut images = vec![];
+        let mut labels = vec![];
+        if let Some(id) = value["observation"]["reference"]["view_id"].as_str()
+            && let Some(world) = crate::spatial::load(store, &guide)?
+            && let Some(view) = world
+                .views
+                .iter()
+                .find(|v| v.id == id && guide.source_enabled(&v.source_id))
+        {
+            images.push(crate::image_base64(&view.image_path)?);
+            labels.push("Matched walkthrough view; source/timestamp are in observation.reference.");
+        }
+        let marker = &value["observation"]["map_registration"];
+        if let Some(id) = marker["map_id"].as_str()
+            && let Some(map) = crate::navigation::atlas(store, &guide)?
+                .maps
+                .iter()
+                .find(|m| m.id == id && m.enabled)
+        {
+            let image = image::open(crate::navigation::cached_map_path(store, map))?;
+            let region: gamebuddy_core::Crop = serde_json::from_value(marker["region"].clone())?;
+            let region = gamebuddy_core::Crop {
+                x: (region.x - region.width * 0.25).max(0.),
+                y: (region.y - region.height * 0.25).max(0.),
+                width: (region.width * 1.5).min(1. - (region.x - region.width * 0.25).max(0.)),
+                height: (region.height * 1.5).min(1. - (region.y - region.height * 0.25).max(0.)),
+            };
+            let temp = tempfile::NamedTempFile::with_suffix(".png")?;
+            region.apply(&image)?.save(temp.path())?;
+            images.push(crate::image_base64(temp.path())?);
+            labels.push("Atlas pixels surrounding the geometrically matched camera footprint; see map credit/provenance.");
+        }
+        value["image_labels"] = json!(labels);
+        return Ok(ToolOutput { value, images });
+    }
     Ok(ToolOutput {
         value: call_tool(store, name, arguments)?,
         images: vec![],
@@ -92,6 +133,30 @@ pub fn widgets(store: &Store, guide: &Guide) -> Result<Vec<Widget>> {
 pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
     let guide = active_guide(store)?;
     match name {
+        "get_spatial_context" => crate::spatial::context(store, &guide),
+        "prepare_world" => {
+            let root = store.root.clone();
+            let guide = guide.clone();
+            std::thread::spawn(move || {
+                if let Ok(store) = Store::open(root) {
+                    let result = crate::spatial::build(&store, &guide, &|message| {
+                        let _ = store.put(&format!("world-message:{}", guide.id), &message);
+                    });
+                    if let Err(e) = result {
+                        let _ = store.put(&format!("world-error:{}", guide.id), &format!("{e:#}"));
+                    }
+                }
+            });
+            Ok(json!({"status":"requested","check":"get_spatial_context"}))
+        }
+        "pin_walkthrough" => Ok(json!(crate::pin_reference(
+            store,
+            &guide.game,
+            arguments["platform"]
+                .as_str()
+                .context("platform required")?,
+            arguments["url"].as_str().context("url required")?
+        )?)),
         "get_conversation" => crate::conversation::read(store, &guide.game, &arguments),
         "report_location" => {
             crate::navigation::report_location(store, &guide, serde_json::from_value(arguments)?)

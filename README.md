@@ -13,7 +13,7 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - A stdio MCP server exposing the same game tools to external agents.
 - Draggable compact companion, Linux mic-unmute activation, local speech-turn detection and whisper.cpp transcription, Qt speech output, and typed HTML text/checklist/table/image/YouTube widgets with saved drag/resize layouts.
 - Automatic conversation ducking on Linux/PipeWire: game audio fades down by 12 dB for speech and returns afterward. Saved game volume, mute, channel balance and other apps are preserved; toggle it in Options → Models.
-- Local visual retrieval with separate reference/live crops, repeated-match gating, uncertainty and conservative local VLM comparison. Similarity never completes objectives. [Spatial localization design and remaining work](docs/visual-localization.md).
+- Local 2D/3D visual-place indexing with DINOv2/DISK/LightGlue, geometric verification, revisit merging, source timestamps and temporal uncertainty. 2D map-pixel registration highlights the camera footprint; 3D uses epipolar place matching. [Setup and limits](docs/visual-localization.md).
 - Automatic, resumable location-atlas preparation using the selected reasoning provider, walkthrough text and screenshots. GameBuddy discovers reference maps, compares their images with known places, and caches the associations; no game-specific room list is built into the application. [Maps and next actions](docs/contextual-navigation.md).
 - A following/zoomable map OSD and prerequisite-aware next-action card, with goal changes, source preferences, explicit completion controls and separately recorded player reports through voice/MCP.
 - Linux Gamescope session launcher with a compositor overlay, session shortcuts, HTML interaction and game-only XComposite capture.
@@ -21,7 +21,7 @@ An AI game companion built in Rust, with Qt/QML through CXX-Qt and HTML widgets.
 - **Crop…** beside the companion's screen status opens a visual selector: draw, move or resize the play area, preview it, and save it per game. AI screenshots and location matching use that region. Cancel keeps the previous crop; Reset to full frame restores the whole capture when saved.
 - Lunchpail prepares the compositor before the emulator and retains its real game process/controller pipes; other platforms use the desktop companion.
 
-**Development prototype:** the Linux compositor backend works with games on Gamescope’s private Xwayland server. Native Wayland game clients and Windows/macOS graphics-hook overlays are not implemented. Subscription-backed WebRTC voice and resumable source-wide compilation are implemented; their limits and checks are described in the [provider guide](docs/subscription-providers.md). Windows/macOS runtime behavior, automatic browser text discovery and independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
+**Development prototype:** the Linux compositor backend works with games on Gamescope’s private Xwayland server. Native Wayland game clients and Windows/macOS graphics-hook overlays are not implemented. Subscription-backed WebRTC voice and resumable source-wide compilation are implemented; their limits and checks are described in the [provider guide](docs/subscription-providers.md). Windows/macOS runtime behavior, automatic browser text discovery and broad independent-gameplay synchronization remain acceptance work. See [architecture](docs/architecture-and-research.md) and [overlay decision](docs/overlay-backends.md).
 
 ## Run
 
@@ -70,7 +70,7 @@ scripts/test-realtime
 node scripts/test-voice-lifecycle.mjs
 ```
 
-The initial live source test imported RetroNate's [Faxanadu walkthrough](https://www.youtube.com/watch?v=P05edoxsWQg): ten author chapters and 603 sampled reference frames. A held-out source frame matched its chapter. This is a same-video retrieval check, not proof of tracking a different player. The local 4B VLM abstained on the first comparison; accuracy and game coverage are not established.
+The selected Faxanadu source is now U Can Beat Video Games’ [Ultimate Guide](https://www.youtube.com/watch?v=8vEyiAs-fbY). GameBuddy reviewed all 53 video sections into 824 outline nodes (549 leaf actions), exported 578 screenshots, and indexed 3,112 dense visual references. The original RetroNate guide remains preserved. Source review is not proof of complete game correctness; [localization validation](docs/localization-validation.md) separates independent capture evidence from source coverage.
 
 The local 4B/9B planning trials also exposed unreliable tool use and goal interpretation. The validated tools reject malformed/stale edits, but the conversational agent is not yet a dependable autonomous guide. See [validation results and remaining gates](docs/validation.md).
 

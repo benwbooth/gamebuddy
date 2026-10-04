@@ -100,6 +100,14 @@ pub fn import_youtube(
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
     let media_dir = store.root.join("media").join(&id);
     std::fs::create_dir_all(&media_dir)?;
+    // Retain channel/author identity as well as the source URL for inspection.
+    store.put(
+        &format!("source-metadata:{id}"),
+        &serde_json::json!({
+            "video_id":id,"title":metadata["title"],"channel":metadata["channel"],
+            "channel_id":metadata["channel_id"],"url":url
+        }),
+    )?;
     progress("Downloading walkthrough video for local visual indexing…".into());
     let output = run(
         Command::new("yt-dlp")

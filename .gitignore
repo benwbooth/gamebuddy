@@ -10,3 +10,6 @@
 *.wav
 .DS_Store
 .qmlls.ini
+
+__pycache__/
+*.pyc

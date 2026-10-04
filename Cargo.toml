@@ -19,3 +19,7 @@ schemars = "1.2"
 
 [profile.dev]
 debug = 1
+
+# The continuously running image matcher must remain usable in dev builds.
+[profile.dev.package.gamebuddy-core]
+opt-level = 3

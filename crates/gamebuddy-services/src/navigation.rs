@@ -702,6 +702,19 @@ pub fn context(
     {
         tracker.adopt_visual(&scene, now);
     }
+    let spatial = crate::spatial::context(store, guide)?;
+    if spatial["observation"]["tracker"]["status"] == "tracked"
+        && let Some(grounded) =
+            store.get::<PlaceTracker>(&format!("world-place-tracker:{}", guide.id))?
+        && grounded.session_id == tracker.session_id
+        && grounded.epoch == progress.epoch
+        && spatial["observation"]["tracker"]["observed_at_ms"].as_u64()
+            == Some(grounded.located_at_ms)
+        && now.saturating_sub(grounded.located_at_ms) < 15_000
+        && (tracker.status != "reported" || grounded.located_at_ms > tracker.located_at_ms)
+    {
+        tracker = grounded;
+    }
     if previous.as_ref().map(|(t, _)| t) != Some(&tracker) {
         let saved = if let Some((_, version)) = previous {
             store.replace_version(&tracker_key, &version, &tracker)?
@@ -710,6 +723,20 @@ pub fn context(
         };
         if !saved {
             tracker = store.get(&tracker_key)?.unwrap_or_default();
+        }
+    }
+    if spatial["observation"]["tracker"]["status"] == "tracked" && tracker.status != "reported" {
+        let candidates = spatial["observation"]["step_ids"].as_array();
+        if let Some(step) = candidates
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find(|id| {
+                guide.step(id).is_some_and(|s| guide.step_enabled(s))
+                    && !gamebuddy_core::step_complete(guide, progress, id)
+            })
+        {
+            tracker.reference_step_id = Some(step.into());
         }
     }
     let mut advice = guidance(guide, progress, &tracker);
@@ -736,10 +763,16 @@ pub fn context(
         .as_ref()
         .and_then(|p| p.marker.as_ref())
         .filter(|m| m.validate(&atlas).is_ok());
+    let geometric_marker = spatial["observation"]["map_registration"]
+        .as_object()
+        .map(|_| &spatial["observation"]["map_registration"]);
     let selected_map = marker
         .map(|m| &m.map_id)
         .or_else(|| current_place.and_then(|p| p.map_id.as_ref()))
         .filter(|id| atlas.maps.iter().any(|m| &m.id == *id && m.enabled));
+    let selected_map = geometric_marker
+        .and_then(|m| m["map_id"].as_str())
+        .or(selected_map.map(String::as_str));
     if let (Some(current), Some(target)) = (current_place, target_place)
         && current.id != target.id
     {
@@ -756,7 +789,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"map":{"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"spatial":spatial,"map":{"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

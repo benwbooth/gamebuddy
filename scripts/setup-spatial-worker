@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Optional ML dependencies; application logic remains in Rust. Set
+# GAMEBUDDY_TORCH_INDEX to an official ROCm/CUDA wheel index for your hardware.
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+vision_dir="${GAMEBUDDY_VISION_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/GameBuddy/vision}"
+mkdir -p -- "$vision_dir"
+uv venv --python 3.12 --allow-existing "$vision_dir/venv"
+uv pip install --python "$vision_dir/venv/bin/python" torch torchvision \
+  --index-url "${GAMEBUDDY_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}"
+uv pip install --python "$vision_dir/venv/bin/python" \
+  'lightglue @ git+https://github.com/cvg/LightGlue.git@eb42fee2d71449efb0aa5c10549752b5d75384d8' \
+  opencv-python-headless transformers
+# LightGlue declares the GUI OpenCV wheel; use the headless implementation of
+# the same cv2 module so compositor/Qt libraries are not required by inference.
+uv pip uninstall --python "$vision_dir/venv/bin/python" opencv-python opencv-contrib-python
+uv pip install --python "$vision_dir/venv/bin/python" --reinstall opencv-python-headless
+"$vision_dir/venv/bin/python" - "$vision_dir" "$project_dir" <<'PY'
+import json, pathlib, sys
+root, project = map(pathlib.Path, sys.argv[1:])
+config = {"executable": str(root / "venv/bin/python"), "arguments": [str(project / "scripts/spatial-worker.py"), "--cache", str(root / "cache")]}
+(root / "worker.json").write_text(json.dumps(config, indent=2) + "\n")
+PY
+"${GAMEBUDDY_CLI:-$project_dir/target/debug/gamebuddy-cli}" spatial-worker "$vision_dir/worker.json"
+printf 'Learned spatial matching configured: %s\n' "$vision_dir/worker.json"

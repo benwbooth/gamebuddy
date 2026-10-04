@@ -9,3 +9,4 @@ pub mod widget;
 pub use widget::*;
 pub mod navigation;
 pub use navigation::*;
+pub mod spatial;

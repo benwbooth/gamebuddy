@@ -25,3 +25,4 @@ hound = "3.5"
 
 [dev-dependencies]
 tiny_http = "0.12"
+libloading = "0.8"

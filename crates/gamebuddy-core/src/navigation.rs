@@ -185,6 +185,13 @@ impl PlaceTracker {
         self.status = "estimated".into();
         self.detail = other.detail.clone();
     }
+    /// Changes the location cursor only after geometric frame agreement.
+    /// This cannot change completion or inventory.
+    pub fn ground(&mut self, place: &str, step: &str, epoch: u64, at: u64, evidence: &str) {
+        self.report(place, step, epoch, at, evidence);
+        self.status = "estimated".into();
+        self.detail = evidence.into();
+    }
     pub fn report(&mut self, place: &str, step: &str, epoch: u64, at: u64, report: &str) {
         *self = Self {
             epoch,
