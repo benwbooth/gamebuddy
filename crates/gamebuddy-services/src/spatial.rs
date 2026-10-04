@@ -1379,6 +1379,17 @@ pub fn observe(
             && screen::now_ms().saturating_sub(snapshot.captured_at_ms) < 15_000,
         "Discard stale spatial observation"
     );
+    let candidate = result
+        .get("map_registration")
+        .cloned()
+        .filter(Value::is_object);
+    result["map_registration"] = json!(crate::spatial_maps::stabilize(
+        store,
+        guide,
+        snapshot,
+        progress.epoch,
+        candidate
+    )?);
     let saved = if let Some((_, version)) = prior {
         store.replace_version(&tracker_key, &version, &tracker)?
     } else {
@@ -1607,7 +1618,10 @@ mod tests {
             )?;
             schedule(&store, &guide, screen::snapshot(&store)?, 0);
             std::thread::sleep(std::time::Duration::from_secs(2));
-            if context(&store, &guide)?["observation"]["tracker"]["status"] == "tracked" {
+            let observation = context(&store, &guide)?["observation"].clone();
+            if observation["tracker"]["status"] == "tracked"
+                && observation["map_registration"].is_object()
+            {
                 break;
             }
             ensure!(

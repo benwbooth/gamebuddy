@@ -63,6 +63,8 @@ impl Narrator {
         }
         let guidance = &context["guidance"];
         let ready = guidance["status"] == "ready"
+            && context["screen"]["status"] == "live"
+            && context["screen"]["scene"]["fresh"] == true
             && matches!(
                 context["location_status"].as_str(),
                 Some("estimated" | "reported")
@@ -104,7 +106,18 @@ impl Narrator {
                     self.event_votes = 1;
                 }
             }
-            let feedback = field(scene, "feedback");
+            let supplied_feedback = field(scene, "feedback");
+            // An observed outcome can be acknowledged without inventing a
+            // recovery strategy when the semantic model supplies no advice.
+            let feedback = if supplied_feedback.trim().is_empty() {
+                match event.as_str() {
+                    "death" => "It looks like you died.",
+                    "victory" => "That looks like a victory screen.",
+                    _ => "",
+                }
+            } else {
+                supplied_feedback.as_str()
+            };
             if ["death", "danger", "victory"].contains(&event.as_str())
                 && self.event_votes >= 2
                 && self
@@ -119,7 +132,7 @@ impl Narrator {
             {
                 self.spoken_events.insert(event, now);
                 self.last_spoken = Some(now);
-                return Some(brief(&feedback));
+                return Some(brief(feedback));
             }
         } else {
             self.pending_event.clear();
@@ -171,7 +184,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     fn action(id: &str) -> Value {
-        json!({"game":"Game","location_status":"estimated","guidance":{"status":"ready","now":{"id":id,"title":"Buy the key"}}})
+        json!({"game":"Game","screen":{"status":"live","scene":{"fresh":true}},"location_status":"estimated","guidance":{"status":"ready","now":{"id":id,"title":"Buy the key"}}})
+    }
+    #[test]
+    fn outdated_scene_cannot_trigger_a_next_action_cue() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        c["screen"]["scene"]["fresh"] = serde_json::json!(false);
+        assert!(!n.next(&c, t).unwrap().contains("Buy the key"));
+        assert!(n.next(&c, t + Duration::from_secs(120)).is_none());
     }
     #[test]
     fn short_introduction_does_not_claim_an_uncertain_location() {
@@ -181,6 +203,22 @@ mod tests {
         assert!(greeting.starts_with("Welcome back."));
         assert!(greeting.split_whitespace().count() <= 20);
         assert!(!greeting.contains("Church"));
+    }
+    #[test]
+    fn repeated_outcomes_can_be_acknowledged_without_generated_advice() {
+        for event in ["death", "victory"] {
+            let mut n = Narrator::default();
+            let t = Instant::now();
+            let mut c = json!({"game":"Game","screen":{"status":"live","scene":{
+                "fresh":true,"confidence":0.95,"event":event,"feedback":"","captured_at_ms":1
+            }}});
+            n.next(&c, t);
+            assert!(n.next(&c, t + Duration::from_secs(100)).is_none());
+            c["screen"]["scene"]["captured_at_ms"] = json!(2);
+            assert!(n.next(&c, t + Duration::from_secs(110)).is_some());
+            c["screen"]["scene"]["captured_at_ms"] = json!(3);
+            assert!(n.next(&c, t + Duration::from_secs(210)).is_none());
+        }
     }
     #[test]
     fn ordinary_observations_stay_silent_and_events_have_a_long_cooldown() {

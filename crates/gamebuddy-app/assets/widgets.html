@@ -101,7 +101,7 @@
           const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;
           const region=geometric || (map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null);
           const nextFraming=JSON.stringify([id,followMap,region?.region]),changedFraming=nextFraming!==framingKey;framingKey=nextFraming;
-          markerLabel.textContent=geometric?'You are here · camera area':'You are here · approximate area';
+          markerLabel.textContent=geometric?'Visible camera area':'Estimated room area';
           marker.hidden=!region;
           if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:geometric?'Geometric map registration':'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
           selectionNote.textContent=followMap?(region?(geometric?'Visible area aligned to map pixels.':'Highlighted area estimated from map landmarks.'):map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
@@ -201,7 +201,7 @@
         if(guideId!==g.id){openNodes=new Set();followed=null;guideId=g.id}
         const current=c.progress?.current_step, completed=new Set([...(c.progress?.completed||[]),...(c.progress?.reported_completed||[])]), changed=current!==followed;
         followed=current;const currentPath=new Set();let currentNode=byId.get(current);while(currentNode?.parent_id){currentPath.add(currentNode.parent_id);openNodes.add(currentNode.parent_id);currentNode=byId.get(currentNode.parent_id)}
-        const nextAction=byId.get(current);if(nextAction){const pinned=text('div','','outline-next');pinned.append(text('div','Next player action','eyebrow'),text('strong',nextAction.title),evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([current])));body.append(pinned)}else body.append(text('div','Preparing player actions…','location'));
+        const nextAction=c.guidance?.now?.id===current?c.guidance.now:byId.get(current);if(nextAction){const pinned=text('div','','outline-next');pinned.append(text('div','Next player action','eyebrow'),text('strong',nextAction.title),evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([current])));body.append(pinned)}else body.append(text('div','Preparing player actions…','location'));
         if(c.guidance?.reason)body.append(text('div',c.guidance.reason,'preparation'));
         if(c.preparation)body.append(text('div',c.preparation.message,'preparation'));
 
@@ -211,7 +211,7 @@
           if(!hasChildren)row.type='button';row.dataset.stepId=s.id;if(s.id===current){row.classList.add('current');row.setAttribute('aria-current','step')}
           if(completed.has(s.id))row.classList.add('done');evidence(row,'Step sources',()=>stepEvidence([s.id]));
           if(hasChildren){const details=document.createElement('details');details.open=openNodes.has(s.id);row.addEventListener('click',event=>{if(currentPath.has(s.id))event.preventDefault()});details.addEventListener('toggle',()=>{if(currentPath.has(s.id)&&!details.open){details.open=true;return}if(details.open)openNodes.add(s.id);else openNodes.delete(s.id)});details.append(row,branch(s.id));li.append(details)}
-          else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);if(s.id===current)return;const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))});li.append(row);if(s.id===current)li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))}
+          else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);if(s.id===current)return;const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))});li.append(row);if(s.id===current)li.append(evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))}
           ul.append(li)
         }return ul}
         body.append(branch(''));requestAnimationFrame(()=>console.info('GAMEBUDDY_OUTLINE '+JSON.stringify({current:current||null,rows:[...body.querySelectorAll('[data-step-id]')].map(n=>({id:n.dataset.stepId,rect:bounds(n)}))})));

@@ -72,7 +72,9 @@ WebEngineView {
         return JSON.stringify({game:value.game,location_status:value.location_status,
             current_place:value.current_place?.label,
             suggested_action:step?{id:step.id,title:step.title,instructions:(step.instructions||'').slice(0,800)}:null,
-            screen:{status:value.screen?.status,summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
+            screen:{status:value.screen?.status,captured_at_ms:value.screen?.captured_at_ms,
+                scene_captured_at_ms:scene?.captured_at_ms,scene_fresh:scene?.fresh===true,
+                summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
             instruction:"Background reference only. Do not read this aloud or reply to it. Listen to the live player. Use get_game_context and get_game_screen for current details; never speak the player's side of a conversation."})
     }
     function updateContext() {
@@ -98,15 +100,17 @@ WebEngineView {
             if(trace)console.warn("GAMEBUDDY_NARRATION characters="+text.length)
             panel.answer(text)
             if(enabledBackend){
-                updateContext()
+                // This cue already contains the selected words. Appending
+                // commentary here can race and cancel its queued speech.
                 // Authorize playback before the cue can produce remote audio.
                 runJavaScript("gamebuddyVoice.allowReply('cue')",()=>transport.speak(text))
             }
         }
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
-    // Perception keeps running locally. Send its latest state on a real player
-    // turn or a selected cue, not as a stream of conversation-triggering updates.
+    // Keep continuous perception local. Refresh on player speech;
+    // background appends can interrupt a queued voice response. Gameplay
+    // questions also obtain a fresh screenshot through get_game_context.
     Timer {
         interval:100;repeat:true;running:panel.started
         onTriggered:{

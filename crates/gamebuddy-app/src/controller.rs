@@ -715,7 +715,11 @@ impl ffi::Buddy {
                     services::spatial::schedule(&store, guide, snapshot, sync.progress.epoch);
                 }
                 let matching = if let Some(guide) = &guide {
-                    if let Some(index) = store.index(guide)? {
+                    if services::spatial::context(&store, guide)?["preparation"]["status"]
+                        == "ready"
+                    {
+                        None
+                    } else if let Some(index) = store.index(guide)? {
                         let vector = fingerprint(&image::open(&path)?, ticket.crop)?;
                         let estimate = sync.observe(
                             guide,
@@ -793,11 +797,11 @@ impl ffi::Buddy {
         });
     }
     fn observe_screen(mut self: Pin<&mut Self>) {
-        if self.rust().scene_inflight || self.rust().vision_inflight {
+        if self.rust().scene_inflight {
             return;
         }
         let now = services::screen::now_ms();
-        if now.saturating_sub(self.rust().last_scene_at) < 6_000 {
+        if now.saturating_sub(self.rust().last_scene_at) < 3_000 {
             return;
         }
         let root = self.rust().root.clone();
@@ -811,7 +815,7 @@ impl ffi::Buddy {
             return;
         }
         if snapshot.jpeg == self.rust().last_scene_image
-            && now.saturating_sub(self.rust().last_scene_at) < 15_000
+            && now.saturating_sub(self.rust().last_scene_at) < 4_000
         {
             return;
         }
@@ -828,7 +832,17 @@ impl ffi::Buddy {
                 let tracker = store
                     .get::<gamebuddy_core::PlaceTracker>(&services::navigation::tracker_key(g))
                     .ok()?;
-                Some(json!({"places":atlas.places,"last_location":tracker,"geometric_location":services::spatial::context(&store,g).ok()}))
+                let spatial = services::spatial::context(&store, g).ok()?;
+                // Geometric tracking owns location once prepared. Keep this
+                // request focused on scene meaning instead of reclassifying
+                // every atlas place on each frame.
+                let places = if spatial["preparation"]["status"] == "ready" {
+                    Vec::new()
+                } else {
+                    atlas.places
+                };
+                Some(json!({"places":places,"last_location":tracker,
+                    "geometric_location":spatial["observation"]["tracker"]}))
             })
             .unwrap_or_else(|| json!({"places":[]}));
         self.as_mut().rust_mut().scene_inflight = true;
@@ -840,7 +854,10 @@ impl ffi::Buddy {
                 services::screen::observe(
                     &provider,
                     &snapshot,
-                    snapshot.metadata.get("scene"),
+                    snapshot
+                        .metadata
+                        .get("scene")
+                        .filter(|scene| scene["fresh"] == true),
                     &location_context,
                 )
             });
@@ -886,6 +903,12 @@ impl ffi::Buddy {
         let Some(guide) = self.rust().guide.clone() else {
             return;
         };
+        if Store::open(&self.rust().root)
+            .and_then(|store| services::spatial::context(&store, &guide))
+            .is_ok_and(|state| state["preparation"]["status"] == "ready")
+        {
+            return;
+        }
         let candidates = self.rust().estimate.candidates.clone();
         if candidates.is_empty() {
             return;

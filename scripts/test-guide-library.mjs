@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
 assert(new URL(endpoint).hostname==='127.0.0.1','Only a private local test port is supported');
@@ -57,11 +59,21 @@ try {
   const prefs=doc('widget-visibility:'+id);prefs['guide-library']=true;db.prepare('UPDATE documents SET body=? WHERE key=?').run(JSON.stringify(prefs),'widget-visibility:'+id);
   await until(()=>evaluate(`!!document.querySelector('.library')`),'Widget did not return');
   await button('Bookmarks');assert(await evaluate(`document.querySelector('.reader-tree').textContent.includes('Shop')`));
+  // Exercise the same harness mutation used by speech/chat, then observe the
+  // persisted result through the actual Qt polling bridge.
+  const beforeAdvice=progress();
+  const advice='Speak to the shopkeeper and buy the key before leaving town.';
+  execFileSync(fileURLToPath(new URL('../target/debug/gamebuddy-cli',import.meta.url)),[
+    '--data-dir',root,'tool','set_next_action',JSON.stringify({expected_revision:guide().revision,epoch:beforeAdvice.epoch,step_id:'step-3',instructions:advice})
+  ]);
+  assert.deepEqual(progress(),beforeAdvice,'Advice must not claim progress');
   // Keep subsequent controlled render checks isolated from the app refresh.
   await evaluate(`window.testRender=gamebuddy.render;gamebuddy.render=state=>{window.testState=state;window.testRender(state)}`);
-  await until(()=>evaluate('!!window.testState'),'No current widget state');
+  await until(()=>evaluate(`window.testState?.navigation.guidance.now.instructions===${JSON.stringify(advice)}`),'Published advice did not reach the Qt widget state');
   await evaluate(`gamebuddy.render=()=>{};testState.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};testRender(testState)`);
   assert(await evaluate(`document.querySelector('.outline-next')?.textContent.includes(testState.navigation.guidance.now.instructions)`),'Next instructions are not pinned');
+  assert(await evaluate(`document.querySelector('[aria-current=step]').dataset.stepId==='step-3' && document.querySelector('.outline-next').textContent.includes(${JSON.stringify(advice)})`),'Outline did not follow conversation advice');
+  await screenshot('shared-next-action');
   await evaluate(`const current=document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]');current.click();let parent=current.closest('details');while(parent){parent.open=false;parent=parent.parentElement.closest('details')}`);
   await until(()=>evaluate(`[...document.querySelectorAll('[data-widget-id="walkthrough-outline"] details')].filter(d=>d.querySelector('[aria-current=step]')).every(d=>d.open)`),'Current path can be collapsed');
   assert(await evaluate(`document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]').parentElement.querySelector('.instructions')?.textContent===testState.navigation.guidance.now.instructions`),'Current action click hid its instructions');

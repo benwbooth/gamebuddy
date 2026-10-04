@@ -215,6 +215,26 @@ impl Store {
         transaction.commit()?;
         Ok(())
     }
+    pub(crate) fn put_for_progress<T: Serialize>(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision
+                && self.progress(guide)?.epoch == epoch,
+            "Plan or progress changed; read the current context"
+        );
+        self.put(key, value)?;
+        transaction.commit()?;
+        Ok(())
+    }
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
         Ok(self.get_versioned(key)?.map(|(value, _)| value))
     }

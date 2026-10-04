@@ -511,6 +511,17 @@ fn requirements<'a>(guide: &'a Guide, progress: &Progress, step: &'a Step) -> Ve
 /// Deterministic advice from the editable graph. Unknown prerequisites remain
 /// outstanding; previewing a route does not persist hypothetical completion.
 pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> Guidance {
+    guidance_from(guide, progress, location, None)
+}
+
+/// A conversational recommendation selects a plan action without claiming
+/// that the player reached it or completed any preceding task.
+pub fn guidance_from(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    recommendation: Option<&str>,
+) -> Guidance {
     let goal_ids: Vec<_> = guide.goals.iter().flat_map(|g| &g.step_ids).collect();
     if !goal_ids.is_empty() && goal_ids.iter().all(|id| step_complete(guide, progress, id)) {
         return Guidance { status: "goals_complete".into(), reason: "Your selected goals are complete according to saved confirmations and player reports.".into(), ..Default::default() };
@@ -524,7 +535,9 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
     if !goal_ids.is_empty() && goal.is_none() {
         return Guidance { status: "blocked".into(), reason: "The selected goal has no enabled unfinished instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
     }
-    let start = goal
+    let start = recommendation
+        .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new()))
+        .or(goal)
         .or_else(|| {
             location
                 .reference_step_id

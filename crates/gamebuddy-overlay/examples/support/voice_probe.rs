@@ -406,7 +406,8 @@ fn realtime(
     );
     ensure!(
         cardinal(conn, overlay, focus)? == 0,
-        "Live voice stole game focus"
+        "Live voice stole game focus (mode={})",
+        cardinal(conn, overlay, focus)?
     );
     let wave = std::env::var("GAMEBUDDY_TEST_VOICE_WAV")?;
     thread::sleep(Duration::from_secs(2));
@@ -439,9 +440,13 @@ fn realtime(
         started.elapsed().as_secs_f32()
     );
     if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
+        let log_text = std::fs::read_to_string(&log)?;
         ensure!(
-            std::fs::read_to_string(&log)?
-                .contains("GAMEBUDDY_VOICE_TOOL name=get_game_screen success=true images=1"),
+            ["get_game_context", "get_game_screen"]
+                .iter()
+                .any(|name| log_text.contains(&format!(
+                    "GAMEBUDDY_VOICE_TOOL name={name} success=true images=1"
+                ))),
             "Voice never inspected native screenshot content"
         );
         let id: String = store.get("active_guide")?.unwrap();

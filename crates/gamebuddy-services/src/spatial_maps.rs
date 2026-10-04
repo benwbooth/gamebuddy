@@ -217,7 +217,11 @@ pub fn locate(
             let center = point(128., 96.);
             let polygon =
                 [[0., 0.], [256., 0.], [256., 192.], [0., 192.]].map(|p| point(p[0], p[1]));
-            matches.push((tile, r, center, polygon));
+            // Reject extrapolated/off-map matches before clipping. Clipping an
+            // invalid transform can otherwise look like a confident edge marker.
+            if valid_projection(center, &polygon) {
+                matches.push((tile, r, center, polygon));
+            }
         }
     }
     matches.sort_by(|a, b| b.1.score.total_cmp(&a.1.score));
@@ -260,4 +264,188 @@ pub fn locate(
     Ok(Some(
         json!({"map_id":tile.map_id,"polygon":polygon,"region":{"x":minx,"y":miny,"width":maxx-minx,"height":maxy-miny},"precision":"camera_footprint","inliers":r.inliers,"residual":r.residual,"evidence":format!("{} local landmarks agree geometrically with atlas pixels; mean residual {:.2} px. This marks the visible camera area, not the player's exact position.",r.inliers,r.residual),"source_url":map.source_url,"credit":map.credit}),
     ))
+}
+
+fn valid_projection(center: [f32; 2], polygon: &[[f32; 2]; 4]) -> bool {
+    if center
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        || polygon.iter().flatten().any(|v| !v.is_finite())
+    {
+        return false;
+    }
+    let bounds = |axis| {
+        let lo = polygon
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::INFINITY, f32::min);
+        let hi = polygon
+            .iter()
+            .map(|p| p[axis])
+            .fold(f32::NEG_INFINITY, f32::max);
+        (lo, hi)
+    };
+    let (x0, x1) = bounds(0);
+    let (y0, y1) = bounds(1);
+    let full = (x1 - x0) * (y1 - y0);
+    let visible = (x1.min(1.) - x0.max(0.)).max(0.) * (y1.min(1.) - y0.max(0.)).max(0.);
+    full > 0. && visible / full >= 0.7
+}
+
+#[derive(Serialize, Deserialize)]
+struct MapTrack {
+    ticket: crate::screen::Ticket,
+    revision: u64,
+    epoch: u64,
+    at: u64,
+    pending: Option<Value>,
+    votes: u8,
+}
+fn nearby(a: &Value, b: &Value) -> bool {
+    if a["map_id"] != b["map_id"] {
+        return false;
+    }
+    let region = |v: &Value| -> Option<[f64; 4]> {
+        let r = &v["region"];
+        Some([
+            r["x"].as_f64()?,
+            r["y"].as_f64()?,
+            r["width"].as_f64()?,
+            r["height"].as_f64()?,
+        ])
+    };
+    let (Some(a), Some(b)) = (region(a), region(b)) else {
+        return false;
+    };
+    (0..2).all(|i| {
+        let span = a[i + 2].max(b[i + 2]);
+        span > 0.
+            && a[i + 2].min(b[i + 2]) / span >= 0.5
+            && ((a[i] + a[i + 2] / 2.) - (b[i] + b[i + 2] / 2.)).abs() <= span * 0.75
+    })
+}
+/// A single plausible transform cannot teleport the overlay to another map or
+/// a distant repeated corridor. Require agreement from distinct captures.
+pub(crate) fn stabilize(
+    store: &Store,
+    guide: &Guide,
+    snapshot: &crate::screen::Snapshot,
+    epoch: u64,
+    marker: Option<Value>,
+) -> Result<Option<Value>> {
+    let key = format!("map-track:{}", guide.id);
+    let prior = store.get_versioned::<MapTrack>(&key)?;
+    let previous = prior.as_ref().map(|(p, _)| p).filter(|p| {
+        p.ticket == snapshot.ticket && p.revision == guide.revision && p.epoch == epoch
+    });
+    if previous.is_some_and(|p| p.at >= snapshot.captured_at_ms) {
+        return Ok(None);
+    }
+    let votes = if let (Some(previous), Some(marker)) = (previous, marker.as_ref()) {
+        if snapshot.captured_at_ms.saturating_sub(previous.at) <= 6_000
+            && previous.pending.as_ref().is_some_and(|p| nearby(p, marker))
+        {
+            previous.votes.saturating_add(1)
+        } else {
+            1
+        }
+    } else {
+        u8::from(marker.is_some())
+    };
+    let next = MapTrack {
+        ticket: snapshot.ticket.clone(),
+        revision: guide.revision,
+        epoch,
+        at: snapshot.captured_at_ms,
+        pending: marker.clone(),
+        votes,
+    };
+    let saved = if let Some((_, version)) = prior {
+        store.replace_version(&key, &version, &next)?
+    } else {
+        store.put_if_absent(&key, &next)?
+    };
+    ensure!(saved, "Newer map observation exists");
+    Ok(marker.filter(|_| votes >= 2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn projection_rejects_edge_clamping_but_allows_small_camera_overscan() {
+        assert!(valid_projection(
+            [0.5, 0.45],
+            &[[0.2, -0.1], [0.8, -0.1], [0.8, 1.0], [0.2, 1.0]]
+        ));
+        assert!(!valid_projection(
+            [-0.1, 0.5],
+            &[[-0.3, 0.], [0.1, 0.], [0.1, 1.], [-0.3, 1.]]
+        ));
+        assert!(!valid_projection(
+            [0.1, 0.5],
+            &[[-0.8, 0.], [1., 0.], [1., 1.], [-0.8, 1.]]
+        ));
+        assert!(!valid_projection([f32::NAN, 0.5], &[[0., 0.]; 4]));
+    }
+    #[test]
+    fn map_jumps_require_distinct_consistent_frames_and_revoke_on_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# A").unwrap();
+        let mut frame = crate::screen::Snapshot {
+            ticket: crate::screen::start(&store, "Game", true).unwrap(),
+            captured_at_ms: 1000,
+            jpeg: String::new(),
+            metadata: json!({}),
+        };
+        let marker =
+            |x| Some(json!({"map_id":"map","region":{"x":x,"y":0.1,"width":0.1,"height":0.2}}));
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.1))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.1))
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 4000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.12))
+                .unwrap()
+                .is_some()
+        );
+        frame.captured_at_ms = 7000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.85))
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 10000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.86))
+                .unwrap()
+                .is_some()
+        );
+        frame.captured_at_ms = 13000;
+        assert!(
+            stabilize(&store, &guide, &frame, 1, marker(0.86))
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 16000;
+        assert!(
+            stabilize(&store, &guide, &frame, 1, None)
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 19000;
+        assert!(
+            stabilize(&store, &guide, &frame, 1, marker(0.86))
+                .unwrap()
+                .is_none()
+        );
+    }
 }
