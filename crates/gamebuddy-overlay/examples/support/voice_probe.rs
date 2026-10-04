@@ -262,7 +262,7 @@ fn memory(phase: &str) -> Result<()> {
                 gamebuddy_services::harness::widgets(&store, &store.guide(&id)?)?
                     .iter()
                     .any(|w| {
-                        w.title == "Memory Restored"
+                        w.title.eq_ignore_ascii_case("Memory Restored")
                             && serde_json::to_string(&w.content)
                                 .unwrap_or_default()
                                 .to_lowercase()

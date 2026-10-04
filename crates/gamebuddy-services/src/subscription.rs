@@ -188,7 +188,9 @@ impl CodexClient {
             model,
             instructions,
             tools,
-            priority.then_some("priority"),
+            // An explicit opt-out must also override a globally configured
+            // Codex Fast tier, rather than silently inheriting it.
+            Some(if priority { "priority" } else { "default" }),
             deadline,
         )
     }
