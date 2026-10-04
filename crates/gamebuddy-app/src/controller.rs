@@ -303,7 +303,15 @@ impl ffi::Buddy {
                 .guide
                 .as_ref()
                 .map(|g| {
-                    services::navigation::context(&store, g, &data.sync.progress, &data.estimate)
+                    let mut navigation = services::navigation::context(
+                        &store,
+                        g,
+                        &data.sync.progress,
+                        &data.estimate,
+                    )?;
+                    // The full tree belongs to the reader, not every voice/MCP context.
+                    navigation["player_steps"] = json!(gamebuddy_core::player_outline(g));
+                    Ok::<_, anyhow::Error>(navigation)
                 })
                 .transpose()?
                 .unwrap_or_else(|| json!({}));

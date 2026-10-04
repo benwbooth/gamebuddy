@@ -192,6 +192,12 @@ impl PlaceTracker {
         self.status = "estimated".into();
         self.detail = evidence.into();
     }
+    /// Atlas geometry can identify a room without identifying a task there.
+    pub fn ground_place(&mut self, place: &str, epoch: u64, at: u64, evidence: &str) {
+        self.ground(place, "", epoch, at, evidence);
+        self.reference_step_id = None;
+        self.room_entry_step = None;
+    }
     pub fn report(&mut self, place: &str, step: &str, epoch: u64, at: u64, report: &str) {
         *self = Self {
             epoch,
@@ -330,6 +336,67 @@ pub struct Guidance {
     pub reason: String,
 }
 
+/// Compiler bookkeeping remains in the source graph for coverage/provenance,
+/// but is never an instruction for the player (including older saved guides).
+pub fn is_player_action(step: &Step) -> bool {
+    let instructions = step.instructions.trim();
+    !instructions.is_empty()
+        && ![
+            "Video segment awaiting interpretation.",
+            "Chapter supplied by the video's author.",
+            "Reference reviewed:",
+            "Detailed tasks below",
+        ]
+        .iter()
+        .any(|prefix| instructions.starts_with(prefix))
+        && !(instructions.starts_with("Follow the ")
+            && instructions.contains("Expand each timed section"))
+}
+
+/// A player-facing projection, preserving original IDs and source anchors.
+/// Chapters group actions; source sampling intervals are flattened out.
+pub fn player_outline(guide: &Guide) -> Vec<Step> {
+    fn visit(
+        guide: &Guide,
+        parent: Option<&str>,
+        visible_parent: Option<&str>,
+        out: &mut Vec<Step>,
+    ) {
+        for step in guide
+            .steps
+            .iter()
+            .filter(|s| s.parent_id.as_deref() == parent)
+        {
+            if !guide.step_enabled(step) {
+                continue;
+            }
+            let mut children = vec![];
+            visit(guide, Some(&step.id), Some(&step.id), &mut children);
+            let section = step.instructions.starts_with("Detailed tasks below")
+                || step.instructions.starts_with("Reference reviewed:")
+                || step
+                    .instructions
+                    .starts_with("Video segment awaiting interpretation.");
+            if section || (!is_player_action(step) && children.is_empty()) {
+                for child in &mut children {
+                    if child.parent_id.as_deref() == Some(&step.id) {
+                        child.parent_id = visible_parent.map(str::to_owned);
+                    }
+                }
+                out.extend(children);
+            } else {
+                let mut node = step.clone();
+                node.parent_id = visible_parent.map(str::to_owned);
+                out.push(node);
+                out.extend(children);
+            }
+        }
+    }
+    let mut result = vec![];
+    visit(guide, None, None, &mut result);
+    result
+}
+
 pub fn step_complete(guide: &Guide, progress: &Progress, id: &str) -> bool {
     let mut current = Some(id);
     while let Some(id) = current {
@@ -368,7 +435,7 @@ fn unfinished<'a>(
             .iter()
             .filter(|s| s.parent_id.as_deref() == Some(id))
             .collect();
-        if children.is_empty() {
+        if children.is_empty() && is_player_action(step) {
             return Some(step);
         }
         for child in children {
@@ -378,7 +445,6 @@ fn unfinished<'a>(
                 return Some(s);
             }
         }
-        return None;
     }
     for next in route_successors(guide, step) {
         if let Some(s) = unfinished(guide, progress, next, visited) {
@@ -458,17 +524,25 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
     if !goal_ids.is_empty() && goal.is_none() {
         return Guidance { status: "blocked".into(), reason: "The selected goal has no enabled unfinished instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
     }
-    let start = goal.or_else(|| {
-        location
-            .reference_step_id
-            .as_deref()
-            .or(progress.current_step.as_deref())
-            .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new()))
-    });
+    let start = goal
+        .or_else(|| {
+            location
+                .reference_step_id
+                .as_deref()
+                .or(progress.current_step.as_deref())
+                .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new()))
+        })
+        .or_else(|| {
+            guide
+                .steps
+                .iter()
+                .filter(|s| s.parent_id.is_none())
+                .find_map(|s| unfinished(guide, progress, &s.id, &mut HashSet::new()))
+        });
     let Some(target) = start else {
         return Guidance {
             status: "waiting".into(),
-            reason: "Waiting for a location match or a selected goal with an unfinished task."
+            reason: "No unfinished player actions are available. Reference preparation may still be in progress."
                 .into(),
             ..Default::default()
         };
@@ -502,10 +576,15 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
         "Following your selected goal and its prerequisites."
     } else if location.status == "reported" {
         "Suggested from the location you reported and unfinished walkthrough tasks."
+    } else if location.place_id.is_some()
+        && location.reference_step_id.is_none()
+        && progress.current_step.is_none()
+    {
+        "Your location is matched, but task progress is unconfirmed. Showing the next unfinished action in the saved plan."
     } else if location.place_id.is_some() {
         "Suggested from the estimated room and unfinished walkthrough tasks."
     } else {
-        "Location is uncertain. This is the last known plan, not a fresh location-specific instruction."
+        "Next unfinished action in your plan. Your location is not yet confirmed; this does not mean you have reached this step."
     };
     let mut preview = progress.clone();
     preview.completed.insert(selected.id.clone());
@@ -550,10 +629,15 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
         cursor = candidate;
     }
     Guidance {
-        status: if location.place_id.is_some() {
-            "ready"
-        } else {
+        status: if location.place_id.is_none() {
             "unlocated"
+        } else if location.reference_step_id.is_none()
+            && progress.current_step.is_none()
+            && goal.is_none()
+        {
+            "plan"
+        } else {
+            "ready"
         }
         .into(),
         now: Some(selected.clone()),
@@ -568,6 +652,36 @@ pub fn guidance(guide: &Guide, progress: &Progress, location: &PlaceTracker) -> 
 mod tests {
     use super::*;
     use crate::{Candidate, PlayerGoal, ReferencePreference, import_markdown};
+    #[test]
+    fn player_outline_skips_source_intervals_and_plans_without_a_location_lock() {
+        let guide = import_markdown("Game", "Video", "# Introduction\n## Intro · 0:00\nReference reviewed: no actionable steps.\n# Town\nFollow the 2 detailed actions below. Expand each timed section for tasks.\n## Town · 0:04\nDetailed tasks below follow the demonstrated route.\n### Enter town\nWalk through the right door.\n### Get the ring\nTalk to the guru.\n# Unreviewed\nVideo segment awaiting interpretation.").unwrap();
+        let visible = player_outline(&guide);
+        assert_eq!(
+            visible.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            vec!["Town", "Enter town", "Get the ring"]
+        );
+        assert_eq!(visible[1].parent_id.as_deref(), Some("step-3"));
+        assert_eq!(visible[1].anchors, guide.steps[4].anchors);
+        let mut progress = Progress::default();
+        let advice = guidance(&guide, &progress, &PlaceTracker::default());
+        assert_eq!(advice.now.unwrap().id, "step-5");
+        assert_eq!(advice.status, "unlocated");
+        assert!(progress.completed.is_empty());
+        progress.completed.insert("step-5".into());
+        assert_eq!(
+            guidance(&guide, &progress, &PlaceTracker::default())
+                .now
+                .unwrap()
+                .id,
+            "step-6"
+        );
+        progress.completed.insert("step-6".into());
+        assert!(
+            guidance(&guide, &progress, &PlaceTracker::default())
+                .now
+                .is_none()
+        );
+    }
     fn guide() -> Guide {
         let mut guide = import_markdown(
             "Game",

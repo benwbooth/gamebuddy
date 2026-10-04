@@ -59,6 +59,17 @@ impl Narrator {
             };
             let next = if ready {
                 cue(context)
+            } else if guidance["status"] == "plan"
+                && matches!(
+                    context["location_status"].as_str(),
+                    Some("estimated" | "reported")
+                )
+                && !field(&context["current_place"], "label").is_empty()
+            {
+                format!(
+                    "Your map shows {}. Task progress is still unconfirmed, so I've kept the next unfinished action visible in your guide.",
+                    field(&context["current_place"], "label")
+                )
             } else {
                 "I'm watching for a reliable location match before giving directions.".into()
             };
@@ -159,6 +170,17 @@ fn cue(context: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn matched_place_is_not_described_as_a_failed_location_lock() {
+        let mut narrator = Narrator::default();
+        let context = json!({"game":"Game","location_status":"estimated","current_place":{"label":"Town street"},"guidance":{"status":"plan","now":{"id":"first","title":"Enter town"}}});
+        let greeting = narrator.next(&context, Instant::now()).unwrap();
+        assert!(greeting.contains("Your map shows Town street"));
+        assert!(greeting.contains("Task progress is still unconfirmed"));
+        assert!(
+            !greeting.contains("next step is") && !greeting.contains("reliable location match")
+        );
+    }
     #[test]
     fn welcomes_returning_player_without_claiming_previous_location() {
         let mut n = Narrator::default();

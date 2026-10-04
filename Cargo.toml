@@ -23,3 +23,15 @@ debug = 1
 # The continuously running image matcher must remain usable in dev builds.
 [profile.dev.package.gamebuddy-core]
 opt-level = 3
+
+# Live ultrawide capture decodes/resizes several million pixels per frame.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.moxcms]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3

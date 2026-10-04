@@ -14,6 +14,12 @@ Every widget has **−** to minimize to its header, **+** to restore, and **×**
 
 The Rust service resolves image IDs only against the current guide index. Reader mutations check guide revision; completion changes also check progress epoch. Pictures and source links retain provenance without granting the HTML page arbitrary local file access.
 
+The live outline pins **Next player action** and keeps that action's parent branches and instructions open. It follows the planner's next unfinished task, including prerequisites, rather than the matched video's timestamp. Compiler sampling intervals and empty introduction sections are omitted from the player-facing tree; their IDs, timestamps and evidence remain in the underlying source graph. With no location lock, the next unfinished plan action remains readable and is labelled unconfirmed. A known room alone does not establish task progress or trigger confident spoken directions.
+
+**Location map** and the library's **All maps** provide separate entries for known locations, with the current location highlighted in the menu. Area maps without a room association remain browsable, and locations without verified maps explicitly say so. **Follow player** selects the current area, zooms and scrolls its camera footprint into view. **Fit** lets the player inspect the whole map. Geometric highlights identify the visible camera area, not an exact sprite coordinate. A uniquely associated atlas image can establish a named location even when multiple walkthrough visits make the task timestamp ambiguous.
+
+Live visual inference retains the newest pending frame during model startup and processing. The persistent model warms before the next frame is selected. Existing freshness, session, crop and progress-epoch checks still reject stale observations. Geometric atlas matches take priority over coarse video-image guesses; location evidence never completes tasks.
+
 Run the isolated real Qt/SQLite integration test with:
 
 ```sh
@@ -21,6 +27,8 @@ nix develop --command scripts/test-guide-library
 ```
 
 It requires Xvfb and Node 22 or newer. It creates generated test material under `/tmp`, checks the real Rust/Qt reader bridge, captures screenshots, and leaves live game data untouched. `scripts/test-gamescope` separately verifies compositor input routing and widget dragging/dismissal.
+
+For a prepared local world and an independently captured gameplay frame, the optional `live_capture_to_map_and_mcp_images` Rust test exercises cold startup, queued frames, named location, atlas registration, MCP images and crop invalidation in a temporary store. Set `GAMEBUDDY_TEST_SPATIAL_STORE` and `GAMEBUDDY_TEST_SPATIAL_FRAME`. Optionally set `GAMEBUDDY_TEST_SPATIAL_OUTPUT` to a temporary JSON path, then pass the same variable to `scripts/test-guide-library` to verify that recorded production state in the Qt renderer. Repeated saved pixels validate the integration, not continuous motion tracking or task completion accuracy.
 
 ## Exported illustrated guide
 

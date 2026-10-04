@@ -1,7 +1,7 @@
 // Opt-in integration test against a private Qt WebEngine debug port and the
 // guide_library_fixture database. Never point this at a user's live session.
 import assert from 'node:assert/strict';
-import {writeFileSync} from 'node:fs';
+import {readFileSync,writeFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
@@ -57,6 +57,41 @@ try {
   const prefs=doc('widget-visibility:'+id);prefs['guide-library']=true;db.prepare('UPDATE documents SET body=? WHERE key=?').run(JSON.stringify(prefs),'widget-visibility:'+id);
   await until(()=>evaluate(`!!document.querySelector('.library')`),'Widget did not return');
   await button('Bookmarks');assert(await evaluate(`document.querySelector('.reader-tree').textContent.includes('Shop')`));
+  // Keep subsequent controlled render checks isolated from the app refresh.
+  await evaluate(`window.testRender=gamebuddy.render;gamebuddy.render=state=>{window.testState=state;window.testRender(state)}`);
+  await until(()=>evaluate('!!window.testState'),'No current widget state');
+  await evaluate(`gamebuddy.render=()=>{};testState.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};testRender(testState)`);
+  assert(await evaluate(`document.querySelector('.outline-next')?.textContent.includes(testState.navigation.guidance.now.instructions)`),'Next instructions are not pinned');
+  await evaluate(`const current=document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]');current.click();let parent=current.closest('details');while(parent){parent.open=false;parent=parent.parentElement.closest('details')}`);
+  await until(()=>evaluate(`[...document.querySelectorAll('[data-widget-id="walkthrough-outline"] details')].filter(d=>d.querySelector('[aria-current=step]')).every(d=>d.open)`),'Current path can be collapsed');
+  assert(await evaluate(`document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]').parentElement.querySelector('.instructions')?.textContent===testState.navigation.guidance.now.instructions`),'Current action click hid its instructions');
+  // Optional production state obtained by the isolated saved-frame pipeline test.
+  if(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT){
+    const replay=JSON.parse(readFileSync(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT,'utf8'));
+    const preview=replay.map_preview;delete replay.map_preview;
+    replay.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};
+    await evaluate(`window.testState=${JSON.stringify(replay)};testRender(testState)`);
+    await evaluate(`gamebuddy.mapPreview(${JSON.stringify(replay.navigation.map.selected_map_id)},${JSON.stringify(preview)})`);
+    await until(()=>evaluate(`document.querySelector('.map-stage img')?.naturalWidth>0`),'Replay map image missing');
+    assert(await evaluate(`document.querySelector('.map-status').textContent.includes(testState.navigation.map.current_place.label)`),'Named player location missing');
+    assert(await evaluate(`!document.querySelector('.map-marker').hidden`),'Player area is not highlighted');
+    assert.equal(await evaluate(`document.querySelector('.outline-next strong').textContent`),replay.navigation.guidance.now.title);
+    assert(await evaluate(`![...document.querySelectorAll('[data-step-id]')].some(n=>/ · \\d+:\\d+/.test(n.textContent))`),'Source intervals leaked into player tree');
+    const changed={...replay.navigation.guidance.now,parent_id:replay.navigation.player_steps.find(s=>s.id===replay.navigation.guidance.now.id).parent_id,id:'ui-next-action',title:'Next action after progress update',instructions:'Continue to the next door.'};
+    await evaluate(`testState.navigation.player_steps.push(${JSON.stringify(changed)});testState.navigation.guidance.now=${JSON.stringify(changed)};testRender(testState)`);
+    assert(await evaluate(`document.querySelector('[aria-current=step]').dataset.stepId==='ui-next-action' && document.querySelector('.outline-next').textContent.includes('Continue to the next door.')`),'Outline did not follow changed next action');
+    await evaluate(`testState.navigation.guidance.now=${JSON.stringify(replay.navigation.guidance.now)};testRender(testState);gamebuddy.mapPreview(${JSON.stringify(replay.navigation.map.selected_map_id)},${JSON.stringify(preview)})`);
+    await click('[aria-label="Location map"]');
+    assert.equal(await evaluate(`document.querySelector('[aria-label="Location map choices"]').children.length`),replay.navigation.map.locations.length);
+    const alternative=replay.navigation.map.locations.find(p=>p.map_id&&p.map_id!==replay.navigation.map.selected_map_id);
+    await click(`[aria-label="Location map choices"] [data-value="${alternative.id}"]`);
+    assert(await evaluate(`document.querySelector('[aria-label="Location map"]').textContent.includes(${JSON.stringify(alternative.label)})`),'Separate location map selection failed');
+    await evaluate(`document.querySelector('.map-toolbar button[aria-pressed]').click();gamebuddy.mapPreview(${JSON.stringify(replay.navigation.map.selected_map_id)},${JSON.stringify(preview)})`);
+    await until(()=>evaluate(`(()=>{const marker=document.querySelector('.map-marker'),viewport=document.querySelector('.map-viewport');if(!marker||marker.hidden)return false;const m=marker.getBoundingClientRect(),v=viewport.getBoundingClientRect();return m.x+m.width/2>v.x&&m.x+m.width/2<v.right&&m.y+m.height/2>v.y&&m.y+m.height/2<v.bottom})()`),'Follow player did not scroll the highlighted area into view');
+    await screenshot('faxanadu-player-navigation');
+    await evaluate(`testState.progress.completed=[testState.guide.steps.find(s=>s.id===testState.navigation.guidance.now.id).parent_id];testState.widget_visibility={'guide-library':true,'walkthrough-outline':false,'location-map':false,'current-step':false};testRender(testState)`);
+    assert(await evaluate(`document.querySelector('.reader-detail input[type=checkbox]').checked`),'Flattening source sections lost inherited completion');
+  }
   assert.deepEqual(errors,[],'JavaScript runtime errors');
-  console.log('PASS: Qt reader images/maps, source history, browsing, persistent bookmarks/goals/completion, minimize/restore/dismiss/reopen; live cursor preserved.');
+  console.log('PASS: Qt reader persistence, pictures, sources and widget controls; pinned next action and expanded path; optional captured-frame location map, highlight, selection and follow-player.');
 } finally {socket.close();db.close()}

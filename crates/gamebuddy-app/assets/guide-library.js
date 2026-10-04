@@ -2,7 +2,7 @@
 // browsing and typing must not be displaced by automatic location updates.
 const library = (() => {
   let mounted=null, state=null, manifest=null, scope='', sequence=0, requests=new Map();
-  let tab='outline', selected=null, query='', onlyBookmarks=false, page=0, mapId=null, zoom=1;
+  let tab='outline', selected=null, query='', onlyBookmarks=false, page=0, mapId=null, locationId=null, zoom=1;
   let opened=new Set(), images=new Map(), error='', editing=false, snapshotKey='', renderBody=null, resetDetails=false;
   const button=(label,action)=>{const b=text('button',label);b.type='button';b.addEventListener('click',action);return b};
   const emit=(action,extra={})=>{
@@ -10,14 +10,14 @@ const library = (() => {
     const id=++sequence, request={request_id:id,guide_id:state.guide.id,revision:state.guide.revision,action,...extra};
     requests.set(id,request);console.info('GAMEBUDDY_READER '+JSON.stringify(request));return id;
   };
-  const current=()=>state?.navigation?.cursor?.id || state?.progress?.current_step;
+  const current=()=>state?.navigation?.guidance?.now?.id || state?.navigation?.cursor?.id || state?.progress?.current_step;
   const bookmarks=()=>new Set(manifest?.reader?.bookmarks||[]);
-  const steps=()=>state?.guide?.steps||[];
-  const stepById=id=>steps().find(s=>s.id===id);
+  const steps=()=>state?.navigation?.player_steps||state?.guide?.steps||[];
+  const stepById=id=>steps().find(s=>s.id===id)||state?.guide?.steps?.find(s=>s.id===id);
   function complete(id){
     const done=new Set([...(state?.progress?.completed||[]),...(state?.progress?.reported_completed||[])]);
-    let step=stepById(id);while(step){if(done.has(step.id))return true;step=stepById(step.parent_id)}
-    const children=steps().filter(s=>s.parent_id===id);return children.length>0&&children.every(s=>complete(s.id));
+    let step=state?.guide?.steps?.find(s=>s.id===id);while(step){if(done.has(step.id))return true;step=state?.guide?.steps?.find(s=>s.id===step.parent_id)}
+    const children=(state?.guide?.steps||[]).filter(s=>s.parent_id===id);return children.length>0&&children.every(s=>complete(s.id));
   }
   function mutate(action,extra){if(editing)return;editing=true;error='';emit(action,extra);renderBody?.()}
   function checkbox(step){
@@ -66,16 +66,17 @@ const library = (() => {
     const pending=new Set([...requests.values()].filter(r=>r.action==='images'&&r.guide_id===scope&&r.revision===state.guide.revision).flatMap(r=>r.ids));
     const needed=missing.filter(id=>!pending.has(id));if(needed.length)emit('images',{ids:needed});
   }
-  function mapCard(parent,map){
-    const card=text('div','','reader-card');card.append(text('h3',map.title));sources(card,mapEvidence(map));
+  function mapCard(parent,map,location){
+    const card=text('div','','reader-card');card.append(text('h3',location?.label||map.title));if(location?.current)card.append(text('div','You are here · '+(state.navigation?.location?.status==='reported'?'reported location':'estimated location'),'location'));sources(card,mapEvidence(map));
     const controls=text('div','','reader-actions');controls.append(button('−',()=>{zoom=Math.max(1,zoom/1.5);renderBody()}),button('+',()=>{zoom=Math.min(8,zoom*1.5);renderBody()}),button('Fit map',()=>{zoom=1;renderBody()}));card.append(controls);
-    const view=text('div','','reader-map-view'),img=document.createElement('img');img.alt=map.title;img.dataset.readerMap=map.id;img.style.width=(zoom*100)+'%';
+    const view=text('div','','reader-map-view'),img=document.createElement('img');img.alt=map.title;img.dataset.readerMap=map.id;img.style.width='100%';const stage=text('div','','map-stage');stage.style.width=(zoom*100)+'%';
     const safe=urlFor(map.url);if(safe)img.src=safe;
-    img.addEventListener('error',()=>{if(img.src.startsWith('data:'))return;img.hidden=true;view.append(text('div','Map preview unavailable. Open the original map image above.','reader-error'))});view.append(img);card.append(view);parent.append(card);
+    img.addEventListener('error',()=>{if(img.src.startsWith('data:'))return;img.hidden=true;view.append(text('div','Map preview unavailable. Open the original map image above.','reader-error'))});stage.append(img);view.append(stage);card.append(view);parent.append(card);
+    const marker=state.navigation?.map?.geometric_marker||state.navigation?.map?.marker;if(marker?.map_id===map.id){const r=marker.region,highlight=text('div','','map-marker');Object.assign(highlight.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});highlight.append(text('span',marker.precision==='camera_footprint'?'You are here · camera area':'You are here · approximate area','below'));evidence(highlight,'Location evidence',locationEvidence);stage.append(highlight)}
     // Cached original pixels stay local; this callback also handles offline maps.
     queueMicrotask(()=>console.info('GAMEBUDDY_MAP_REQUEST '+map.id));
     const atlas=manifest?.atlas||state.navigation?.map||{};
-    for(const place of (atlas.places||[]).filter(p=>p.map_id===map.id)){
+    for(const place of (atlas.places||[]).filter(p=>p.map_id===map.id&&(!location?.place_id||p.id===location.place_id))){
       const box=text('div','','reader-card');box.append(text('strong',place.label),text('div',place.landmarks||'','reader-status'));
       const association=(atlas.map_links||[]).find(l=>l.place_id===place.id);if(association)box.append(text('div',association.evidence,'reader-status'));
       for(const binding of (atlas.bindings||[]).filter(b=>b.place_id===place.id)){stepLink(box,binding.step_id);box.append(text('div',binding.evidence,'reader-status'))}card.append(box);
@@ -100,7 +101,7 @@ const library = (() => {
     const atlas=manifest?.atlas||{};let bound=step,binding;
     while(bound&&!binding){binding=atlas.bindings?.find(b=>b.step_id===bound.id);bound=stepById(bound.parent_id)}
     const place=atlas.places?.find(p=>p.id===binding?.place_id),map=atlas.maps?.find(m=>m.id===place?.map_id);
-    if(place){parent.append(text('h3','Place & map'),text('div',place.label+' · '+(binding?.evidence||''),'reader-status'));if(map)parent.append(button('Inspect map: '+map.title,()=>{mapId=map.id;tab='maps';zoom=1;renderBody()}))}
+    if(place){parent.append(text('h3','Place & map'),text('div',place.label+' · '+(binding?.evidence||''),'reader-status'));if(map)parent.append(button('Inspect map: '+map.title,()=>{mapId=map.id;locationId='place:'+place.id;tab='maps';zoom=1;renderBody()}))}
     parent.append(text('h3','Walkthrough pictures'));
     const frames=(manifest?.frames||[]).filter(f=>(step.anchors||[]).some(a=>a.source_id===f.source_id && a.start_ms!=null && f.at_ms>=a.start_ms && f.at_ms<(a.end_ms??Infinity)) || f.steps?.includes(step.id));
     gallery(parent,frames);
@@ -149,7 +150,7 @@ const library = (() => {
       else if(tab==='pictures')gallery(content,manifest?.frames||[]);
       else if(tab==='maps'){
         const maps=manifest?.atlas?.maps||[];if(!maps.length)content.append(text('p','Maps are still being prepared, or none have been attached. You can ask GameBuddy to add a reference map.'));
-        else {if(!maps.some(m=>m.id===mapId))mapId=maps[0].id;const select=picker('Library map',maps.map(m=>({id:m.id,label:m.title})),id=>{mapId=id;zoom=1;renderBody()});select.set(mapId);const bar=text('div','','map-toolbar');bar.append(select.node);content.append(bar);mapCard(content,maps.find(m=>m.id===mapId))}
+        else {const locations=state.navigation?.map?.locations||maps.map(m=>({id:'map:'+m.id,map_id:m.id,label:m.title}));if(!locations.some(p=>p.id===locationId))locationId=(locations.find(p=>p.current)||locations.find(p=>p.map_id===mapId)||locations[0])?.id;const location=locations.find(p=>p.id===locationId);mapId=location?.map_id;const select=picker('Library map',locations.map(p=>({id:p.id,label:(p.current?'▶ You are here · ':'')+p.label+(!p.map_id?' · map unavailable':'')})),id=>{locationId=id;zoom=1;renderBody()});select.set(locationId);const bar=text('div','','map-toolbar');bar.append(select.node,button('Player location',()=>{locationId=locations.find(p=>p.current)?.id;zoom=1;renderBody()}));content.append(bar);const map=maps.find(m=>m.id===mapId);if(map)mapCard(content,map,location);else content.append(text('h3',location?.label||'Location'),text('p',location?.landmarks||''),text('p','No verified map is attached to this location yet.','reader-status'))}
       } else if(tab==='sources')renderSources(content);
       else if(tab==='goals'){
         content.append(text('p','Add a step with “Make this a goal”, or ask GameBuddy to customize your goals. These are the same goals used by your guide.'));
@@ -174,12 +175,12 @@ const library = (() => {
     let signature='';
     const refresh=next=>{
       state=next;const key=state.guide.id+':'+state.guide.revision;
-      if(scope!==state.guide.id){body.querySelector('.reader-lightbox')?.remove();scope=state.guide.id;manifest=null;selected=null;opened=new Set();images.clear();requests.clear();snapshotKey='';editing=false;error='';query='';search.value='';onlyBookmarks=false;page=0;mapId=null}
+      if(scope!==state.guide.id){body.querySelector('.reader-lightbox')?.remove();scope=state.guide.id;manifest=null;selected=null;opened=new Set();images.clear();requests.clear();snapshotKey='';editing=false;error='';query='';search.value='';onlyBookmarks=false;page=0;mapId=null;locationId=null}
       if(selected&&!stepById(selected))selected=null;
       if(!selected){selected=current()||steps()[0]?.id;let s=stepById(selected);while(s?.parent_id){opened.add(s.parent_id);s=stepById(s.parent_id)}}
       const wanted=key+':'+(state.reference_count||0)+':'+(state.navigation?.map?.reviewed_steps||0)+':'+(state.navigation?.map?.status||'');
       if(wanted!==snapshotKey){snapshotKey=wanted;emit('snapshot')}
-      const nextSignature=JSON.stringify([key,state.progress,current(),state.preparation,state.navigation?.map?.status]);
+      const nextSignature=JSON.stringify([key,state.progress,current(),state.preparation,state.navigation?.map?.status,state.navigation?.map?.current_place,state.navigation?.map?.geometric_marker]);
       if(signature!==nextSignature||body.dataset.readerDeferred){signature=nextSignature;renderBody()}
     };
     refresh(initial);renderBody();return refresh;

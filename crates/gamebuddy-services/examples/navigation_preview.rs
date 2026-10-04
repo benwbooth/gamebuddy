@@ -83,7 +83,8 @@ fn main() -> Result<()> {
             current_step: Some(binding.step_id.clone()),
             ..Default::default()
         };
-        let navigation = navigation::context(&store, &guide, &progress, &estimate)?;
+        let mut navigation = navigation::context(&store, &guide, &progress, &estimate)?;
+        navigation["player_steps"] = json!(gamebuddy_core::player_outline(&guide));
         scenarios.push(json!({"label":place.label,"game":guide.game,"guide":guide,"current":navigation["guidance"]["now"],"progress":progress,"estimate":estimate,"navigation":navigation,"locked":false}));
         if scenarios.len() == 4 {
             break;
@@ -93,12 +94,13 @@ fn main() -> Result<()> {
         !scenarios.is_empty(),
         "Wait for the application to build a map association"
     );
-    let navigation = navigation::context(
+    let mut navigation = navigation::context(
         &store,
         &guide,
         &Progress::default(),
         &SyncEstimate::default(),
     )?;
+    navigation["player_steps"] = json!(gamebuddy_core::player_outline(&guide));
     scenarios.push(json!({"label":"Uncertain location","game":guide.game,"guide":guide,"progress":Progress::default(),"navigation":navigation,"locked":false}));
     let data = serde_json::to_string(&scenarios)?.replace('<', "\\u003c");
     let script = format!(

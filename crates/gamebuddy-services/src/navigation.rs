@@ -703,7 +703,8 @@ pub fn context(
         tracker.adopt_visual(&scene, now);
     }
     let spatial = crate::spatial::context(store, guide)?;
-    if spatial["observation"]["tracker"]["status"] == "tracked"
+    if (spatial["observation"]["tracker"]["status"] == "tracked"
+        || spatial["observation"]["map_registration"].is_object())
         && let Some(grounded) =
             store.get::<PlaceTracker>(&format!("world-place-tracker:{}", guide.id))?
         && grounded.session_id == tracker.session_id
@@ -713,7 +714,20 @@ pub fn context(
         && now.saturating_sub(grounded.located_at_ms) < 15_000
         && (tracker.status != "reported" || grounded.located_at_ms > tracker.located_at_ms)
     {
-        tracker = grounded;
+        // Fresh geometric evidence outranks coarse RGB/video-time guesses.
+        // Retain a task cursor within the same room, but never manufacture one
+        // just because the atlas has identified a street or dungeon.
+        if tracker.status == "reported" && tracker.place_id == grounded.place_id {
+            tracker.located_at_ms = grounded.located_at_ms;
+        } else {
+            let same_place_step = (tracker.place_id == grounded.place_id)
+                .then(|| tracker.reference_step_id.clone())
+                .flatten();
+            tracker = grounded;
+            if tracker.reference_step_id.is_none() {
+                tracker.reference_step_id = same_place_step;
+            }
+        }
     }
     if previous.as_ref().map(|(t, _)| t) != Some(&tracker) {
         let saved = if let Some((_, version)) = previous {
@@ -740,13 +754,7 @@ pub fn context(
         }
     }
     let mut advice = guidance(guide, progress, &tracker);
-    let cursor = tracker
-        .reference_step_id
-        .as_deref()
-        .or(progress.current_step.as_deref())
-        .filter(|id| !gamebuddy_core::step_complete(guide, progress, id))
-        .and_then(|id| guide.step(id))
-        .or(advice.now.as_ref());
+    let cursor = advice.now.clone();
     let current_place = tracker
         .place_id
         .as_deref()
@@ -779,6 +787,30 @@ pub fn context(
         advice.reason.push_str(&format!(" Target location: {}. Consult the source route; a physical path has not been verified.", target.label));
     }
     let maps: Vec<_> = atlas.maps.iter().filter(|m| m.enabled).collect();
+    let mut locations: Vec<Value> = atlas
+        .places
+        .iter()
+        .map(|place| {
+            let map = maps
+                .iter()
+                .find(|m| Some(m.id.as_str()) == place.map_id.as_deref());
+            json!({"id":format!("place:{}",place.id),"place_id":place.id,"label":place.label,
+            "map_id":map.map(|m|&m.id),"landmarks":place.landmarks,
+            "current":current_place.is_some_and(|p|p.id==place.id)})
+        })
+        .collect();
+    // Also expose source area maps not yet associated with a semantic room.
+    for map in &maps {
+        if !locations
+            .iter()
+            .any(|p| p["map_id"].as_str() == Some(&map.id))
+        {
+            locations.push(
+                json!({"id":format!("map:{}",map.id),"label":map.title,"map_id":map.id,
+                "current":current_place.is_none() && selected_map==Some(map.id.as_str())}),
+            );
+        }
+    }
     // These are objective-route links, explicitly not inferred physical doors.
     let mut route_places = vec![];
     for step in advice.now.iter().chain(&advice.next) {
@@ -789,7 +821,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"spatial":spatial,"map":{"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

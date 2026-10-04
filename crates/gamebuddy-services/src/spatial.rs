@@ -1235,35 +1235,81 @@ pub fn evaluate(store: &Store, guide: &Guide, path: &Path) -> Result<Value> {
 /// must never stop fresh screenshots reaching the conversational provider.
 pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch: u64) {
     use std::sync::{Mutex, OnceLock};
-    static RUNNING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    type Pending = (Guide, screen::Snapshot, u64);
+    static QUEUE: OnceLock<Mutex<std::collections::HashMap<String, Option<Pending>>>> =
+        OnceLock::new();
     let key = format!("{}:{}", store.root.display(), guide.id);
-    let running = RUNNING.get_or_init(Default::default);
-    let Ok(mut set) = running.lock() else { return };
-    if !set.insert(key.clone()) {
+    let queue = QUEUE.get_or_init(Default::default);
+    let Ok(mut pending) = queue.lock() else {
+        return;
+    };
+    let running = pending.contains_key(&key);
+    // Keep the newest frame while inference is busy, rather than discarding
+    // every capture during model startup or atlas registration.
+    pending.insert(key.clone(), Some((guide.clone(), snapshot, epoch)));
+    if running {
         return;
     }
-    drop(set);
-    struct Job(String);
-    impl Drop for Job {
-        fn drop(&mut self) {
-            if let Some(running) = RUNNING.get()
-                && let Ok(mut set) = running.lock()
-            {
-                set.remove(&self.0);
-            }
-        }
-    }
-    let job = Job(key);
+    drop(pending);
     let root = store.root.clone();
     let guide = guide.clone();
     std::thread::spawn(move || {
-        let _job = job;
-        if let Ok(store) = Store::open(root) {
-            if let Err(error) = crate::telemetry::observe(&store, &snapshot, epoch) {
-                let _ = store.put("emulator-error", &error.to_string());
+        let run = || -> Result<()> {
+            let store = Store::open(&root)?;
+            if let Some(world) = load(&store, &guide)? {
+                store.put(
+                    &format!("world-message:{}", guide.id),
+                    &"Starting visual tracking…",
+                )?;
+                // Warm the persistent model before selecting the next frame.
+                // Cold startup must not consume the observation freshness window.
+                Engine::for_world(&store, &world, "live")?;
             }
-            if let Err(error) = observe(&store, &guide, &snapshot) {
+            let mut processed = None;
+            loop {
+                let job = {
+                    let mut pending = queue.lock().unwrap();
+                    let job = pending.get_mut(&key).and_then(Option::take);
+                    if job.is_none() {
+                        pending.remove(&key);
+                    }
+                    job
+                };
+                let Some((guide, mut snapshot, epoch)) = job else {
+                    break;
+                };
+                if let Ok(fresh) = screen::snapshot(&store)
+                    && fresh.ticket == snapshot.ticket
+                    && fresh.captured_at_ms > snapshot.captured_at_ms
+                {
+                    snapshot = fresh;
+                }
+                let identity = (
+                    snapshot.ticket.clone(),
+                    snapshot.captured_at_ms,
+                    epoch,
+                    guide.revision,
+                );
+                if processed.as_ref() == Some(&identity) {
+                    continue;
+                }
+                processed = Some(identity);
+                if let Err(error) = crate::telemetry::observe(&store, &snapshot, epoch) {
+                    let _ = store.put("emulator-error", &error.to_string());
+                }
+                if let Err(error) = observe(&store, &guide, &snapshot) {
+                    store.put(&format!("world-error:{}", guide.id), &error.to_string())?;
+                }
+                store.put(&format!("world-message:{}", guide.id), &"")?;
+            }
+            Ok(())
+        };
+        if let Err(error) = run() {
+            if let Ok(store) = Store::open(&root) {
                 let _ = store.put(&format!("world-error:{}", guide.id), &error.to_string());
+            }
+            if let Ok(mut pending) = queue.lock() {
+                pending.remove(&key);
             }
         }
     });
@@ -1309,7 +1355,8 @@ pub fn observe(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Res
     result["profile"] = json!(world.profile);
     tracker.capture_epoch = snapshot.ticket.epoch;
     result["tracker"]["capture_epoch"] = json!(snapshot.ticket.epoch);
-    if tracker.status == "tracked" {
+    // Atlas geometry is independent of video timestamp / task ambiguity.
+    if tracker.status == "tracked" || tracker.status == "candidate" {
         match crate::spatial_maps::locate(store, guide, &world, &image) {
             Ok(marker) => result["map_registration"] = json!(marker),
             Err(error) => result["map_registration_error"] = json!(error.to_string()),
@@ -1331,50 +1378,147 @@ pub fn observe(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Res
     ensure!(saved, "Newer spatial observation exists");
     store.put(&format!("world-observation:{}", guide.id), &result)?;
     store.put(&format!("world-error:{}", guide.id), &String::new())?;
-    // Geometry localizes a visual room. Resolve source timestamps to known
-    // semantic places only when the applicable tasks agree on one place.
-    if tracker.status == "tracked" && store.guide(&guide.id)?.revision == guide.revision {
-        let atlas = crate::navigation::atlas(store, guide)?;
-        let places: std::collections::HashSet<_> = result["step_ids"]
+    ground_observation(
+        store,
+        guide,
+        &result,
+        &snapshot.ticket.session,
+        progress.epoch,
+        snapshot.captured_at_ms,
+    )?;
+
+    Ok(result)
+}
+
+fn ground_observation(
+    store: &Store,
+    guide: &Guide,
+    result: &Value,
+    session: &str,
+    epoch: u64,
+    at: u64,
+) -> Result<()> {
+    let atlas = crate::navigation::atlas(store, guide)?;
+    let mut grounded = gamebuddy_core::PlaceTracker::for_session(session.into());
+    // A registered atlas image can name a place even when walkthrough clips
+    // revisit it at many different tasks. Never pick a timestamp to invent progress.
+    if let Some(map_id) = result["map_registration"]["map_id"].as_str() {
+        let places: Vec<_> = atlas
+            .places
+            .iter()
+            .filter(|p| p.map_id.as_deref() == Some(map_id))
+            .collect();
+        if places.len() == 1 {
+            grounded.ground_place(
+                &places[0].id,
+                epoch,
+                at,
+                result["map_registration"]["evidence"]
+                    .as_str()
+                    .unwrap_or("Geometric atlas match"),
+            );
+            store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
+            return Ok(());
+        }
+    }
+    if result["tracker"]["status"] != "tracked" {
+        return Ok(());
+    }
+    let places: std::collections::HashSet<_> = result["step_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| atlas.place_for_step(guide, id.as_str()?))
+        .map(|p| &p.id)
+        .collect();
+    if places.len() == 1 {
+        let progress = store.progress(guide)?;
+        if let Some(step) = result["step_ids"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|id| atlas.place_for_step(guide, id.as_str()?))
-            .map(|p| &p.id)
-            .collect();
-        if places.len() == 1 {
-            let place = *places.iter().next().unwrap();
-            let step = result["step_ids"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .find(|id| !gamebuddy_core::step_complete(guide, &progress, id))
-                .or_else(|| result["step_ids"][0].as_str());
-            if let Some(step) = step {
-                let evidence = format!(
-                    "Geometric match to source {} at {} ms; repeated visual-place agreement. This establishes location, not objective completion.",
-                    result["reference"]["source_id"], result["reference"]["at_ms"]
-                );
-                let mut grounded =
-                    gamebuddy_core::PlaceTracker::for_session(snapshot.ticket.session.clone());
-                grounded.ground(
-                    place,
-                    step,
-                    progress.epoch,
-                    snapshot.captured_at_ms,
-                    &evidence,
-                );
-                store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
-            }
+            .filter_map(Value::as_str)
+            .find(|id| !gamebuddy_core::step_complete(guide, &progress, id))
+            .or_else(|| result["step_ids"][0].as_str())
+        {
+            let evidence = format!(
+                "Repeated geometric match to source {} at {} ms. Location evidence does not verify task completion.",
+                result["reference"]["source_id"], result["reference"]["at_ms"]
+            );
+            grounded.ground(places.iter().next().unwrap(), step, epoch, at, &evidence);
+            store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
         }
     }
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn atlas_geometry_names_a_place_without_selecting_an_ambiguous_task() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(directory.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Test",
+            "Guide",
+            "# Buy\nBuy the key.\n# Leave\nLeave the shop.",
+        )?;
+        store.save_guide(&guide)?;
+        let mut atlas = gamebuddy_core::Atlas {
+            guide_id: guide.id.clone(),
+            guide_revision: guide.revision,
+            maps: vec![gamebuddy_core::MapAsset {
+                id: "town".into(),
+                title: "Town map".into(),
+                url: "https://example.org/map.png".into(),
+                source_url: "https://example.org/maps".into(),
+                credit: "Author".into(),
+                enabled: true,
+            }],
+            places: vec![gamebuddy_core::Place {
+                id: "street".into(),
+                label: "Town street".into(),
+                map_id: Some("town".into()),
+                landmarks: "Brick street".into(),
+            }],
+            bindings: vec![gamebuddy_core::PlaceBinding {
+                step_id: "step-1".into(),
+                place_id: "street".into(),
+                evidence: "Source depicts the street".into(),
+            }],
+            ..Default::default()
+        };
+        store.put(&format!("atlas:{}", guide.id), &atlas)?;
+        let result = json!({"tracker":{"status":"candidate"},"step_ids":[],"map_registration":{"map_id":"town","evidence":"274 matching landmarks"}});
+        ground_observation(&store, &guide, &result, "session", 0, 10)?;
+        let key = format!("world-place-tracker:{}", guide.id);
+        let grounded = store.get::<gamebuddy_core::PlaceTracker>(&key)?.unwrap();
+        assert_eq!(grounded.place_id.as_deref(), Some("street"));
+        assert!(grounded.reference_step_id.is_none());
+        assert!(store.progress(&guide)?.completed.is_empty());
+        atlas.places.push(gamebuddy_core::Place {
+            id: "other".into(),
+            label: "Other street".into(),
+            ..atlas.places[0].clone()
+        });
+        atlas.bindings.push(gamebuddy_core::PlaceBinding {
+            step_id: "step-2".into(),
+            place_id: "other".into(),
+            evidence: "Another part of the area map".into(),
+        });
+        store.put(&format!("atlas:{}", guide.id), &atlas)?;
+        ground_observation(&store, &guide, &result, "session", 0, 20)?;
+        assert_eq!(
+            store
+                .get::<gamebuddy_core::PlaceTracker>(&key)?
+                .unwrap()
+                .located_at_ms,
+            10,
+            "An atlas covering multiple places cannot identify one by name alone"
+        );
+        Ok(())
+    }
     #[test]
     #[ignore = "requires a prepared local index, learned worker and independent captured frame"]
     fn live_capture_to_map_and_mcp_images() -> Result<()> {
@@ -1409,14 +1553,26 @@ mod tests {
         }
         let ticket = screen::start(&store, &guide.game, true)?;
         let path = std::env::var("GAMEBUDDY_TEST_SPATIAL_FRAME")?;
-        for _ in 0..2 {
+        let start = std::time::Instant::now();
+        // Exercise the production queue, including cold model startup while
+        // fresh captures arrive. Repeated saved pixels test plumbing, not motion.
+        loop {
             screen::publish(
                 &store,
                 &ticket,
                 Path::new(&path),
                 "independent_saved_capture_test",
             )?;
-            observe(&store, &guide, &screen::snapshot(&store)?)?;
+            schedule(&store, &guide, screen::snapshot(&store)?, 0);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if context(&store, &guide)?["observation"]["tracker"]["status"] == "tracked" {
+                break;
+            }
+            ensure!(
+                start.elapsed().as_secs() < 90,
+                "Queued tracker never locked: {}",
+                context(&store, &guide)?
+            );
         }
         let spatial = context(&store, &guide)?;
         ensure!(
@@ -1430,7 +1586,7 @@ mod tests {
                 >= 100,
             "Missing map geometry"
         );
-        let navigation = crate::navigation::context(
+        let mut navigation = crate::navigation::context(
             &store,
             &guide,
             &store.progress(&guide)?,
@@ -1441,6 +1597,33 @@ mod tests {
                 == spatial["observation"]["map_registration"]["map_id"],
             "Map OSD did not receive registration"
         );
+        ensure!(
+            navigation["map"]["current_place"]["id"].is_string(),
+            "Atlas match did not reach the named player location: {navigation}"
+        );
+        ensure!(
+            navigation["guidance"]["now"].is_object(),
+            "Next player action missing"
+        );
+        eprintln!(
+            "Saved-frame replay: {:.1}s to tracked; place {}; map inliers {}; next action {}",
+            start.elapsed().as_secs_f32(),
+            navigation["map"]["current_place"]["label"],
+            spatial["observation"]["map_registration"]["inliers"],
+            navigation["guidance"]["now"]["title"]
+        );
+        if let Ok(path) = std::env::var("GAMEBUDDY_TEST_SPATIAL_OUTPUT") {
+            navigation["player_steps"] = json!(gamebuddy_core::player_outline(&guide));
+            let map_id = navigation["map"]["selected_map_id"]
+                .as_str()
+                .context("map id")?;
+            std::fs::write(
+                path,
+                serde_json::to_vec(
+                    &json!({"guide":guide,"navigation":navigation,"progress":store.progress(&guide)?,"map_preview":crate::navigation::cached_preview(&store,&guide,map_id)?}),
+                )?,
+            )?;
+        }
         let output =
             crate::harness::call_tool_with_images(&store, "get_spatial_context", json!({}))?;
         ensure!(
