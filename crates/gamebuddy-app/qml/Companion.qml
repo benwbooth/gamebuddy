@@ -34,7 +34,7 @@ Item {
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
     width: expanded ? 410 : 80
-    height: expanded ? 480 : 80
+    height: expanded ? 525 : 80
 
     onExpandedChanged: {
         if(!expanded)widgetTray.close()
@@ -201,9 +201,13 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
+            GbButton { text: "Browse guide"; Layout.fillWidth: true; enabled: !!companion.session.guide; onClicked: companion.widgetVisibilityChanged("guide-library",true) }
+            GbButton { text: "Options"; onClicked: companion.workbenchRequested() }
+        }
+        RowLayout {
+            Layout.fillWidth: true
             GbButton { text: companion.widgetsVisible ? "Hide widgets" : "Show widgets"; Layout.fillWidth: true; onClicked: { companion.widgetsVisible = !companion.widgetsVisible; companion.widgetsToggled(companion.widgetsVisible) } }
             GbButton { text: "Widgets…"; onClicked: widgetTray.open() }
-            GbButton { text: "Options"; onClicked: companion.workbenchRequested() }
         }
     }
     }
@@ -232,7 +236,7 @@ Item {
                             width: widgetTray.availableWidth
                             height: 48
                             text:modelData.title
-                            checked:companion.session.widget_visibility?.[modelData.id]!==false
+                            checked:companion.session.widget_visibility?.[modelData.id] ?? modelData.defaultVisible ?? true
                             palette.text:"#e3edf5";palette.windowText:"#e3edf5"
                             indicator: Rectangle {
                                 x: parent.width-width-10;y:(parent.height-height)/2;width:22;height:22;radius:4
@@ -246,7 +250,7 @@ Item {
                     }
                 }
             }
-            Text { text:"Dismissed widgets stay here. Drag their headers or corners to arrange them.";color:"#a9c0cf";font.pixelSize:11;wrapMode:Text.WordWrap;Layout.fillWidth:true }
+            Text { text:"Dismissed widgets stay here. Use − to minimize a widget; drag its header or corner to arrange it.";color:"#a9c0cf";font.pixelSize:11;wrapMode:Text.WordWrap;Layout.fillWidth:true }
         }
     }
     Shortcut { sequence: "Escape"; enabled: !companion.embedded; onActivated: { companion.stopTalking(); companion.arranging = false; companion.arrangementChanged(false); companion.expanded = false } }

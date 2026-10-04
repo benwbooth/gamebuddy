@@ -383,12 +383,13 @@ fn main() -> anyhow::Result<()> {
         );
         screenshot("widget-dismissed.png")?;
         toggle()?;
-        // Open the production tray, then restore its fourth item (the custom widget).
-        mouse(MOTION_NOTIFY_EVENT, 0, 304, 530)?;
+        // Open the production tray, then restore its fifth item (the custom
+        // widget, following the outline, guide library, next action and map).
+        mouse(MOTION_NOTIFY_EVENT, 0, 380, 575)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widget-tray.png")?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 210, 405)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 210, 453)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         let visibility: serde_json::Value =
@@ -403,7 +404,7 @@ fn main() -> anyhow::Result<()> {
         mouse(MOTION_NOTIFY_EVENT, 0, 365, 215)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 140, 530)?;
+        mouse(MOTION_NOTIFY_EVENT, 0, 140, 575)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widgets-hidden.png")?;

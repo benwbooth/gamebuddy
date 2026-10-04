@@ -92,6 +92,10 @@ pub mod ffi {
         #[qinvokable]
         fn map_preview(self: &Buddy, id: QString) -> QString;
         #[qinvokable]
+        fn guide_browser_request(self: Pin<&mut Buddy>, request: QString);
+        #[qsignal]
+        fn guide_browser_response(self: Pin<&mut Buddy>, response: QString);
+        #[qinvokable]
         fn discard_voice(self: &Buddy, path: QString);
         #[qsignal]
         fn voice_command(self: Pin<&mut Buddy>, action: i32);
@@ -1114,7 +1118,10 @@ impl ffi::Buddy {
         }
     }
     pub fn widget_html(&self) -> QString {
-        q(include_str!("../assets/widgets.html"))
+        q(include_str!("../assets/widgets.html").replace(
+            "/* GUIDE_LIBRARY_SCRIPT */",
+            include_str!("../assets/guide-library.js"),
+        ))
     }
     pub fn voice_path(&self) -> QString {
         let directory = self.rust().root.join("voice");
@@ -1285,7 +1292,13 @@ impl ffi::Buddy {
             let id = id.to_string();
             let store = Store::open(&self.rust().root)?;
             anyhow::ensure!(
-                ["current-step", "walkthrough-outline", "location-map"].contains(&id.as_str())
+                [
+                    "current-step",
+                    "walkthrough-outline",
+                    "location-map",
+                    "guide-library"
+                ]
+                .contains(&id.as_str())
                     || services::harness::widgets(&store, guide)?
                         .iter()
                         .any(|w| w.id == id),
@@ -1302,6 +1315,43 @@ impl ffi::Buddy {
             self.as_mut().set_message(q(e.to_string()));
         }
         self.refresh();
+    }
+    pub fn guide_browser_request(mut self: Pin<&mut Self>, request: QString) {
+        let parsed = serde_json::from_str::<services::guide_browser::Request>(&request.to_string());
+        let Ok(request) = parsed else {
+            self.as_mut()
+                .guide_browser_response(q(json!({"error":"Invalid guide request"}).to_string()));
+            return;
+        };
+        if !self
+            .rust()
+            .guide
+            .as_ref()
+            .is_some_and(|g| g.id == request.guide_id)
+        {
+            self.as_mut().guide_browser_response(q(json!({"request_id":request.request_id,"guide_id":request.guide_id,"error":"The active guide changed"}).to_string()));
+            return;
+        }
+        let root = self.rust().root.clone();
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = Store::open(root)
+                .and_then(|store| services::guide_browser::respond(&store, &request));
+            let response = match result {
+                Ok(data) => {
+                    json!({"request_id":request.request_id,"guide_id":request.guide_id,"revision":request.revision,"data":data})
+                }
+                Err(e) => {
+                    json!({"request_id":request.request_id,"guide_id":request.guide_id,"revision":request.revision,"error":format!("{e:#}")})
+                }
+            };
+            let _ = thread.queue(move |mut object| {
+                object
+                    .as_mut()
+                    .guide_browser_response(q(response.to_string()));
+                object.poll_widgets();
+            });
+        });
     }
     pub fn save_widget_layout(mut self: Pin<&mut Self>, json: QString) {
         let result = (|| -> Result<()> {

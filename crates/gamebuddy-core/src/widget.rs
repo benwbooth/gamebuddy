@@ -67,7 +67,13 @@ impl Widget {
             "Widget ID must be a short identifier"
         );
         ensure!(
-            !["current-step", "walkthrough-outline", "location-map"].contains(&self.id.as_str()),
+            ![
+                "current-step",
+                "walkthrough-outline",
+                "location-map",
+                "guide-library"
+            ]
+            .contains(&self.id.as_str()),
             "This widget is managed by GameBuddy"
         );
         ensure!(

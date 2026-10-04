@@ -108,6 +108,10 @@ scenarios.forEach(state=>{{const b=document.createElement('button');b.textConten
 </script>"#
     );
     let html = include_str!("../../gamebuddy-app/assets/widgets.html")
+        .replace(
+            "/* GUIDE_LIBRARY_SCRIPT */",
+            include_str!("../../gamebuddy-app/assets/guide-library.js"),
+        )
         .replace("</body>", &format!("{script}</body>"));
     std::fs::create_dir_all(&output)?;
     std::fs::write(output.join("index.html"), html)?;

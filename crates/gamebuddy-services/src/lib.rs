@@ -13,6 +13,7 @@ pub mod discovery;
 pub use discovery::*;
 pub mod captions;
 pub mod conversation;
+pub mod guide_browser;
 pub mod harness;
 pub mod navigation;
 pub mod plan;

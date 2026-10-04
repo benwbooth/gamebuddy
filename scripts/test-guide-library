@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run inside nix develop. Requires Xvfb and Node >=22 (built-in SQLite/CDP).
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+reader_root="$(mktemp -d /tmp/gamebuddy-reader-XXXXXXXX)"
+cargo build -p gamebuddy-app -p gamebuddy-services --bin gamebuddy --example guide_library_fixture > "$reader_root/build.log" 2>&1
+./target/debug/examples/guide_library_fixture "$reader_root/data" > "$reader_root/guide-id"
+reader_app_pid=""
+Xvfb -displayfd 3 -screen 0 1280x720x24 3> "$reader_root/display" > "$reader_root/xvfb.log" 2>&1 &
+reader_xvfb_pid=$!
+trap 'if [[ -n "$reader_app_pid" ]]; then kill "$reader_app_pid" 2>/dev/null || true; fi; kill "$reader_xvfb_pid" 2>/dev/null || true' EXIT
+for attempt in {1..100}; do [[ -s "$reader_root/display" ]] && break; sleep 0.1; done
+export DISPLAY=":$(cat "$reader_root/display")" QT_QPA_PLATFORM=xcb QT_QUICK_CONTROLS_STYLE=Basic
+reader_port=$((20000 + RANDOM))
+export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$reader_port"
+./target/debug/gamebuddy --game 'Reader fixture' --no-prepare --quiet --no-listen --data-dir "$reader_root/data" > "$reader_root/app.log" 2>&1 &
+reader_app_pid=$!
+node --input-type=module - "$reader_port" <<'JS'
+const start=Date.now();while(true){try{const r=await fetch('http://127.0.0.1:'+process.argv[2]+'/json/list');const targets=await r.json();if(targets.some(t=>t.title==='GameBuddy widgets'))break}catch{}if(Date.now()-start>20000)throw new Error('Qt debug page did not start');await new Promise(r=>setTimeout(r,100))}
+JS
+node scripts/test-guide-library.mjs "http://127.0.0.1:$reader_port" "$reader_root/data"
+printf 'Reader test artifacts: %s\n' "$reader_root"

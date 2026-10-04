@@ -39,6 +39,7 @@ ApplicationWindow {
     property var widgetCatalog: {
         let items=[]
         if(session.guide)items.push({id:"walkthrough-outline",title:"Walkthrough"})
+        if(session.guide)items.push({id:"guide-library",title:"Guide library · pictures, maps & sources",defaultVisible:false})
         if(session.navigation?.guidance || session.current)items.push({id:"current-step",title:"Next action"})
         if(session.navigation?.map)items.push({id:"location-map",title:"Location map"})
         return items.concat(session.widgets || [])
@@ -291,7 +292,7 @@ ApplicationWindow {
             settings.localContentCanAccessFileUrls: false
             settings.javascriptCanOpenWindows: false
             function updateWidgets() {
-                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, layouts: root.session.layouts || {}, widget_visibility:root.session.widget_visibility, locked: false}) + ")")
+                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, reference_count:root.session.reference_count, layouts: root.session.layouts || {}, widget_visibility:root.session.widget_visibility, locked: false}) + ")")
             }
             Component.onCompleted: loadHtml(buddy.widget_html())
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }
@@ -299,6 +300,7 @@ ApplicationWindow {
                 if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17))
                 else if(message.startsWith("GAMEBUDDY_REGIONS "))root.widgetRegions=message.slice(18)
                 else if(message.startsWith("GAMEBUDDY_DISMISS "))buddy.set_widget_visible(message.slice(18),false)
+                else if(message.startsWith("GAMEBUDDY_READER "))buddy.guide_browser_request(message.slice(17))
                 else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
                 else if(message.startsWith("GAMEBUDDY_COMPLETE ")){buddy.select_step(message.slice(19));buddy.complete_step()}
                 else if(message.startsWith("GAMEBUDDY_MAP_REQUEST ")){
@@ -314,6 +316,7 @@ ApplicationWindow {
             onNavigationRequested: request => { if (request.url.toString() !== "about:blank" && !request.url.toString().startsWith("data:")) request.action = WebEngineView.IgnoreRequest }
         }
         Connections { target: root; function onSessionChanged() { widgetView.updateWidgets() } function onEditOverlayChanged() { widgetView.updateWidgets() } }
+        Connections { target: buddy; function onGuide_browser_response(response) { widgetView.runJavaScript("window.gamebuddy && window.gamebuddy.readerResponse("+response+")") } }
     }
     Timer {
         interval: 32; repeat: true; running: compositor.active

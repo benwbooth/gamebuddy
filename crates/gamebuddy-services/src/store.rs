@@ -309,6 +309,89 @@ impl Store {
         transaction.commit()?;
         Ok(progress)
     }
+    /// A direct checkbox edit is atomic and invalidates older screen work.
+    /// Unchecking a child must also remove inherited completion from its parents.
+    pub fn check_step(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        step_id: &str,
+        checked: bool,
+    ) -> Result<Progress> {
+        let step = guide.step(step_id).context("Unknown task")?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision,
+            "Outline changed; reload the reader"
+        );
+        let mut progress = self.progress(guide)?;
+        ensure!(
+            progress.epoch == epoch,
+            "Progress changed; reload the reader and try again"
+        );
+        if checked {
+            progress.completed.insert(step_id.into());
+        } else {
+            let previously_done: Vec<_> = guide
+                .steps
+                .iter()
+                .filter(|s| {
+                    !guide
+                        .steps
+                        .iter()
+                        .any(|child| child.parent_id.as_deref() == Some(&s.id))
+                        && gamebuddy_core::step_complete(guide, &progress, &s.id)
+                })
+                .map(|s| s.id.clone())
+                .collect();
+            let mut ids = std::collections::HashSet::from([step_id.to_owned()]);
+            let mut parent = step.parent_id.as_deref();
+            while let Some(id) = parent {
+                ids.insert(id.into());
+                parent = guide.step(id).and_then(|s| s.parent_id.as_deref());
+            }
+            for candidate in &guide.steps {
+                let mut ancestor = candidate.parent_id.as_deref();
+                while let Some(id) = ancestor {
+                    if id == step_id {
+                        ids.insert(candidate.id.clone());
+                        break;
+                    }
+                    ancestor = guide.step(id).and_then(|s| s.parent_id.as_deref());
+                }
+            }
+            progress.completed.retain(|id| !ids.contains(id));
+            progress.reported_completed.retain(|id| !ids.contains(id));
+            progress
+                .completed
+                .extend(previously_done.into_iter().filter(|id| !ids.contains(id)));
+        }
+        let key = crate::navigation::tracker_key(guide);
+        if let Some(mut tracker) = self.get::<gamebuddy_core::PlaceTracker>(&key)?
+            && tracker.epoch == epoch
+        {
+            tracker.epoch += 1;
+            self.put(&key, &tracker)?;
+        }
+        progress.epoch += 1;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        tx.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'reader_checkbox',?2)",
+            params![
+                guide.id,
+                serde_json::json!({"step_id":step_id,"checked":checked,"progress":progress})
+                    .to_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(progress)
+    }
     /// Commit a player location and its task cursor together. Incrementing the
     /// epoch rejects any screen comparison that began before this report.
     pub(crate) fn report_location(
