@@ -176,7 +176,7 @@ pub fn prepare_game(
                 && matches_selection(g)
         })
         .cloned()
-        .or(cached.filter(&matches_selection))
+        .or(cached.filter(matches_selection))
         .or_else(|| {
             library
                 .iter()

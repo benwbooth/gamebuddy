@@ -60,11 +60,12 @@ pub fn attach(store: &Store, rom: &Path, pid: u32, endpoint: SocketAddr) -> Resu
     Ok(config)
 }
 
-fn validate_process(config: &Config) -> Result<()> {
+fn validate_process(_config: &Config) -> Result<()> {
     // Binding to the actual launched content prevents a correct memory layout
     // from being applied to another RetroArch process or a different game.
     #[cfg(target_os = "linux")]
     {
+        let config = _config;
         let args = std::fs::read(format!("/proc/{}/cmdline", config.game_pid))?;
         ensure!(
             args.split(|b| *b == 0)
