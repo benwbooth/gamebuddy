@@ -16,12 +16,15 @@ export GAMEBUDDY_TEST_LOG="$runtime_dir/runtime.log"
 modules=(); recorder=""
 cleanup(){
   if [[ -n "$recorder" ]]; then kill -INT "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true; fi
-  for module in "${modules[@]}"; do pactl unload-module "$module"; done
+  for ((i=${#modules[@]}-1;i>=0;i--)); do pactl unload-module "${modules[i]}"; done
 }
 trap cleanup EXIT
 modules+=("$(pactl load-module module-null-sink sink_name="$GAMEBUDDY_TEST_MIC_SINK" sink_properties=device.description=GameBuddyTestInput)")
 modules+=("$(pactl load-module module-remap-source master="$GAMEBUDDY_TEST_MIC_SINK.monitor" source_name="$GAMEBUDDY_TEST_MIC_SOURCE" source_properties=device.description=GameBuddyTestMic)")
 modules+=("$(pactl load-module module-null-sink sink_name="$PULSE_SINK" sink_properties=device.description=GameBuddyTestOutput)")
+# Feed the assistant's output back into the private test microphone, like
+# speaker echo. Production playback suppression must prevent a self-reply loop.
+modules+=("$(pactl load-module module-loopback source="$PULSE_SINK.monitor" sink="$GAMEBUDDY_TEST_MIC_SINK" latency_msec=20)")
 # Already unmuted before launch: the fixture must talk without any UI action
 # or post-launch mute/unmute gesture. test-voice covers initially muted startup.
 pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 0
@@ -36,9 +39,16 @@ parec --device="$PULSE_SINK.monitor" --file-format=wav "$runtime_dir/response.wa
     ./target/debug/examples/compositor_probe "$runtime_dir/proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
 kill -INT "$recorder"; wait "$recorder" || true; recorder=""
 ffmpeg -hide_banner -i "$runtime_dir/response.wav" -af volumedetect -f null - >"$runtime_dir/audio-check.txt" 2>&1
-./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$runtime_dir/response.wav" >"$runtime_dir/heard.txt"
-# The microphone transcriber intentionally caps input at 45 seconds. Keep a
-# separate tail excerpt to verify later unsolicited visual feedback as well.
+# The microphone transcriber caps each input at 45 seconds. Transcribe the
+# complete recording in shorter chunks so a slow tool reply is still checked.
+ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -f segment -segment_time 40 "$runtime_dir/heard-%03d.wav"
+: >"$runtime_dir/heard.txt"
+for chunk in "$runtime_dir"/heard-*.wav; do
+  ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
+done
+rg -qi '\bred\b' "$runtime_dir/heard.txt"
+rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+# Keep a separate tail excerpt for the later selected visual feedback.
 ffmpeg -nostdin -hide_banner -loglevel error -y -sseof -30 -i "$runtime_dir/response.wav" "$runtime_dir/feedback.wav"
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$runtime_dir/feedback.wav" >"$runtime_dir/feedback-heard.txt"
 printf 'Realtime voice evidence: %s\n' "$runtime_dir"

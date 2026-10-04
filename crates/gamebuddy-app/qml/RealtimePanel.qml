@@ -12,7 +12,6 @@ WebEngineView {
     property bool loaded: false
     property string status: ""
     property string lastContext: ""
-    property double contextAfter: 0
     property bool started: false
     property bool connected: false
     property bool capturing: false
@@ -59,7 +58,7 @@ WebEngineView {
         const wanted=enabledBackend && !failed && !!session.game && (voice.active || (automaticSession && spokenReplies && !proactivePaused))
         if(wanted && !started) {
             voiceGame=session.game;returningPlayer=false
-            started=true; status="Connecting live voice…"; lastContext=context()
+            started=true; status="Connecting live voice…"; lastContext=voiceContext()
             runJavaScript("gamebuddyVoice.muteOutput("+(!spokenReplies)+");gamebuddyVoice.start("+JSON.stringify(voice.device_name)+","+voice.active+")")
         } else if(!wanted && started) {
             started=false; connected=false; transport.disconnect(); runJavaScript("gamebuddyVoice.stop()")
@@ -67,15 +66,17 @@ WebEngineView {
         }
     }
     function voiceContext() {
-        const value=JSON.parse(context()),screen=value.screen
-        // Frame age is available from tools. Do not stream a new context message
-        // on every UI refresh when the observation itself has not changed.
-        if(screen){delete screen.age_ms;delete screen.captured_at_ms
-            if(screen.scene){delete screen.scene.age_ms;delete screen.scene.captured_at_ms}}
-        return JSON.stringify(value)
+        const value=JSON.parse(context()),scene=value.screen?.scene,step=value.guidance?.now
+        // Keep the voice model's background context small and readable. Dense
+        // geometry, map coordinates and diagnostics belong in its tools/OSD.
+        return JSON.stringify({game:value.game,location_status:value.location_status,
+            current_place:value.current_place?.label,
+            suggested_action:step?{id:step.id,title:step.title,instructions:(step.instructions||'').slice(0,800)}:null,
+            screen:{status:value.screen?.status,summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
+            instruction:"Background reference only. Do not read this aloud or reply to it. Listen to the live player. Use get_game_context and get_game_screen for current details; never speak the player's side of a conversation."})
     }
     function updateContext() {
-        if(!connected || Date.now()<contextAfter)return
+        if(!connected)return
         const next=voiceContext()
         if(next!==lastContext){lastContext=next;runJavaScript("gamebuddyVoice.updateContext("+JSON.stringify(next)+")")}
     }
@@ -94,21 +95,23 @@ WebEngineView {
         if(!spokenReplies || proactivePaused || (enabledBackend && !connected))return
         const text=transport.next_narration(context())
         if(text.length){
-            // Do not race a quiet context burst against a queued spoken cue.
-            // Capture and visual inference continue; send the newest context afterward.
-            contextAfter=Date.now()+12000
             if(trace)console.warn("GAMEBUDDY_NARRATION characters="+text.length)
             panel.answer(text)
-            if(enabledBackend)transport.speak(text)
+            if(enabledBackend){
+                updateContext()
+                // Authorize playback before the cue can produce remote audio.
+                runJavaScript("gamebuddyVoice.allowReply('cue')",()=>transport.speak(text))
+            }
         }
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
-    Timer { interval: 2000; repeat: true; running: panel.connected; onTriggered: panel.updateContext() }
+    // Perception keeps running locally. Send its latest state on a real player
+    // turn or a selected cue, not as a stream of conversation-triggering updates.
     Timer {
         interval:100;repeat:true;running:panel.started
         onTriggered:{
             const now=Date.now()
-            if(now-panel.inputAt>1000 && panel.userSpeaking){panel.userSpeaking=false;transport.reset_speech()}
+            if(now-panel.inputAt>1000 && panel.userSpeaking){panel.userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")}
             if(now-panel.outputAt>1000)panel.assistantSpeaking=false
             panel.waitingForReply=panel.replyUntil>now
         }
@@ -119,6 +122,7 @@ WebEngineView {
             const event=JSON.parse(event_json), p=event.params || {}
             if(panel.trace && event.method==="thread/realtime/transcript/done")console.warn("GAMEBUDDY_REALTIME_TRANSCRIPT role="+p.role+" characters="+(p.text||"").length)
             if(event.method==="gamebuddy/conversation")panel.returningPlayer=p.returning_player===true
+            else if(event.method==="gamebuddy/reasoning")panel.runJavaScript("gamebuddyVoice.setBackendBusy("+(p.active===true)+")")
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
@@ -147,20 +151,26 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;transport.reset_speech()};return}
+        if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
         if(event.type==="input-pcm"){
             if(!capturing)return
             inputAt=Date.now()
             const speaking=transport.detect_speech(JSON.stringify(event.value))
+            if(speaking!==userSpeaking){
+                runJavaScript("gamebuddyVoice.playerSpeech("+speaking+")")
+                if(speaking)updateContext()
+            }
             if(speaking && !userSpeaking){replyUntil=Date.now()+20000;waitingForReply=true}
             if(!speaking && userSpeaking && waitingForReply)replyUntil=Date.now()+20000
             userSpeaking=speaking
         }
         else if(event.type==="output-active"){
+            if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started")
             outputAt=Date.now();assistantSpeaking=event.value
-            if(assistantSpeaking){replyUntil=0;waitingForReply=false}
+            if(assistantSpeaking){replyUntil=0;waitingForReply=false;if(userSpeaking){userSpeaking=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")}}
         }
+        else if(event.type==="playback-allowed" || event.type==="reply-permit"){if(trace)console.warn("GAMEBUDDY_VOICE_GATE "+event.type+" "+event.value)}
         else if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
         else if(event.type==="error")fail(event.value)
         else if(event.type==="microphone-error") { if(voice.active)voice.toggle_listening();status="Microphone: "+event.value }

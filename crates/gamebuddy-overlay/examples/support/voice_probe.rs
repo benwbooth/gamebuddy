@@ -221,22 +221,14 @@ fn memory(phase: &str) -> Result<()> {
     wait("memory voice connects", || {
         Ok(std::fs::read_to_string(&log)?.contains("Live voice · speak naturally"))
     })?;
-    wait("startup greeting persisted", || {
-        Ok(store
-            .conversation_messages(
-                "Faxanadu",
-                if phase == "recall" {
-                    "Welcome back"
-                } else {
-                    "I'm GameBuddy"
-                },
-                None,
-                1,
-            )?
-            .len()
-            == 1)
+    wait("startup voice returns to waiting", || {
+        // Wait for the bounded startup cue to finish (or expire) before the
+        // recall question. Greeting output has its own realtime test.
+        let text = std::fs::read_to_string(&log)?;
+        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
     })?;
-    thread::sleep(Duration::from_secs(22)); // finish the greeting before speaking
+    thread::sleep(Duration::from_secs(1)); // let the acoustic tail clear
     ensure!(
         Command::new("paplay")
             .args([
@@ -327,8 +319,32 @@ fn realtime(
             .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
     };
     let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+    let quiet = || -> Result<()> {
+        wait("voice returns to waiting for player speech", || {
+            let text = std::fs::read_to_string(&log)?;
+            Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+                > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+        })?;
+        let before = std::fs::read_to_string(&log)?
+            .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
+            .count();
+        thread::sleep(Duration::from_secs(15));
+        ensure!(
+            std::fs::read_to_string(&log)?
+                .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
+                .count()
+                == before,
+            "Voice started speaking again without player speech or a selected cue"
+        );
+        println!("GAMEBUDDY_VOICE_WAIT_TEST_PASS 15 seconds of silence with live screen updates");
+        Ok(())
+    };
     wait("spoken introduction lowers game audio", || {
-        game_audio.ducked()
+        // A short greeting may finish while PipeWire recreates the fixture's
+        // stream. The production worker also reports a completed volume change.
+        Ok(game_audio.ducked()?
+            || std::fs::read_to_string(&log)?
+                .contains("GAMEBUDDY_AUDIO Game audio lowered during conversation"))
     })?;
     println!("GAMEBUDDY_AUDIO_INTRO_PASS");
     wait("automatic spoken introduction", || {
@@ -345,7 +361,7 @@ fn realtime(
         cardinal(conn, overlay, focus)? == 0,
         "Introduction stole game focus"
     );
-    thread::sleep(Duration::from_secs(18)); // let the introduction finish before the request
+    quiet()?;
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
@@ -440,7 +456,7 @@ fn realtime(
     }
     thread::sleep(Duration::from_secs(3)); // allow the OSD's regular store poll
     screenshot("realtime-widget.png")?;
-    thread::sleep(Duration::from_secs(10)); // include the complete streamed reply
+    quiet()?;
     pactl(&["set-source-mute", &source, "1"])?;
     wait("mute leaves guidance available", || {
         Ok(std::fs::read_to_string(&log)?
@@ -452,18 +468,26 @@ fn realtime(
             .matches("GAMEBUDDY_NARRATION")
             .count();
         draw_game_over(conn, game)?;
-        wait(
-            "automatic game-over observation and spoken feedback",
-            || {
-                let state = gamebuddy_services::screen::status(&store)?;
-                Ok(state["scene"]["event"] == "death"
-                    && state["scene"]["fresh"] == true
-                    && std::fs::read_to_string(&log)?
-                        .matches("GAMEBUDDY_NARRATION")
-                        .count()
-                        > before)
-            },
-        )?;
+        // Automatic event cues have a 90-second interval and a post-conversation
+        // quiet period; background observations must remain available meanwhile.
+        let deadline = Instant::now() + Duration::from_secs(110);
+        loop {
+            let state = gamebuddy_services::screen::status(&store)?;
+            if state["scene"]["event"] == "death"
+                && state["scene"]["fresh"] == true
+                && std::fs::read_to_string(&log)?
+                    .matches("GAMEBUDDY_NARRATION")
+                    .count()
+                    > before
+            {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Timed out waiting for the selected game-over cue"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
         ensure!(
             !capturing()?,
             "Visual feedback must not activate the microphone"

@@ -1,9 +1,31 @@
 <!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'"></head><body><audio id="speaker" autoplay></audio><script>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'"></head><body><audio id="speaker" autoplay muted></audio><script>
 (() => {
   let peer=null, mic=null, sender=null, silence=null, audioContext=null, events=null, pendingContext='', generation=0, captureGeneration=0;
   let inputMeter=null,outputMeter=null,meterTimer=null,meterTick=0;
+  const speaker=document.getElementById('speaker');
+  let outputMuted=false,replyUntil=0,replyAudioMs=0,replyBudgetMs=0,lastReplyAudio=0;
+  let backendBusy=false,playerSpeaking=false,micBlockedUntil=0,playbackAllowed=false,sampledAt=0;
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
+  // Frameless voice can generate audio without a player turn. Enforce playback
+  // locally: a real VAD turn or an explicit app cue grants one bounded reply.
+  function allowReply(kind){
+    replyUntil=Date.now()+(kind==='cue'?20000:60000);replyAudioMs=0;
+    replyBudgetMs=kind==='cue'?12000:20000;lastReplyAudio=0;
+    emit('reply-permit',kind);
+  }
+  function playerSpeech(active){
+    if(active&&Date.now()<micBlockedUntil)return;
+    if(active&&!playerSpeaking)allowReply('player');
+    playerSpeaking=active;
+    if(!active&&replyUntil)replyUntil=Date.now()+60000;
+  }
+  function setBackendBusy(active){
+    // A handoff may acknowledge the question, pause for tools, then answer.
+    // Backend work cannot grant itself permission to start speaking.
+    if(backendBusy&&!active&&replyUntil){lastReplyAudio=0;replyUntil=Date.now()+30000}
+    backendBusy=active;
+  }
   function disconnectMeter(meter){if(meter){meter.source.disconnect();meter.analyser.disconnect();meter.zero.disconnect()}}
   function meter(stream){
     const source=audioContext.createMediaStreamSource(stream),analyser=audioContext.createAnalyser(),zero=audioContext.createGain();
@@ -11,7 +33,20 @@
     return {source,analyser,zero,data:new Float32Array(analyser.fftSize)};
   }
   function sampleMeters(){
-    if(inputMeter){
+    const now=Date.now(),elapsed=sampledAt?Math.max(0,now-sampledAt):20;sampledAt=now;let rms=0;
+    if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
+    if(playerSpeaking&&replyUntil)replyUntil=now+60000;
+    if(replyUntil&&(now>=replyUntil||replyAudioMs>=replyBudgetMs||(!backendBusy&&!playerSpeaking&&lastReplyAudio&&now-lastReplyAudio>=2500)))replyUntil=0;
+    const allowed=!outputMuted&&!playerSpeaking&&replyUntil>now;
+    if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
+    speaker.muted=!allowed;
+    const audible=allowed&&rms>0.002;
+    if(audible){lastReplyAudio=now;replyAudioMs+=elapsed;micBlockedUntil=now+800}
+    // Keep the selected device owned, but send silence during playback and its
+    // acoustic tail. Echo cannot become a new VAD turn and reopen the reply gate.
+    const inputAllowed=now>=micBlockedUntil;
+    if(mic)mic.getAudioTracks().forEach(t=>t.enabled=inputAllowed);
+    if(inputMeter&&inputAllowed){
       inputMeter.analyser.getFloatTimeDomainData(inputMeter.data);
       // Send a 20 ms, 16 kHz PCM slice to the existing Rust/WebRTC speech
       // detector. The Qt console handler consumes this local IPC message;
@@ -24,14 +59,10 @@
       }
       emit('input-pcm',pcm);
     }
-    if(++meterTick%5===0){
-      let rms=0;
-      if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
-      emit('output-active',!document.getElementById('speaker').muted && rms>0.002);
-    }
+    if(++meterTick%5===0)emit('output-active',audible);
   }
   function closeMic(){captureGeneration++;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
-  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;document.getElementById('speaker').srcObject=null}
+  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;replyUntil=0;lastReplyAudio=0;replyAudioMs=0;backendBusy=false;playerSpeaking=false;micBlockedUntil=0;playbackAllowed=false;speaker.muted=true;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;speaker.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open')return;
@@ -62,11 +93,12 @@
         if(stale()){stream.getTracks().forEach(t=>t.stop());return}
       }
       mic=stream;
+      mic.getAudioTracks().forEach(t=>t.enabled=Date.now()>=micBlockedUntil);
       await sender.replaceTrack(stream.getAudioTracks()[0]);
       if(!stale()){inputMeter=meter(stream);emit('capture',true)}
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
-  window.gamebuddyVoice={stop,setMicrophone,updateContext,
+  window.gamebuddyVoice={stop,setMicrophone,updateContext,allowReply,playerSpeech,setBackendBusy,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {
@@ -95,7 +127,7 @@
       }catch(e){if(own===generation){stop();emit('error',stage+': '+e.name+': '+e.message)}}
     },
     async answer(sdp){const pc=peer,own=generation;try{if(pc)await pc.setRemoteDescription({type:'answer',sdp})}catch(e){if(own===generation)emit('error',e.message)}},
-    muteOutput(muted){document.getElementById('speaker').muted=muted}
+    muteOutput(muted){outputMuted=muted;speaker.muted=muted||playerSpeaking||replyUntil<=Date.now()}
   };
 })();
 </script></body></html>

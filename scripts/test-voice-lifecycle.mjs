@@ -6,9 +6,10 @@ const html=readFileSync(new URL('../crates/gamebuddy-app/assets/voice.html',impo
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const pending=[],streams=[],messages=[],channels=[],peers=[],activity=[],analysers=[],timers=new Set(),speaker={srcObject:null,play:async()=>{}};
 const node=()=>({connect(){},disconnect(){}});
-const tick=()=>{for(let i=0;i<5;i++)for(const fn of timers)fn()};
+let now=1000;
+const tick=(ms=100)=>{for(let i=0;i<ms/20;i++){now+=20;for(const fn of timers)fn()}};
 const stream=()=>{const track={stopped:false,stop(){this.stopped=true}};const value={getTracks:()=>[track],getAudioTracks:()=>[track],track};streams.push(value);return value};
-const context={window:{},document:{getElementById:()=>speaker},console:{info(s){activity.push(JSON.parse(s.slice(16)))}},setTimeout,clearTimeout,TextEncoder,
+const context={window:{},Date:class extends Date{static now(){return now}},document:{getElementById:()=>speaker},console:{info(s){activity.push(JSON.parse(s.slice(16)))}},setTimeout,clearTimeout,TextEncoder,
   setInterval(fn){timers.add(fn);return fn},clearInterval(fn){timers.delete(fn)},
   navigator:{mediaDevices:{getUserMedia:()=>new Promise(resolve=>pending.push(resolve)),enumerateDevices:async()=>[{kind:'audioinput',label:'Test mic',deviceId:'test'}]}},
   AudioContext:class{sampleRate=48000;destination={};createMediaStreamSource(){return node()}createGain(){return {...node(),gain:{value:1}}}createAnalyser(){const a={...node(),level:0,getFloatTimeDomainData(data){data.fill(this.level)}};analysers.push(a);return a}createMediaStreamDestination(){return {stream:{getAudioTracks:()=>[{stop(){}}]}}}createConstantSource(){return {offset:{value:0},connect(){},start(){}}}async resume(){}async close(){}},
@@ -21,6 +22,8 @@ await voice.start('Test mic',false);
 assert.equal(pending.length,0,'spoken startup must never request a microphone');
 tick();assert.equal(activity.filter(e=>e.type==='input-pcm').length,0,'no microphone samples before activation');
 peers[0].ontrack({streams:[{}]});analysers.at(-1).level=0.1;tick();
+assert.equal(speaker.muted,true,'remote audio cannot start speaking on its own');
+voice.allowReply('cue');tick();
 assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,true,'audible assistant speech is detected');
 voice.muteOutput(true);tick();
 assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,false,'muted output cannot duck the game');
@@ -48,9 +51,40 @@ assert(!current.track.stopped,'old result must not close the new microphone');
 analysers.at(-1).level=0.25;tick();
 const pcm=activity.filter(e=>e.type==='input-pcm').at(-1).value;
 assert.equal(pcm.length,320);assert(pcm.every(v=>v===8192),'48 kHz audio is converted into 20 ms 16 kHz PCM for VAD');
+// Real player turns allow a reply, while model continuation and acoustic echo
+// cannot authorize another turn. Quiet context does not open playback either.
+peers.at(-1).ontrack({streams:[{}]});const output=analysers.at(-1);output.level=0.1;tick();
+assert(speaker.muted,'unsolicited speech stays muted while the microphone listens');
+voice.playerSpeech(true);tick();
+assert(speaker.muted,'assistant backchannels must not interrupt the player or mute the rest of their question');
+assert.equal(current.track.enabled,true,'the whole player utterance must reach the model');
+voice.playerSpeech(false);tick();
+assert(!speaker.muted,'speech detection opens a reply without clicking');
+assert.equal(current.track.enabled,false,'assistant playback is not transmitted to the model');
+const samplesDuringReply=activity.filter(e=>e.type==='input-pcm').length;tick(500);
+assert.equal(activity.filter(e=>e.type==='input-pcm').length,samplesDuringReply,'echo cannot feed the local speech detector');
+const permits=activity.filter(e=>e.type==='reply-permit').length;
+voice.playerSpeech(true);tick();
+assert.equal(activity.filter(e=>e.type==='reply-permit').length,permits,'queued echo detection cannot authorize another reply');
+voice.setBackendBusy(true);output.level=0;tick(700);
+assert.equal(current.track.enabled,false,'microphone waits for the acoustic tail');
+tick(200);assert.equal(current.track.enabled,true,'microphone resumes automatically');
+tick(3000);assert(!speaker.muted,'tool handoff retains the requested reply');
+voice.setBackendBusy(false);output.level=0.1;tick(500);assert(!speaker.muted);
+output.level=0;tick(2600);assert(speaker.muted,'finished reply returns to waiting');
+output.level=0.1;voice.updateContext('screen changed');tick(5000);
+assert(speaker.muted,'screen updates and model continuation cannot reopen playback');
+voice.setBackendBusy(true);voice.setBackendBusy(false);tick();
+assert(speaker.muted,'unrequested backend work cannot authorize speech');
+voice.playerSpeech(true);tick();voice.playerSpeech(false);tick(20500);
+assert(speaker.muted,'continuous model monologue has a hard audible limit');
+voice.allowReply('cue');tick();assert(!speaker.muted);tick(12500);
+assert(speaker.muted,'automatic cue cannot become an unbounded conversation');
+voice.allowReply('cue');output.level=0;tick(21000);output.level=0.1;tick();
+assert(speaker.muted,'a cue that never starts expires without authorizing later speech');
 await voice.setMicrophone(false,'Test mic');
 assert(current.track.stopped,'muting closes capture while voice output remains connected');
 voice.stop();
 assert.equal(timers.size,0,'disconnect closes every activity timer');
 assert(streams.every(s=>s.track.stopped),'mute must leave no microphone track open');
-console.log('Voice lifecycle passed: stale capture released, new session preserved, mute closes every stream.');
+console.log('Voice lifecycle passed: stale capture released, bounded replies, silent context updates, echo/tail suppression, tool handoff, mute closes every stream.');

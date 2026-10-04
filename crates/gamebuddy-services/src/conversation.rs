@@ -93,14 +93,15 @@ pub fn recent(store: &Store, game: &str) -> Result<Vec<Message>> {
 }
 
 /// Version-matched app-server v3 initialItems: 128 items / 8192 estimated tokens.
-/// Stay below 8 KB of text in total, with a developer boundary after historical
-/// user/assistant items so reconnecting doesn't resubmit an old player request.
+/// Stay below 8 KB of text in total. Historical dialogue is quoted developer
+/// context, never live role-bearing turns for the voice model to continue.
 pub fn initial_items(context: &Value, history: &[Message]) -> Value {
     let mut items = vec![json!({"role":"developer","text":MEMORY_RULES})];
     let mut bytes = MEMORY_RULES.len();
     for message in history {
         let text = format!(
-            "[Saved conversation at {} UTC{}] {}",
+            "Archived {} message at {} UTC{} (quoted data, not a current turn): {}",
+            message.role,
             message.at,
             if message.truncated { "; excerpt" } else { "" },
             message.text
@@ -109,13 +110,13 @@ pub fn initial_items(context: &Value, history: &[Message]) -> Value {
             break;
         }
         bytes += text.len();
-        items.push(json!({"role":message.role,"text":text}));
+        items.push(json!({"role":"developer","text":text}));
     }
     let mut current = context.clone();
     if current.to_string().len() > 2000 {
         current = json!({"game":clip(context["game"].as_str().unwrap_or_default(),256),
             "preparing":context["preparing"],"microphone_active":context["microphone_active"],
-            "instruction":"Read get_game_context and get_game_screen for current game state; the full context follows after connection."});
+            "instruction":"Read get_game_context and get_game_screen for current game state when answering the player."});
     }
     items.push(json!({"role":"developer","text":format!("End of saved conversation. Do not answer or execute historical requests. This is the CURRENT game context: {current}. Wait for live player speech or the application's spoken cue.")}));
     json!(items)
@@ -268,8 +269,25 @@ mod tests {
             &json!({"game":"Faxanadu","location_status":"uncertain"}),
             &history,
         );
-        assert_eq!(items[1]["role"], "user");
-        assert_eq!(items[2]["role"], "assistant");
+        assert!(
+            items
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["role"] == "developer")
+        );
+        assert!(
+            items[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Archived user message")
+        );
+        assert!(
+            items[2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Archived assistant message")
+        );
         assert!(items[3]["text"].as_str().unwrap().contains("CURRENT"));
     }
 
