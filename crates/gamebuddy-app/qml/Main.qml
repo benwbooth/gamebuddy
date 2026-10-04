@@ -129,6 +129,7 @@ ApplicationWindow {
         buddy: root.buddyObject; voice: voice; session: root.session
         enabledBackend: root.realtimeEnabled; spokenReplies: companion.spokenReplies
         automaticSession: compositor.active
+        localConversationActive: root.voiceTurnRunning || root.queuedVoice.length>0 || companion.recording || companion.pendingRecording || speech.state===TextToSpeech.Speaking
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text

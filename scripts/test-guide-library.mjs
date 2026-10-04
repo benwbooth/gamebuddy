@@ -65,6 +65,31 @@ try {
   await evaluate(`const current=document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]');current.click();let parent=current.closest('details');while(parent){parent.open=false;parent=parent.parentElement.closest('details')}`);
   await until(()=>evaluate(`[...document.querySelectorAll('[data-widget-id="walkthrough-outline"] details')].filter(d=>d.querySelector('[aria-current=step]')).every(d=>d.open)`),'Current path can be collapsed');
   assert(await evaluate(`document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]').parentElement.querySelector('.instructions')?.textContent===testState.navigation.guidance.now.instructions`),'Current action click hid its instructions');
+  // Reproduce frequent live observations while holding the same atlas image.
+  await evaluate(`testState.navigation.map.current_place=testState.navigation.map.places[0];testState.navigation.map.selected_map_id='town';testState.navigation.map.geometric_marker={map_id:'town',region:{x:.1,y:.1,width:.2,height:.5},precision:'camera_footprint'};testRender(testState)`);
+  await until(()=>evaluate(`document.querySelector('.map-viewport img')?.src.startsWith('data:image/jpeg') && document.querySelector('.map-viewport img').naturalWidth>0`),'Fixture map missing');
+  await evaluate(`window.stableMap=document.querySelector('[data-widget-id="location-map"]');window.stableImage=stableMap.querySelector('.map-viewport img');window.mapSrcChanges=0;window.mapObserverTest=new MutationObserver(changes=>mapSrcChanges+=changes.filter(c=>c.attributeName==='src').length);mapObserverTest.observe(stableImage,{attributes:true});stableMap.querySelector('.spatial-panel').open=true`);
+  await click('[aria-label="Location map"]');
+  for(let tick=0;tick<6;tick++){
+    await evaluate(`testState.navigation.location.detail='Observation '+${tick};testState.navigation.map.spatial={preparation:{status:'ready'},observation:{tracker:{status:'candidate',observed_at_ms:${tick}}},emulator:{age_ms:${tick*1000}}};testState.navigation.map.geometric_marker.region.x=${.1+tick*.02};testRender(testState)`);
+    assert(await evaluate(`stableMap===document.querySelector('[data-widget-id="location-map"]') && stableImage===document.querySelector('.map-viewport img')`),'Live refresh replaced the map or image DOM');
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  assert.equal(await evaluate('mapSrcChanges'),0,'Live updates reloaded the map image');
+  assert(await evaluate(`stableMap.querySelector('.map-marker').style.left==='20%' && stableMap.querySelector('.spatial-panel').open && stableMap.querySelector('.picker.open')!==null`),'Marker updates or open controls were lost');
+  await click('[aria-label="Location map"]');
+  await click('[aria-label="Zoom in"]');
+  await evaluate(`{const viewport=stableMap.querySelector('.map-viewport');viewport.scrollLeft=24;viewport.scrollTop=31}`);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  await evaluate(`{const viewport=stableMap.querySelector('.map-viewport');window.savedMapPan={x:viewport.scrollLeft,y:viewport.scrollTop,width:stableImage.parentElement.style.width};testState.navigation.map.spatial.emulator={age_ms:9999};testRender(testState)}`);
+  assert(await evaluate(`(()=>{const viewport=stableMap.querySelector('.map-viewport');return (savedMapPan.x>0||savedMapPan.y>0)&&viewport.scrollLeft===savedMapPan.x&&viewport.scrollTop===savedMapPan.y&&stableImage.parentElement.style.width===savedMapPan.width})()`),'Metadata-only refresh reset map pan or zoom');
+  await evaluate(`testState.navigation.map.geometric_marker=null;testState.navigation.map.current_place=null;testState.navigation.map.selected_map_id=null;testRender(testState)`);
+  assert(await evaluate(`stableMap.querySelector('.map-marker').hidden && stableImage===document.querySelector('.map-viewport img')`),'Stale location must hide its marker without flashing the image');
+  await click('[aria-label="Minimize Reader fixture · Location map"]');
+  await evaluate('testRender(testState)');
+  await click('[aria-label="Restore Reader fixture · Location map"]');
+  await evaluate('testRender(testState);mapObserverTest.disconnect()');
+  assert(await evaluate(`stableImage.parentElement.style.width!=='' && !stableImage.parentElement.style.width.includes('NaN')`),'Hidden refresh corrupted the map zoom');
   // Optional production state obtained by the isolated saved-frame pipeline test.
   if(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT){
     const replay=JSON.parse(readFileSync(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT,'utf8'));
@@ -93,5 +118,5 @@ try {
     assert(await evaluate(`document.querySelector('.reader-detail input[type=checkbox]').checked`),'Flattening source sections lost inherited completion');
   }
   assert.deepEqual(errors,[],'JavaScript runtime errors');
-  console.log('PASS: Qt reader persistence, pictures, sources and widget controls; pinned next action and expanded path; optional captured-frame location map, highlight, selection and follow-player.');
+  console.log('PASS: Qt reader persistence, sources and widget controls; pinned next action; stable map/image across live updates, moving marker, open controls and stale location; optional captured-frame map and follow-player.');
 } finally {socket.close();db.close()}

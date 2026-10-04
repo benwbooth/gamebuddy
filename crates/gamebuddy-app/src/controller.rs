@@ -133,7 +133,6 @@ pub struct BuddyRust {
     estimate: SyncEstimate,
     last_frame: Option<PathBuf>,
     game: String,
-    automatic_answer: String,
     screen_session: String,
     scene_inflight: bool,
     last_scene_at: u64,
@@ -162,7 +161,6 @@ impl Default for BuddyRust {
             estimate: SyncEstimate::default(),
             last_frame: None,
             game: "Faxanadu".into(),
-            automatic_answer: String::new(),
             screen_session: String::new(),
             scene_inflight: false,
             last_scene_at: 0,
@@ -284,8 +282,8 @@ impl ffi::Buddy {
             });
         });
     }
-    fn refresh(mut self: Pin<&mut Self>) {
-        let result = (|| -> Result<(String, String)> {
+    fn refresh(self: Pin<&mut Self>) {
+        let result = (|| -> Result<String> {
             let data = self.rust();
             let store = Store::open(&data.root)?;
             let guides = store
@@ -359,27 +357,12 @@ impl ffi::Buddy {
                 })
                 .and_then(|p| url::Url::from_file_path(p).ok())
                 .map(|u| u.to_string());
-            let automatic = if navigation["guidance"]["status"] == "ready" {
-                format!(
-                    "{}: {}",
-                    current["title"].as_str().unwrap_or_default(),
-                    current["instructions"].as_str().unwrap_or_default()
-                )
-            } else {
-                String::new()
-            };
-            Ok((json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string(), automatic))
+            Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
         })();
         match result {
-            Ok((state, automatic)) => {
-                if automatic != self.rust().automatic_answer {
-                    if !automatic.is_empty()
-                        || self.answer().to_string() == self.rust().automatic_answer
-                    {
-                        self.as_mut().set_answer(q(&automatic));
-                    }
-                    self.as_mut().rust_mut().automatic_answer = automatic;
-                }
+            Ok(state) => {
+                // Refresh the OSD without turning every new instruction into
+                // a spoken answer. The narrator controls unsolicited speech.
                 self.set_state_json(q(state));
             }
             Err(e) => self.set_message(q(format!("Could not read library: {e:#}"))),

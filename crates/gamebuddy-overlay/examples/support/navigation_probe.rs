@@ -199,7 +199,7 @@ pub fn run(
     screenshot("navigation-map-provenance.png")?;
     hover(&json!([900, 600, 1, 1]))?;
     click(&latest(&log, "GAMEBUDDY_MAP_VIEW ")["mapPicker"])?;
-    wait(|| Ok(latest(&log, "GAMEBUDDY_PICKER ")["label"] == "Reference map"))?;
+    wait(|| Ok(latest(&log, "GAMEBUDDY_PICKER ")["label"] == "Location map"))?;
     report("forest", "step-3")?;
     wait(|| Ok(latest(&log, "GAMEBUDDY_OUTLINE ")["current"] == "step-3"))?;
     thread::sleep(Duration::from_secs(3));
@@ -209,7 +209,7 @@ pub fn run(
         .as_array()
         .unwrap()
         .iter()
-        .find(|o| o["id"] == "church")
+        .find(|o| o["id"] == "place:church")
         .unwrap();
     click(&option["rect"])?;
     wait(|| {

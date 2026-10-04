@@ -58,7 +58,7 @@
     button.addEventListener('click',()=>{if(!menu.hidden){close();return}menu.hidden=false;root.classList.add('open');button.setAttribute('aria-expanded','true');menu.querySelector('[aria-selected=true]')?.scrollIntoView({block:'nearest'});requestAnimationFrame(()=>console.info('GAMEBUDDY_PICKER '+JSON.stringify({label,options:[...menu.children].map(n=>({id:n.dataset.value,rect:bounds(n)}))})))});
     root.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close()}});
     for(const option of options){const row=text('button',option.label);row.type='button';row.dataset.value=option.id;row.setAttribute('role','option');row.addEventListener('click',()=>{onChange(option.id);close()});menu.append(row)}
-    return {node:root,set(value){button.textContent=(options.find(o=>o.id===value)?.label||'Choose…')+' ▾';for(const row of menu.children)row.setAttribute('aria-selected',String(row.dataset.value===value));button.disabled=!options.length}};
+    return {node:root,updateOptions(next){options=next;for(const row of menu.children)row.textContent=options.find(o=>o.id===row.dataset.value)?.label||row.textContent},set(value){button.textContent=(options.find(o=>o.id===value)?.label||'Choose…')+' ▾';for(const row of menu.children)row.setAttribute('aria-selected',String(row.dataset.value===value));button.disabled=!options.length}};
   }
   /* GUIDE_LIBRARY_SCRIPT */
   function fitBox(box){const width=clamp(box.width,Math.min(230,innerWidth),innerWidth),height=box.collapsed?64:clamp(box.height,Math.min(130,innerHeight),innerHeight);return {...box,x:clamp(box.x,0,innerWidth-width),y:clamp(box.y,0,innerHeight-height),width,height}}
@@ -73,7 +73,96 @@
   document.addEventListener('lostpointercapture',finish);
   addEventListener('blur',finish);
   addEventListener('resize',()=>{finish();for(const n of host.querySelectorAll('.widget')){const r=n.getBoundingClientRect();place(n,{...layouts[n.dataset.widgetId],x:r.x,y:r.y,width:r.width,height:r.height})}regions()});
-  window.gamebuddy={readerResponse(response){library.response(response)},mapPreview(id,data){library.mapPreview(id,data);if(pendingSpatial?.id===id && pendingSpatial.image.isConnected && data.startsWith('data:image/jpeg;base64,'))pendingSpatial.image.src=data;if(pendingMap?.id===id && pendingMap.image.isConnected && data.startsWith('data:image/jpeg;base64,')){pendingMap.stage.hidden=false;pendingMap.empty.hidden=true;pendingMap.image.src=data}},render(state){
+  function mapStructure(c){return JSON.stringify([c.guide_id,c.map?.maps,c.map?.places,c.map?.locations?.map(({current,...p})=>p)])}
+  // Keep the map surface, image, menus and scroll viewport mounted across observations.
+  function mountLocationMap(body,initial,titles){
+        body.classList.add('map-panel');let c=initial,map=c.map||{},locations=[];const maps=map.maps||[],places=map.places||[];
+        const locationOptions=()=>locations.map(p=>({id:p.id,label:(p.current?'▶ You are here · ':'')+p.label+(!p.map_id?' · map unavailable':'')}));
+        locations=map.locations||maps.map(m=>({id:'map:'+m.id,map_id:m.id,label:m.title}));
+        let loadedAsset=null,framingKey='';
+        if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0};browsedPlace=null}
+        const status=evidence(text('div','','map-status'),'Location evidence',locationEvidence);body.append(status);
+        const precision=text('div','','map-note');body.append(evidence(precision,'Location evidence',locationEvidence));
+        const toolbar=text('div','','map-toolbar'),follow=text('button','Follow player');follow.type='button';
+        const select=picker('Location map',locationOptions(),id=>{const location=locations.find(p=>p.id===id);followMap=false;browsedPlace=location?.place_id||null;choose(location?.map_id)});
+        toolbar.append(select.node,follow);body.append(toolbar);
+        const controls=text('div','','map-toolbar'),minus=text('button','−'),plus=text('button','+'),fit=text('button','Fit');
+        minus.type=plus.type=fit.type='button';minus.setAttribute('aria-label','Zoom out');plus.setAttribute('aria-label','Zoom in');controls.append(minus,plus,fit);body.append(controls);
+        const selectionNote=text('div','','map-note');body.append(selectionNote);
+        const viewport=text('div','','map-viewport'),credit=text('div','','map-credit'),stage=text('div','','map-stage'),image=document.createElement('img');image.alt='Reference area map';
+        const marker=text('div','','map-marker'),markerLabel=text('span','You are here · approximate area');marker.append(markerLabel);stage.append(image,marker);
+        const empty=text('div','','map-empty');viewport.append(stage,empty);body.append(viewport,credit);
+        function zoom(){if(image.naturalWidth&&viewport.clientWidth){const fitted=Math.min(viewport.clientWidth,viewport.clientHeight*image.naturalWidth/image.naturalHeight);stage.style.width=Math.max(1,fitted*mapZoom)+'px'}}
+        mapObserver=new ResizeObserver(zoom);mapObserver.observe(viewport);
+        function choose(id){
+          const asset=maps.find(m=>m.id===id);precision.textContent=map.geometric_marker?'Your visible game area is highlighted. Hover for matching evidence.':c.location_detail||'Waiting for a location report or a visual match.';if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(locations.find(p=>browsedPlace?p.place_id===browsedPlace:followMap&&map.current_place?p.place_id===map.current_place.id:p.map_id===id)?.id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
+          const browsing=places.find(p=>p.id===browsedPlace);
+          status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'You are here · estimated: ')+map.current_place.label:(map.geometric_marker?'You are here · '+(maps.find(m=>m.id===map.geometric_marker.map_id)?.title||'matched map area'):map.spatial?.observation?.tracker?.status==='tracked'?'Visual place matched':'Locating player'))+(browsing?' · Browsing '+browsing.label:'');
+          const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;
+          const region=geometric || (map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null);
+          const nextFraming=JSON.stringify([id,followMap,region?.region]),changedFraming=nextFraming!==framingKey;framingKey=nextFraming;
+          markerLabel.textContent=geometric?'You are here · camera area':'You are here · approximate area';
+          marker.hidden=!region;
+          if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:geometric?'Geometric map registration':'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
+          selectionNote.textContent=followMap?(region?(geometric?'Visible area aligned to map pixels.':'Highlighted area estimated from map landmarks.'):map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
+          stage.hidden=!asset;empty.hidden=!!asset;
+          image.onload=()=>{if(!viewport.clientWidth||!viewport.clientHeight)return;if(followMap&&region&&mapZoom===1){const r=region.region,aspect=image.naturalWidth/image.naturalHeight,fitted=Math.min(viewport.clientWidth,viewport.clientHeight*aspect);mapZoom=clamp(Math.min(0.75*viewport.clientWidth/(fitted*r.width),0.75*viewport.clientHeight/(fitted/aspect*r.height)),1,8);}zoom();if(followMap&&region){const r=region.region;viewport.scrollLeft=(r.x+r.width/2)*stage.clientWidth-viewport.clientWidth/2;viewport.scrollTop=(r.y+r.height/2)*stage.clientHeight-viewport.clientHeight/2}else{viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y}};
+          image.onerror=()=>{stage.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. Location and source attribution remain available.'};
+          evidence(image,'Map sources',()=>mapEvidence(asset));evidence(credit,'Map sources',()=>mapEvidence(asset));
+          const assetKey=asset?id+':'+asset.url:null,changedAsset=loadedAsset!==assetKey;loadedAsset=assetKey;
+          if(asset){try{if(new URL(asset.url).protocol==='https:'){if(changedAsset)image.src=asset.url;}else throw Error('Invalid map URL')}catch{stage.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}evidence(titles,'Map sources',()=>mapEvidence(asset));image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
+          else{empty.textContent=map.current_place?'No verified map is attached to this location yet. Your location and current step still update.':'Matching your game to reference landmarks. Browse any location map while tracking continues.';credit.textContent=''}
+          pendingMap=asset?{id,image,stage,empty}:null;if(asset&&changedAsset)console.info('GAMEBUDDY_MAP_REQUEST '+id);
+          requestAnimationFrame(()=>console.info('GAMEBUDDY_MAP_VIEW '+JSON.stringify({map:id||null,following:followMap,place:map.current_place?.id||null,marker:!!region,mapPicker:bounds(select.node),placePicker:bounds(roomSelect.node),followButton:bounds(follow),credit:bounds(credit),markerBounds:bounds(marker)})));
+          if(!changedAsset&&changedFraming&&image.complete&&image.naturalWidth)image.onload();else zoom();
+        }
+        follow.addEventListener('click',()=>{followMap=true;browsedPlace=null;choose(map.selected_map_id || (map.current_place?undefined:mapChoice))});
+        minus.addEventListener('click',()=>{mapZoom=Math.max(1,mapZoom/1.5);zoom()});plus.addEventListener('click',()=>{mapZoom=Math.min(16,mapZoom*1.5);zoom()});fit.addEventListener('click',()=>{followMap=false;follow.textContent='Follow player';follow.setAttribute('aria-pressed','false');mapZoom=1;mapScroll={x:0,y:0};viewport.scrollTo(0,0);zoom()});
+        viewport.addEventListener('scroll',()=>{mapScroll={x:viewport.scrollLeft,y:viewport.scrollTop}});
+        const routePanel=text('div','');body.append(routePanel);let routeKey='';
+        function updateRoute(){
+        const route=[...(map.current_place?[map.current_place.id]:[]),...(map.route_places||[])].filter((id,i,all)=>i===0||id!==all[i-1]);
+        const next=JSON.stringify(route);if(next===routeKey)return;routeKey=next;routePanel.replaceChildren();
+        if(route.length){routePanel.append(text('div','Planned stops','eyebrow'));const row=text('div','','map-route');route.forEach((id,i)=>{const p=places.find(p=>p.id===id);if(!p)return;if(i)row.append(text('span','→'));const stop=text('div',p.label,'map-stop'+(id===map.current_place?.id?' here':''));evidence(stop,'Place references',()=>placeEvidence(p));row.append(stop)});routePanel.append(row)}
+        }
+        const roomSelect=picker('Browse known places',[{id:'',label:'Browse '+places.length+' known places'},...places.map(p=>({id:p.id,label:p.label}))],id=>{const place=places.find(p=>p.id===id);if(!place)return;followMap=false;browsedPlace=id;roomSelect.set(id);choose(place.map_id);empty.textContent=place.landmarks||'No map associated with this place.'},true);
+        roomSelect.set(browsedPlace||'');const rooms=text('div','','map-toolbar');rooms.append(roomSelect.node);body.append(rooms);
+        const atlasNote=text('div','','map-note');body.append(atlasNote);
+        const spatialPanel=text('details','','spatial-panel');spatialPanel.open=!map.selected_map_id&&map.spatial?.observation?.tracker?.status==='tracked';body.append(spatialPanel);let spatialKey='';
+        function updateSpatial(){
+        const spatial=map.spatial||{},observation=spatial.observation,prep=spatial.preparation||{};
+        const nextKey=JSON.stringify([prep.status,prep.places,prep.views,prep.dimension,spatial.map_preparation,spatial.error,spatial.message,observation?.tracker?.status,observation?.room,observation?.reference,observation?.camera_footprint,observation?.connections]);
+        if(nextKey===spatialKey)return;spatialKey=nextKey;const previousImage=spatialPanel.querySelector('img');spatialPanel.replaceChildren();pendingSpatial=null;
+        spatialPanel.append(text('summary','Visual world · '+(observation?.tracker?.status || prep.status || 'not prepared')));
+        spatialPanel.append(text('div',(prep.places||0)+' places · '+(prep.views||0)+' indexed views · '+(prep.dimension==='three_d'?'3D place recognition':'2D geometric matching'),'map-note'));
+        if(spatial.map_preparation)spatialPanel.append(text('div','Map landmarks · '+spatial.map_preparation.status+' · '+(spatial.map_preparation.tiles||0)+' tiles'+(spatial.map_preparation.current_map?' · '+spatial.map_preparation.current_map:'')+(spatial.map_preparation.error?' · '+spatial.map_preparation.error:''),'map-note'));
+        if(spatial.message)spatialPanel.append(text('div',spatial.message,'map-note'));
+        if(spatial.error)spatialPanel.append(text('div',spatial.error,'map-note'));
+        if(observation?.tracker?.status==='tracked' && observation.room){
+          const room=observation.room,reference=observation.reference,id='spatial:'+room.id+':'+reference.view_id,visual=text('div','','map-stage'),view=previousImage?.dataset.previewId===id?previousImage:document.createElement('img');view.dataset.previewId=id;view.alt=observation.dimension==='three_d'?'Matched reference viewpoint':room.mosaic_path?'Stitched reference views':'Matched reference view';visual.append(view);
+          const provenance=()=>[{title:'Matched walkthrough view',url:urlFor(reference?.url,reference?.at_ms),detail:'Source '+reference?.source_id+' at '+time(reference?.at_ms||0)+'. Geometry establishes place identity; it does not verify objectives.'}];
+          evidence(visual,'Visual world provenance',provenance);spatialPanel.append(visual);
+          if(observation.camera_footprint && room.mosaic_path && room.bounds?.[2]>0){
+            const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),polygon=document.createElementNS(svg.namespaceURI,'polygon');
+            svg.setAttribute('viewBox',room.bounds.join(' '));Object.assign(svg.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none'});
+            polygon.setAttribute('points',observation.camera_footprint.map(p=>p.join(',')).join(' '));polygon.setAttribute('fill','#65ffcb33');polygon.setAttribute('stroke','#a5ffdc');polygon.setAttribute('stroke-width','3');svg.append(polygon);visual.append(svg);
+          }
+          spatialPanel.append(text('div',observation.dimension==='three_d'?'Matched place/viewpoint. Exact 3D position is not established.':'The highlighted region is the camera view; the player’s exact position is not established.','map-note'));
+          pendingSpatial={id,image:view};if(view!==previousImage)console.info('GAMEBUDDY_MAP_REQUEST '+id);
+          if(observation.connections?.length){const list=text('ul','');for(const edge of observation.connections)list.append(evidence(text('li',edge.from+' → '+edge.to+' · video sequence; connection unverified'),'Transition source',()=>[{title:edge.kind,url:urlFor(edge.source_url,edge.before_ms),detail:time(edge.before_ms)+'–'+time(edge.after_ms)}]));spatialPanel.append(list)}
+        }else spatialPanel.append(text('div','Waiting for distinctive landmarks in successive frames. Ambiguous matches remain unconfirmed.','map-note'));
+        }
+        function refresh(next){
+          c=next;map=c.map||{};locations=map.locations||maps.map(m=>({id:'map:'+m.id,map_id:m.id,label:m.title}));
+          select.updateOptions(locationOptions());roomSelect.set(browsedPlace||'');
+          let selected=followMap?(map.selected_map_id || (map.current_place?undefined:mapChoice)):mapChoice;
+          if(selected&&!maps.some(m=>m.id===selected))selected=undefined;
+          choose(selected);updateRoute();updateSpatial();
+          atlasNote.hidden=map.status==='ready';atlasNote.textContent='Atlas '+(map.status||'pending')+' · '+(map.reviewed_steps||0)+' reviewed actions';
+        }
+        refresh(initial);return refresh;
+  }
+  window.gamebuddy={readerResponse(response){library.response(response)},mapPreview(id,data){library.mapPreview(id,data);if(pendingSpatial?.id===id && pendingSpatial.image.isConnected && data.startsWith('data:image/jpeg;base64,'))pendingSpatial.image.src!==data&&(pendingSpatial.image.src=data);if(pendingMap?.id===id && pendingMap.image.isConnected && data.startsWith('data:image/jpeg;base64,')){pendingMap.stage.hidden=false;pendingMap.empty.hidden=true;if(pendingMap.image.src!==data)pendingMap.image.src=data}},render(state){
     latestState=state;
     locked=!!state.locked;document.body.classList.toggle('locked',locked);
     if(active)return;
@@ -87,11 +176,12 @@
     const hasWidgets=items.length>0;
     items=items.filter(w=>(state.widget_visibility?.[w.id] ?? (w.id!=='guide-library')));
     const ids=new Set(items.map(w=>w.id));
-    for(const node of [...host.children])if(!ids.has(node.dataset.widgetId)){if(node.dataset.widgetId==='guide-library')library.unmount();if(node.dataset.widgetId==='location-map'){mapObserver?.disconnect();pendingMap=null}node.remove()}
+    for(const node of [...host.children])if(!ids.has(node.dataset.widgetId)){if(node.dataset.widgetId==='guide-library')library.unmount();if(node.dataset.widgetId==='location-map'){mapObserver?.disconnect();pendingMap=null;pendingSpatial=null}node.remove()}
     if(hasWidgets&&!items.length){regions();return}
     if(!items.length){const empty=text('div','','empty');empty.append(text('strong','Preparing your guide'),text('div','Finding references and building the walkthrough. Chapters and steps will appear here automatically.'));host.append(empty);regions();return}
     items.forEach((item,i)=>{
       const old=[...host.children].find(n=>n.dataset.widgetId===item.id), signature=JSON.stringify(item);
+      if(old && item.content?.kind==='map' && old.mapStructure===mapStructure(item.content)){old.refreshMap(item.content);return}
       if(old && item.id==='guide-library'){old.refreshLibrary(state);return}
       if(old && (old.signature===signature || old.querySelector('.picker.open')))return;
       const previousScroll=old?.querySelector('.body')?.scrollTop || 0;
@@ -139,73 +229,7 @@
         if(advice.now){const done=text('button','I completed this','action-button');done.type='button';done.addEventListener('click',()=>console.info('GAMEBUDDY_COMPLETE '+advice.now.id));body.append(done)}
       }
       else if(c.kind==='map'){
-        body.classList.add('map-panel');const map=c.map||{},maps=map.maps||[],places=map.places||[],locations=map.locations||maps.map(m=>({id:'map:'+m.id,map_id:m.id,label:m.title}));
-        if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0};browsedPlace=null}
-        const status=evidence(text('div','','map-status'),'Location evidence',locationEvidence);body.append(status);
-        const precision=text('div',map.geometric_marker?'Your visible game area is highlighted. Hover for matching evidence.':c.location_detail||'Waiting for a location report or a visual match.','map-note');body.append(evidence(precision,'Location evidence',locationEvidence));
-        const toolbar=text('div','','map-toolbar'),follow=text('button','Follow player');follow.type='button';
-        const select=picker('Location map',locations.map(p=>({id:p.id,label:(p.current?'▶ You are here · ':'')+p.label+(!p.map_id?' · map unavailable':'')})),id=>{const location=locations.find(p=>p.id===id);followMap=false;browsedPlace=location?.place_id||null;choose(location?.map_id)});
-        toolbar.append(select.node,follow);body.append(toolbar);
-        const controls=text('div','','map-toolbar'),minus=text('button','−'),plus=text('button','+'),fit=text('button','Fit');
-        minus.type=plus.type=fit.type='button';minus.setAttribute('aria-label','Zoom out');plus.setAttribute('aria-label','Zoom in');controls.append(minus,plus,fit);body.append(controls);
-        const selectionNote=text('div','','map-note');body.append(selectionNote);
-        const viewport=text('div','','map-viewport'),credit=text('div','','map-credit'),stage=text('div','','map-stage'),image=document.createElement('img');image.alt='Reference area map';
-        const marker=text('div','','map-marker'),markerLabel=text('span','You are here · approximate area');marker.append(markerLabel);stage.append(image,marker);
-        const empty=text('div','','map-empty');viewport.append(stage,empty);body.append(viewport,credit);
-        function zoom(){if(image.naturalWidth&&viewport.clientWidth){const fitted=Math.min(viewport.clientWidth,viewport.clientHeight*image.naturalWidth/image.naturalHeight);stage.style.width=Math.max(1,fitted*mapZoom)+'px'}}
-        mapObserver=new ResizeObserver(zoom);mapObserver.observe(viewport);
-        function choose(id){
-          const asset=maps.find(m=>m.id===id);if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(locations.find(p=>browsedPlace?p.place_id===browsedPlace:followMap&&map.current_place?p.place_id===map.current_place.id:p.map_id===id)?.id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
-          const browsing=places.find(p=>p.id===browsedPlace);
-          status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'You are here · estimated: ')+map.current_place.label:(map.geometric_marker?'You are here · '+(maps.find(m=>m.id===map.geometric_marker.map_id)?.title||'matched map area'):map.spatial?.observation?.tracker?.status==='tracked'?'Visual place matched':'Locating player'))+(browsing?' · Browsing '+browsing.label:'');
-          const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;
-          const region=geometric || (map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null);
-          markerLabel.textContent=geometric?'You are here · camera area':'You are here · approximate area';
-          marker.hidden=!region;
-          if(region){const r=region.region;Object.assign(marker.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});markerLabel.classList.toggle('below',r.y<0.12);evidence(marker,'Map area estimate',()=>[{title:geometric?'Geometric map registration':'Approximate area · AI interpretation',detail:region.evidence},...mapEvidence(asset),...placeEvidence(map.current_place)])}
-          selectionNote.textContent=followMap?(region?(geometric?'Visible area aligned to map pixels.':'Highlighted area estimated from map landmarks.'):map.marker_status==='building'?'Finding your area on the map…':'Following your room; map coordinates are not established yet.'):'Browsing reference material · location tracking continues';
-          stage.hidden=!asset;empty.hidden=!!asset;
-          image.onload=()=>{if(followMap&&region&&mapZoom===1){const r=region.region,aspect=image.naturalWidth/image.naturalHeight,fitted=Math.min(viewport.clientWidth,viewport.clientHeight*aspect);mapZoom=clamp(Math.min(0.75*viewport.clientWidth/(fitted*r.width),0.75*viewport.clientHeight/(fitted/aspect*r.height)),1,8);}zoom();if(followMap&&region){const r=region.region;viewport.scrollLeft=(r.x+r.width/2)*stage.clientWidth-viewport.clientWidth/2;viewport.scrollTop=(r.y+r.height/2)*stage.clientHeight-viewport.clientHeight/2}else{viewport.scrollLeft=mapScroll.x;viewport.scrollTop=mapScroll.y}};
-          image.onerror=()=>{stage.hidden=true;empty.hidden=false;empty.textContent='Map could not be loaded. Location and source attribution remain available.'};
-          evidence(image,'Map sources',()=>mapEvidence(asset));evidence(credit,'Map sources',()=>mapEvidence(asset));
-          if(asset){try{if(new URL(asset.url).protocol==='https:')image.src=asset.url;else throw Error('Invalid map URL')}catch{stage.hidden=true;empty.hidden=false;empty.textContent='Invalid map source'}evidence(titles,'Map sources',()=>mapEvidence(asset));image.alt=asset.title;credit.textContent=asset.title+' · '+asset.credit+' · '+asset.source_url}
-          else{empty.textContent=map.current_place?'No verified map is attached to this location yet. Your location and current step still update.':'Matching your game to reference landmarks. Browse any location map while tracking continues.';credit.textContent=''}
-          pendingMap=asset?{id,image,stage,empty}:null;if(asset)console.info('GAMEBUDDY_MAP_REQUEST '+id);
-          requestAnimationFrame(()=>console.info('GAMEBUDDY_MAP_VIEW '+JSON.stringify({map:id||null,following:followMap,place:map.current_place?.id||null,marker:!!region,mapPicker:bounds(select.node),placePicker:bounds(roomSelect.node),followButton:bounds(follow),credit:bounds(credit),markerBounds:bounds(marker)})));
-          zoom();
-        }
-        let selected=followMap?(map.selected_map_id || (map.current_place?undefined:mapChoice)):mapChoice;
-        if(selected&&!maps.some(m=>m.id===selected))selected=undefined;
-        choose(selected);
-        follow.addEventListener('click',()=>{followMap=true;browsedPlace=null;choose(map.selected_map_id || (map.current_place?undefined:mapChoice))});
-        minus.addEventListener('click',()=>{mapZoom=Math.max(1,mapZoom/1.5);zoom()});plus.addEventListener('click',()=>{mapZoom=Math.min(16,mapZoom*1.5);zoom()});fit.addEventListener('click',()=>{followMap=false;follow.textContent='Follow player';follow.setAttribute('aria-pressed','false');mapZoom=1;mapScroll={x:0,y:0};viewport.scrollTo(0,0);zoom()});
-        viewport.addEventListener('scroll',()=>{mapScroll={x:viewport.scrollLeft,y:viewport.scrollTop}});
-        const route=[...(map.current_place?[map.current_place.id]:[]),...(map.route_places||[])].filter((id,i,all)=>i===0||id!==all[i-1]);
-        if(route.length){body.append(text('div','Planned stops','eyebrow'));const row=text('div','','map-route');route.forEach((id,i)=>{const p=places.find(p=>p.id===id);if(!p)return;if(i)row.append(text('span','→'));const stop=text('div',p.label,'map-stop'+(id===map.current_place?.id?' here':''));evidence(stop,'Place references',()=>placeEvidence(p));row.append(stop)});body.append(row)}
-        const roomSelect=picker('Browse known places',[{id:'',label:'Browse '+places.length+' known places'},...places.map(p=>({id:p.id,label:p.label}))],id=>{const place=places.find(p=>p.id===id);if(!place)return;followMap=false;browsedPlace=id;roomSelect.set(id);choose(place.map_id);empty.textContent=place.landmarks||'No map associated with this place.'},true);
-        roomSelect.set(browsedPlace||'');const rooms=text('div','','map-toolbar');rooms.append(roomSelect.node);body.append(rooms);
-        if(map.status!=='ready')body.append(text('div','Atlas '+(map.status||'pending')+' · '+(map.reviewed_steps||0)+' reviewed actions','map-note'));
-        const spatial=map.spatial||{},observation=spatial.observation,prep=spatial.preparation||{};
-        const spatialPanel=text('details','','spatial-panel');spatialPanel.open=!map.selected_map_id&&observation?.tracker?.status==='tracked';
-        spatialPanel.append(text('summary','Visual world · '+(observation?.tracker?.status || prep.status || 'not prepared')));
-        spatialPanel.append(text('div',(prep.places||0)+' places · '+(prep.views||0)+' indexed views · '+(prep.dimension==='three_d'?'3D place recognition':'2D geometric matching'),'map-note'));
-        if(spatial.map_preparation)spatialPanel.append(text('div','Map landmarks · '+spatial.map_preparation.status+' · '+(spatial.map_preparation.tiles||0)+' tiles'+(spatial.map_preparation.current_map?' · '+spatial.map_preparation.current_map:'')+(spatial.map_preparation.error?' · '+spatial.map_preparation.error:''),'map-note'));
-        if(spatial.message)spatialPanel.append(text('div',spatial.message,'map-note'));
-        if(spatial.error)spatialPanel.append(text('div',spatial.error,'map-note'));
-        if(observation?.tracker?.status==='tracked' && observation.room){
-          const room=observation.room,reference=observation.reference,visual=text('div','','map-stage'),view=document.createElement('img');view.alt=observation.dimension==='three_d'?'Matched reference viewpoint':room.mosaic_path?'Stitched reference views':'Matched reference view';visual.append(view);
-          const provenance=()=>[{title:'Matched walkthrough view',url:urlFor(reference?.url,reference?.at_ms),detail:'Source '+reference?.source_id+' at '+time(reference?.at_ms||0)+'. Geometry establishes place identity; it does not verify objectives.'}];
-          evidence(visual,'Visual world provenance',provenance);spatialPanel.append(visual);
-          if(observation.camera_footprint && room.mosaic_path && room.bounds?.[2]>0){
-            const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),polygon=document.createElementNS(svg.namespaceURI,'polygon');
-            svg.setAttribute('viewBox',room.bounds.join(' '));Object.assign(svg.style,{position:'absolute',inset:'0',width:'100%',height:'100%',pointerEvents:'none'});
-            polygon.setAttribute('points',observation.camera_footprint.map(p=>p.join(',')).join(' '));polygon.setAttribute('fill','#65ffcb33');polygon.setAttribute('stroke','#a5ffdc');polygon.setAttribute('stroke-width','3');svg.append(polygon);visual.append(svg);
-          }
-          spatialPanel.append(text('div',observation.dimension==='three_d'?'Matched place/viewpoint. Exact 3D position is not established.':'The highlighted region is the camera view; the player’s exact position is not established.','map-note'));
-          const id='spatial:'+room.id+':'+reference.view_id;pendingSpatial={id,image:view};console.info('GAMEBUDDY_MAP_REQUEST '+id);
-          if(observation.connections?.length){const list=text('ul','');for(const edge of observation.connections)list.append(evidence(text('li',edge.from+' → '+edge.to+' · video sequence; connection unverified'),'Transition source',()=>[{title:edge.kind,url:urlFor(edge.source_url,edge.before_ms),detail:time(edge.before_ms)+'–'+time(edge.after_ms)}]));spatialPanel.append(list)}
-        }else spatialPanel.append(text('div','Waiting for distinctive landmarks in successive frames. Ambiguous matches remain unconfirmed.','map-note'));
-        body.append(spatialPanel);
+        node.mapStructure=mapStructure(c);node.refreshMap=mountLocationMap(body,c,titles);
       }
       else if(c.kind==='table'){const table=document.createElement('table'),head=document.createElement('tr');(c.columns||[]).forEach(v=>head.append(text('th',v)));table.append(head);(c.rows||[]).forEach((row,index)=>{const tr=document.createElement('tr');row.forEach(v=>tr.append(text('td',v)));evidence(tr,'Row sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids));table.append(tr)});body.append(table)}
       else if(c.kind==='checklist'){const ul=document.createElement('ul');(c.items||[]).forEach((v,index)=>ul.append(evidence(text('li',v),'Item sources',()=>stepEvidence(item.item_sources?.find(s=>s.item_index===index)?.source_step_ids ?? item.source_step_ids))));body.append(ul)}

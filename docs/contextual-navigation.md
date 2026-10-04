@@ -25,7 +25,7 @@ The planner checks the editable goal/route graph, completed tasks and inherited 
 
 `report_location` lets speech, chat and MCP record the player's stated current place and optional task using known atlas IDs. It requires the current guide revision, progress epoch and the player's own words. This atomically updates progress and the shared tracker; the map and outline refresh without demanding a visual match. Reports are labelled as player reports and survive uncertain frames until a new report, repeated contrary visual evidence, reset, or a new capture session. Revision/epoch checks keep an older inference from overwriting a newer report.
 
-Map and place menus are HTML controls within the Gamescope surface. Open menus survive background state updates. Manual browsing changes neither location nor progress; **Follow player** restores automatic map selection.
+Map and place menus are HTML controls within the Gamescope surface. Tracking updates change status and markers in place, retaining the mounted map image, zoom, scroll, open menus and diagnostics. Images reload only when the selected map asset changes; observation timestamps do not reload them. Manual browsing changes neither location nor progress; **Follow player** restores automatic map selection.
 
 **I completed this** explicitly confirms the displayed task. Voice and MCP can use `report_step_complete` only for an explicit player statement; it requires the current guide revision and progress epoch. Reports are stored separately in `reported_completed`, never inferred from advice or room similarity. Both types inform planning; old capture results cannot overwrite a newer report. Goal changes and newly eligible actions flow into live voice context without waiting for a new question.
 
