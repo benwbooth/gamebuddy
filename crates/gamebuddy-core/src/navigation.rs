@@ -185,6 +185,21 @@ impl PlaceTracker {
         self.status = "estimated".into();
         self.detail = other.detail.clone();
     }
+    /// A changed screen invalidates a visual estimate immediately. Explicit
+    /// player reports remain authoritative until newer evidence locates them.
+    pub fn invalidate_visual(&mut self) {
+        if self.status == "reported" {
+            return;
+        }
+        self.place_id = None;
+        self.reference_step_id = None;
+        self.pending = None;
+        self.votes = 0;
+        self.status = "uncertain".into();
+        self.detail =
+            "Matching the current screen. The previous room is no longer a live location estimate."
+                .into();
+    }
     /// Changes the location cursor only after geometric frame agreement.
     /// This cannot change completion or inventory.
     pub fn ground(&mut self, place: &str, step: &str, epoch: u64, at: u64, evidence: &str) {

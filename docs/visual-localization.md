@@ -76,3 +76,11 @@ See [localization validation](localization-validation.md) for the measured check
 The 3D camera-geometry tests include nonplanar points, camera rotation/translation and outliers. An actual 3D game playthrough remains an acceptance test; no metric SLAM, navigation mesh, collision map or universal game understanding is claimed.
 
 Primary implementation references: [DINOv2](https://github.com/facebookresearch/dinov2), [LightGlue/DISK support](https://github.com/cvg/LightGlue), [RetroArch command implementation](https://github.com/libretro/RetroArch/blob/master/command.c), and the [pinned Faxanadu disassembly](https://github.com/chipx86/faxanadu/tree/eb0b5277be1c43a3bfdeda2a73acbc4c33580f47).
+
+## Live map delivery and repeated-frame latency
+
+Prepared worlds and map descriptors use a bounded shared cache. SQLite document-version triggers invalidate only the affected reference, including writes from another connection or process; ordinary capture updates do not reparse the large indexes. Launched games request a capture each second. The matcher still consumes the latest queued frame, and cold model startup remains separate from warmed matching time.
+
+Map registration runs even when video-place retrieval has no candidate. Live spatial results must match the current capture session, crop epoch, progress epoch and coarse scene signature, and may trail the newest capture by at most three seconds. A changed room hides the old visual location while the next result is pending. Explicit player reports retain their separate provenance. The scene signature is a freshness veto, not a second localization method or proof of exact player position.
+
+`get_location_map` returns actual atlas pixels through the native image path, including for a selected map without tracking. A fresh geometric match produces a neighborhood crop with a red box around the visible camera area. `get_game_context` includes that image beside the current screenshot when a fresh marker exists, avoiding another tool round trip. Both the subscription backend and local coach retain image-tool outputs. The camera box is not the player's exact coordinate.

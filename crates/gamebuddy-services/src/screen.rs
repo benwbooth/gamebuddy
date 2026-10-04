@@ -259,7 +259,7 @@ pub fn capture_error(store: &Store, ticket: &Ticket, error: &str) -> Result<()> 
 
 // A small spatial signature detects room/dialogue changes without treating
 // every sprite animation as a new scene. This is a freshness veto, not recognition.
-fn frame_signature(image: &image::DynamicImage) -> Vec<u8> {
+pub(crate) fn frame_signature(image: &image::DynamicImage) -> Vec<u8> {
     image
         .resize_exact(24, 18, image::imageops::FilterType::Triangle)
         .to_rgb8()
@@ -277,6 +277,24 @@ fn same_scene(a: &[u8], b: &[u8]) -> bool {
 fn scene_matches(c: &Capture, scene: &Scene) -> bool {
     c.captured_at_ms.saturating_sub(scene.captured_at_ms) <= SCENE_FRAME_LAG_MS
         && same_scene(&c.frame_signature, &scene.frame_signature)
+}
+
+/// A location computed from an earlier room must not remain the live marker
+/// after a door transition or camera jump while the next match is pending.
+pub(crate) fn matches_latest(
+    store: &Store,
+    session: &str,
+    epoch: u64,
+    at: u64,
+    signature: &[u8],
+) -> Result<bool> {
+    Ok(store.get::<Capture>(KEY)?.is_some_and(|c| {
+        c.enabled
+            && c.ticket.session == session
+            && c.ticket.epoch == epoch
+            && c.captured_at_ms.saturating_sub(at) <= 3_000
+            && same_scene(&c.frame_signature, signature)
+    }))
 }
 
 fn metadata(c: &Capture, now: u64) -> Value {

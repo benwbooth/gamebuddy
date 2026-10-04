@@ -713,6 +713,9 @@ pub fn context(
         progress.epoch,
         now,
     );
+    if geometric_ready && spatial["observation"].is_null() {
+        tracker.invalidate_visual();
+    }
     if !geometric_ready
         && let Some(scene) = store.get::<PlaceTracker>(&format!("scene-{tracker_key}"))?
         && scene.session_id == tracker.session_id

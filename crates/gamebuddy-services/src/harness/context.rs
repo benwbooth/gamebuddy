@@ -10,6 +10,10 @@ pub(super) fn navigation(value: &Value) -> Value {
         "map":{
             "status":value["map"]["status"], "current_place":value["map"]["current_place"],
             "target_place":value["map"]["target_place"], "precision":value["map"]["precision"]
+            ,"selected_map_id":value["map"]["selected_map_id"],
+            "geometric_marker":value["map"]["geometric_marker"],
+            "observed_at_ms":value["spatial"]["observation"]["tracker"]["observed_at_ms"],
+            "image_tool":"get_location_map"
         },
         "spatial":{
             "preparation_status":value["spatial"]["preparation"]["status"],

@@ -301,6 +301,15 @@ pub fn load(store: &Store, guide: &Guide) -> Result<Option<World>> {
             && w.profile.background.validate().is_ok()
     }))
 }
+pub fn load_cached(store: &Store, guide: &Guide) -> Result<Option<std::sync::Arc<World>>> {
+    let world = store.get_cached::<World>(&key(guide))?;
+    let current_profile = profile(store, guide)?;
+    Ok(world.filter(|w| {
+        w.profile == current_profile
+            && w.source_signature == source_signature(guide)
+            && w.profile.background.validate().is_ok()
+    }))
+}
 pub fn candidates(
     world: &World,
     guide: &Guide,
@@ -952,7 +961,7 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
     let observation: Option<Value> = store.get(&format!("world-observation:{}", guide.id))?;
     let session = screen::status(store)?;
     let epoch = store.progress(guide)?.epoch;
-    let observation = observation.filter(|o| {
+    let mut observation = observation.filter(|o| {
         preparation["status"] == "ready"
             && o["guide_revision"].as_u64() == Some(guide.revision)
             && o["source_signature"].as_str() == Some(signature.as_str())
@@ -966,7 +975,22 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
             && o["tracker"]["observed_at_ms"]
                 .as_u64()
                 .is_some_and(|t| screen::now_ms().saturating_sub(t) < 15_000)
+            && serde_json::from_value::<Vec<u8>>(o["capture_signature"].clone())
+                .ok()
+                .is_some_and(|signature| {
+                    screen::matches_latest(
+                        store,
+                        o["tracker"]["session"].as_str().unwrap_or_default(),
+                        o["tracker"]["capture_epoch"].as_u64().unwrap_or_default(),
+                        o["tracker"]["observed_at_ms"].as_u64().unwrap_or_default(),
+                        &signature,
+                    )
+                    .unwrap_or(false)
+                })
     });
+    if let Some(value) = observation.as_mut().and_then(Value::as_object_mut) {
+        value.remove("capture_signature");
+    }
     let map_preparation: Option<Value> = store.get(&format!("world-map-status:{}", guide.id))?;
     let error: Option<String> = store.get(&format!("world-error:{}", guide.id))?;
     let message: Option<String> = store.get(&format!("world-message:{}", guide.id))?;
@@ -978,7 +1002,7 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
 /// Serve only images belonging to a known indexed place, through the existing
 /// native image bridge. Web widgets never receive arbitrary filesystem access.
 pub fn preview(store: &Store, guide: &Guide, id: &str) -> Result<String> {
-    let world = load(store, guide)?.context("Spatial references unavailable")?;
+    let world = load_cached(store, guide)?.context("Spatial references unavailable")?;
     let (room_id, view_id) = id
         .split_once(':')
         .map(|(r, v)| (r, Some(v)))
@@ -1256,7 +1280,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
     std::thread::spawn(move || {
         let run = || -> Result<()> {
             let store = Store::open(&root)?;
-            if let Some(world) = load(&store, &guide)? {
+            if let Some(world) = load_cached(&store, &guide)? {
                 store.put(
                     &format!("world-message:{}", guide.id),
                     &"Starting visual tracking…",
@@ -1327,7 +1351,8 @@ pub fn observe(
         progress.epoch == capture_progress_epoch,
         "Discard queued frame: player progress changed after capture"
     );
-    let Some(world) = load(store, guide)? else {
+    let started = std::time::Instant::now();
+    let Some(world) = load_cached(store, guide)? else {
         return Ok(json!({"status":"not_prepared"}));
     };
     if world.status != "ready" {
@@ -1342,11 +1367,13 @@ pub fn observe(
     let image = image::load_from_memory(
         &base64::engine::general_purpose::STANDARD.decode(&snapshot.jpeg)?,
     )?;
+    let signature = screen::frame_signature(&image);
     let mut engine = Engine::for_world(store, &world, "live")?;
     ensure!(
         engine.encoder == world.encoder,
         "Spatial model changed; rebuild the world index"
     );
+    let loaded_ms = started.elapsed().as_millis();
     let mut result = locate(
         &world,
         guide,
@@ -1362,15 +1389,21 @@ pub fn observe(
     result["guide_revision"] = json!(guide.revision);
     result["source_signature"] = json!(world.source_signature);
     result["profile"] = json!(world.profile);
+    result["capture_signature"] = json!(signature);
     tracker.capture_epoch = snapshot.ticket.epoch;
     result["tracker"]["capture_epoch"] = json!(snapshot.ticket.epoch);
-    // Atlas geometry is independent of video timestamp / task ambiguity.
-    if tracker.status == "tracked" || tracker.status == "candidate" {
+    let matched_ms = started.elapsed().as_millis();
+    // Atlas geometry is independent of walkthrough retrieval. A missing video
+    // candidate must not suppress a valid match to the actual map pixels.
+    {
         match crate::spatial_maps::locate(store, guide, &world, &image) {
             Ok(marker) => result["map_registration"] = json!(marker),
             Err(error) => result["map_registration_error"] = json!(error.to_string()),
         }
     }
+    result["timing"] = json!({"load_and_start_ms":loaded_ms,
+        "reference_match_ms":matched_ms.saturating_sub(loaded_ms),
+        "map_match_ms":started.elapsed().as_millis().saturating_sub(matched_ms)});
     ensure!(
         screen::ticket(store, &snapshot.ticket.session)? == snapshot.ticket
             && store.progress(guide)?.epoch == progress.epoch
@@ -1475,6 +1508,52 @@ fn ground_observation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_new_room_hides_the_previous_live_map_before_the_next_match() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# A")?;
+        store.save_guide(&guide)?;
+        let ticket = screen::start(&store, "Game", true)?;
+        let path = dir.path().join("frame.png");
+        image::RgbImage::from_pixel(96, 72, image::Rgb([200, 20, 20])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "test")?;
+        let snapshot = screen::snapshot(&store)?;
+        let decoded = image::load_from_memory(&base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &snapshot.jpeg,
+        )?)?;
+        store.put(
+            &format!("world-status:{}", guide.id),
+            &json!({"status":"ready"}),
+        )?;
+        store.put(&format!("world-observation:{}", guide.id), &json!({
+            "guide_revision":guide.revision,"source_signature":source_signature(&guide),"profile":Profile::default(),
+            "capture_signature":screen::frame_signature(&decoded),
+            "tracker":{"session":ticket.session,"capture_epoch":ticket.epoch,"epoch":0,"observed_at_ms":snapshot.captured_at_ms},
+            "map_registration":{"map_id":"previous-room"}}))?;
+        assert_eq!(
+            context(&store, &guide)?["observation"]["map_registration"]["map_id"],
+            "previous-room"
+        );
+        image::RgbImage::from_pixel(96, 72, image::Rgb([20, 20, 200])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "test")?;
+        assert!(context(&store, &guide)?["observation"].is_null());
+        let mut tracker = gamebuddy_core::PlaceTracker::for_session(ticket.session);
+        tracker.ground_place("previous-room", 0, snapshot.captured_at_ms, "old pixels");
+        tracker.invalidate_visual();
+        assert!(tracker.place_id.is_none());
+        tracker.report(
+            "player-reported-room",
+            "step-1",
+            0,
+            snapshot.captured_at_ms,
+            "I'm here",
+        );
+        tracker.invalidate_visual();
+        assert_eq!(tracker.place_id.as_deref(), Some("player-reported-room"));
+        Ok(())
+    }
     #[test]
     fn queued_frames_cannot_cross_a_player_progress_edit() -> Result<()> {
         let directory = tempfile::tempdir()?;

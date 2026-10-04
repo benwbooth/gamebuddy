@@ -9,6 +9,12 @@
   let cueWaitingAt=0,cueRetried=false;
   const assistantTurns=new Set();
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value,at:Date.now()}));
+  function updatePlayback(){
+    const allowed=!outputMuted&&!playerSpeaking&&replyUntil>Date.now();
+    if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
+    speaker.muted=!allowed;
+    return allowed;
+  }
   // Frameless voice can generate audio without a player turn. Enforce playback
   // locally: a real VAD turn or an explicit app cue grants one reply. Its
   // native turn completion, not a word-count timer, determines when it ends.
@@ -18,6 +24,7 @@
     cueWaitingAt=kind==='cue'?Date.now():0;cueRetried=false;
     emit('reply-permit',kind);
     emit('reply-pending',true);
+    updatePlayback();
   }
   function playerSpeech(active){
     localSpeech=active;
@@ -30,6 +37,7 @@
     if(active!==playerSpeaking)emit('input-active',active);
     playerSpeaking=active;
     if(!active&&replyUntil)replyUntil=Date.now()+90000;
+    updatePlayback();
   }
   function setBackendBusy(active){
     // A handoff may acknowledge the question, pause for tools, then answer.
@@ -65,6 +73,7 @@
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
       replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
+      updatePlayback();
     }
     if(v.type==='error')emit('error',v.error?.message||'Voice transport error');
   }
@@ -86,9 +95,7 @@
       else if(now-cueWaitingAt>=6000&&!cueRetried){cueRetried=true;emit('cue-retry',true)}
     }
     if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&lastReplyAudio&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
-    const allowed=!outputMuted&&!playerSpeaking&&replyUntil>now;
-    if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
-    speaker.muted=!allowed;
+    const allowed=updatePlayback();
     const audible=allowed&&rms>0.002;
     if(audible){lastReplyAudio=now;awaitingAnswer=false;replyUntil=now+90000;cueWaitingAt=0}
     // Chromium's acoustic echo cancellation processes the microphone before
@@ -110,11 +117,12 @@
     const own=generation;
     if(meterTick%250===0&&peer)peer.getStats().then(stats=>{
       if(own!==generation)return;
-      const summary=[];stats.forEach(s=>{if((s.type==='inbound-rtp'||s.type==='outbound-rtp')&&s.kind==='audio')summary.push({type:s.type,packets:s.packetsSent??s.packetsReceived,bytes:s.bytesSent??s.bytesReceived,concealed:s.concealedSamples})});emit('transport-stats',summary);
+      const summary=[];stats.forEach(s=>{if((s.type==='inbound-rtp'||s.type==='outbound-rtp')&&s.kind==='audio')summary.push({type:s.type,packets:s.packetsSent??s.packetsReceived,bytes:s.bytesSent??s.bytesReceived,concealed:s.concealedSamples,jitterDelay:s.jitterBufferDelay,jitterEmitted:s.jitterBufferEmittedCount})});emit('transport-stats',summary);
     }).catch(()=>{});
   }
   function closeMic(){captureGeneration++;pendingOverlapUntil=0;confirmedInputUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
-  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectMeter(outputMeter);outputMeter=null;replyUntil=0;lastReplyAudio=0;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;playbackAllowed=false;sessionReady=false;speaker.muted=true;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;speaker.srcObject=null}
+  function disconnectOutput(){disconnectMeter(outputMeter);outputMeter=null}
+  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;playbackAllowed=false;sessionReady=false;speaker.muted=true;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;speaker.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open'||!sessionReady)return;
@@ -168,7 +176,15 @@
         meterTimer=setInterval(sampleMeters,20);
         events=pc.createDataChannel('oai-events');
         events.onmessage=e=>{if(own!==generation)return;try{wire(JSON.parse(e.data))}catch{}};
-        pc.ontrack=e=>{if(own!==generation)return;const stream=e.streams[0]||new MediaStream([e.track]);disconnectMeter(outputMeter);outputMeter=meter(stream);document.getElementById('speaker').srcObject=stream;document.getElementById('speaker').play().catch(err=>{if(own===generation)emit('error',err.message)})};
+        pc.ontrack=e=>{
+          if(own!==generation)return;
+          const stream=e.streams[0]||new MediaStream([e.track]);disconnectOutput();
+          // Retain the onset while the local speech detector releases its
+          // final 200 ms. Keep native WebRTC playout and echo cancellation.
+          if(e.receiver && 'jitterBufferTarget' in e.receiver){e.receiver.jitterBufferTarget=300;emit('playout-buffer',300)}
+          outputMeter=meter(stream);speaker.srcObject=stream;updatePlayback();
+          speaker.play().catch(err=>{if(own===generation)emit('error',err.message)});
+        };
         pc.onconnectionstatechange=()=>{if(own===generation)emit('connection',pc.connectionState)};
         if(capture)await setMicrophone(true,deviceName);
         if(own!==generation)return;
@@ -178,7 +194,7 @@
       }catch(e){if(own===generation){stop();emit('error',stage+': '+e.name+': '+e.message)}}
     },
     async answer(sdp){const pc=peer,own=generation;try{if(pc)await pc.setRemoteDescription({type:'answer',sdp})}catch(e){if(own===generation)emit('error',e.message)}},
-    muteOutput(muted){outputMuted=muted;speaker.muted=muted||playerSpeaking||replyUntil<=Date.now()}
+    muteOutput(muted){outputMuted=muted;updatePlayback()}
   };
 })();
 </script></body></html>

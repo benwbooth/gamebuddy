@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
+mod cached;
 mod conversation;
 
 pub fn data_dir() -> Result<PathBuf> {
@@ -28,6 +29,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS guides(id TEXT PRIMARY KEY, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS documents(key TEXT PRIMARY KEY, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, guide_id TEXT NOT NULL, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, kind TEXT NOT NULL, body TEXT NOT NULL);")?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS guide_revisions(guide_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, summary TEXT NOT NULL, PRIMARY KEY(guide_id,revision));")?;
+        cached::initialize(&connection)?;
         conversation::initialize(&connection)?;
         Ok(Self { root, connection })
     }

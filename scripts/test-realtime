@@ -42,6 +42,10 @@ JS
 player=$!
 for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
+  export GAMEBUDDY_TEST_ONSET_WAV="$runtime_dir/onset.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ONSET_WAV" 'Please say this exact sentence once: Amber bridges shimmer at dawn, and blue rivers wind through quiet valleys beneath the morning sun.'
+fi
 if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
   export GAMEBUDDY_TEST_STORY_WAV="$runtime_dir/story.wav" GAMEBUDDY_TEST_INTERRUPT_WAV="$runtime_dir/interrupt.wav" GAMEBUDDY_TEST_STOP_WAV="$runtime_dir/stop.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STORY_WAV" 'Tell me a five paragraph forest adventure at least two hundred and fifty words long ending with the exact words the silver lantern glows.'
@@ -71,6 +75,9 @@ for chunk in "$runtime_dir"/heard-*.wav; do
 done
 rg -qi '\bred\b' "$runtime_dir/heard.txt"
 rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
+  rg -qi 'amber bridges' "$runtime_dir/heard.txt"
+fi
 if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
   rg -qi 'silver lantern glows' "$runtime_dir/heard.txt"
 fi

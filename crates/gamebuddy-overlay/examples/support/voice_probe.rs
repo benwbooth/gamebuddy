@@ -460,6 +460,27 @@ fn realtime(
     thread::sleep(Duration::from_secs(3)); // allow the OSD's regular store poll
     screenshot("realtime-widget.png")?;
     quiet()?;
+    if std::env::var_os("GAMEBUDDY_TEST_CAPTIONS").is_some() {
+        let before = std::fs::read_to_string(&log)?.len();
+        play_player(&std::env::var("GAMEBUDDY_TEST_ONSET_WAV")?)?;
+        wait("live captions arrive before the answer completes", || {
+            let text = std::fs::read_to_string(&log)?;
+            let tail = &text[before..];
+            Ok(tail.contains("GAMEBUDDY_CAPTION_UPDATE") && tail.contains("final=false"))
+        })?;
+        thread::sleep(Duration::from_millis(450));
+        screenshot("realtime-live-captions.png")?;
+        wait("exact onset phrase is spoken", || {
+            Ok(store
+                .conversation_messages("Faxanadu", "amber bridges", None, 10)?
+                .iter()
+                .any(|m| m.role == "assistant"))
+        })?;
+        quiet()?;
+        println!(
+            "GAMEBUDDY_CAPTIONS_TEST_PASS incremental subtitles before final transcript; verify Amber bridges in captured audio"
+        );
+    }
     if std::env::var_os("GAMEBUDDY_TEST_RESPONSIVE").is_some() {
         responsive(&store, &log)?;
         quiet()?;

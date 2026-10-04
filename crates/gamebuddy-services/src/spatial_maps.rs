@@ -169,7 +169,7 @@ pub fn locate(
     if world.profile.dimension != Dimension::TwoD {
         return Ok(None);
     }
-    let Some(index) = store.get::<Index>(&format!("spatial-maps:{}", guide.id))? else {
+    let Some(index) = store.get_cached::<Index>(&format!("spatial-maps:{}", guide.id))? else {
         return Ok(None);
     };
     let mut engine = Engine::learned(store, Dimension::TwoD, "live")?;

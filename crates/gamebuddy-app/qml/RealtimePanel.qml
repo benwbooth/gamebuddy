@@ -31,8 +31,19 @@ WebEngineView {
     property bool returningPlayer: false
     property string voiceGame: ""
     property string pendingCue: ""
+    property string captionText: ""
+    property bool captionStreaming: false
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
-    function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";transport.reset_speech()}
+    function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
+    function assistantTranscript(text, complete) {
+        // The transport can produce unsolicited speech. Captions follow the
+        // same requested reply as playback, including when output is muted.
+        if(userSpeaking || (!waitingForReply && !assistantSpeaking && !captionStreaming))return
+        if(complete){captionText=text;captionStreaming=false}
+        else {captionText=(captionStreaming?captionText:"")+text;captionStreaming=true}
+        if(trace && captionText.length)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" final="+complete)
+        if(captionText.length)panel.answer(captionText)
+    }
     function updateStatus() {
         if(!started || !connected || failed)return
         status=userSpeaking?"Listening…":assistantSpeaking?(capturing?"Speaking · you can interrupt":"Speaking · microphone off"):
@@ -145,9 +156,10 @@ WebEngineView {
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
+            else if(event.method==="thread/realtime/transcript/delta" && p.role==="assistant")panel.assistantTranscript(p.delta || "",false)
             else if(event.method==="thread/realtime/transcript/done") {
                 if(p.role==="user")panel.transcript(p.text)
-                else if(p.role==="assistant")panel.answer(p.text)
+                else if(p.role==="assistant")panel.assistantTranscript(p.text || "",true)
             }
         }
     }
@@ -184,7 +196,7 @@ WebEngineView {
         }
         else if(event.type==="input-active"){
             userSpeaking=event.value
-            if(userSpeaking)pendingCue=""
+            if(userSpeaking){pendingCue="";captionText="";captionStreaming=false}
             transport.player_speech(userSpeaking)
             if(userSpeaking)updateContext()
         }

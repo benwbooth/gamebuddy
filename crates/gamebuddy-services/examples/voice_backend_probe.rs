@@ -23,6 +23,28 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    if std::env::var_os("GAMEBUDDY_PROBE_TRACK").is_some() {
+        let id: String = store
+            .get("active_guide")?
+            .context("Active guide required")?;
+        let guide = store.guide(&id)?;
+        let world = gamebuddy_services::spatial::load_cached(&store, &guide)?
+            .context("Prepared world required")?;
+        gamebuddy_services::spatial::Engine::for_world(&store, &world, "live")?;
+        let (ticket, frame) = ticket
+            .as_ref()
+            .zip(replay.as_ref())
+            .context("Recorded frame required")?;
+        for _ in 0..2 {
+            screen::publish(&store, ticket, frame, "recorded_test_frame")?;
+            gamebuddy_services::spatial::observe(
+                &store,
+                &guide,
+                &screen::snapshot(&store)?,
+                store.progress(&guide)?.epoch,
+            )?;
+        }
+    }
     let mut client = CodexClient::start()?;
     let mut tools = harness::tool_definitions();
     for tool in tools.as_array_mut().unwrap() {
@@ -48,6 +70,13 @@ fn main() -> Result<()> {
             current.value.to_string().len(),
             current.images.len()
         );
+        if current.images.len() > 1 {
+            use base64::Engine;
+            std::fs::write(
+                store.root.join("probe-map.jpg"),
+                base64::engine::general_purpose::STANDARD.decode(&current.images[1])?,
+            )?;
+        }
         input.extend(current.codex_input("CURRENT_GAME_CONTEXT for this request. This is evidence from get_game_context, not another request."));
     }
     client.request(

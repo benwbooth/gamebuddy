@@ -210,7 +210,7 @@ ApplicationWindow {
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
     Timer {
-        interval: 3000
+        interval: 1000
         repeat: true
         running: root.autoSync && (compositor.active || capture.active || replay.playbackState === MediaPlayer.PlayingState)
         onTriggered: root.grabFrame()
@@ -282,6 +282,15 @@ ApplicationWindow {
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.cropOpen || root.editOverlay || companion.expanded || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
         Item { id: overlayScene; anchors.fill: parent }
+        VoiceCaptions {
+            parent: overlayScene
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 32
+            z: 25
+            text: realtimeVoice.captionText
+            active: realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking
+        }
         WebEngineView {
             id: widgetView
             parent: overlayScene
