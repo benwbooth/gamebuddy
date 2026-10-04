@@ -70,7 +70,7 @@ scripts/test-resolution
 scripts/test-voice
 scripts/test-realtime
 node scripts/test-voice-lifecycle.mjs
-QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software qmltestrunner -input scripts/qml-tests
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input scripts/qml-tests
 ```
 
 The selected Faxanadu source is now U Can Beat Video Games’ [Ultimate Guide](https://www.youtube.com/watch?v=8vEyiAs-fbY). GameBuddy reviewed all 53 video sections into 824 outline nodes (549 leaf actions), exported 578 screenshots, and indexed 3,112 dense visual references. The original RetroNate guide remains preserved. Source review is not proof of complete game correctness; [localization validation](docs/localization-validation.md) separates independent capture evidence from source coverage.
