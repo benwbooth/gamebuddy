@@ -14,6 +14,7 @@ pub mod ffi {
         #[qproperty(QString, settings_json)]
         #[qproperty(QString, message)]
         #[qproperty(QString, answer)]
+        #[qproperty(QString, chat_error)]
         #[qproperty(bool, busy)]
         #[qproperty(bool, preparing)]
         #[qproperty(bool, matching)]
@@ -60,7 +61,7 @@ pub mod ffi {
         #[qinvokable]
         fn compare_vision(self: Pin<&mut Buddy>);
         #[qinvokable]
-        fn ask(self: Pin<&mut Buddy>, question: QString);
+        fn ask(self: Pin<&mut Buddy>, question: QString) -> bool;
         #[qinvokable]
         fn confirm_location(self: Pin<&mut Buddy>);
         #[qinvokable]
@@ -118,6 +119,7 @@ pub struct BuddyRust {
     settings_json: QString,
     message: QString,
     answer: QString,
+    chat_error: QString,
     busy: bool,
     preparing: bool,
     matching: bool,
@@ -146,6 +148,7 @@ impl Default for BuddyRust {
             settings_json: QString::from("{}"),
             message: QString::from("Ready to start"),
             answer: QString::default(),
+            chat_error: QString::default(),
             busy: false,
             preparing: false,
             matching: false,
@@ -191,7 +194,7 @@ fn argument(name: &str) -> Option<String> {
 enum Outcome {
     Guide(Guide),
     Message(String),
-    Answer(String),
+    Answer(Result<String>),
     Vision(String, services::screen::Ticket),
     Voice(String, String),
     VoiceCommand(String, i32),
@@ -422,7 +425,10 @@ impl ffi::Buddy {
             match result {
                 Ok(Outcome::Guide(g))=>{let count=g.steps.len();object.as_mut().use_guide(g);object.as_mut().set_message(q(format!("Imported {count} guide nodes. Source coverage is shown in the guide.")));},
                 Ok(Outcome::Message(m))=>object.as_mut().set_message(q(m)),
-                Ok(Outcome::Answer(a))=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Answer ready"));},
+                Ok(Outcome::Answer(result))=>{match result {
+                    Ok(a)=>{object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Answer ready"));},
+                    Err(e)=>{let error=format!("{e:#}");object.as_mut().set_chat_error(q(&error));object.as_mut().set_message(q(error));},
+                }},
                 Ok(Outcome::Vision(a,ticket))=>{
                     if Store::open(&object.rust().root).and_then(|s|services::screen::capture_ticket(&s,&ticket.session)).is_ok_and(|current|current==ticket){
                         object.as_mut().set_answer(q(a));object.as_mut().set_message(q("Visual comparison ready. Confirm a location when the evidence is sufficient."));
@@ -995,19 +1001,31 @@ impl ffi::Buddy {
             },
         );
     }
-    pub fn ask(self: Pin<&mut Self>, question: QString) {
+    pub fn ask(mut self: Pin<&mut Self>, question: QString) -> bool {
+        let question = question.to_string().trim().to_owned();
+        if *self.busy() || question.is_empty() {
+            return false;
+        }
+        let game = self.rust().game.clone();
+        self.as_mut().set_transcript(q(&question));
+        self.as_mut().set_answer(q(""));
+        self.as_mut().set_chat_error(q(""));
         self.background(
             "Thinking with your selected reasoning model…",
             move |root| {
-                let store = Store::open(root)?;
-                let settings = store.get::<Settings>("settings")?.unwrap_or_default();
-                Ok(Outcome::Answer(services::harness::coach(
-                    &HttpProvider::new(settings.reasoning)?,
-                    &store,
-                    &question.to_string(),
-                )?))
+                Ok(Outcome::Answer((|| {
+                    let store = Store::open(root)?;
+                    let settings = store.get::<Settings>("settings")?.unwrap_or_default();
+                    services::harness::chat(
+                        &HttpProvider::new(settings.reasoning)?,
+                        &store,
+                        &game,
+                        &question,
+                    )
+                })()))
             },
         );
+        true
     }
     fn change_progress(mut self: Pin<&mut Self>, kind: &str) {
         if *self.busy() {
@@ -1139,7 +1157,12 @@ impl ffi::Buddy {
             let _ = std::fs::remove_file(path);
         }
     }
-    pub fn voice_turn(self: Pin<&mut Self>, path: QString) {
+    pub fn voice_turn(mut self: Pin<&mut Self>, path: QString) {
+        if *self.busy() {
+            return;
+        }
+        self.as_mut().set_chat_error(q(""));
+        let game = self.rust().game.clone();
         self.background(
             "Listening to your recording… (first use downloads the local speech model)",
             move |root| {
@@ -1157,16 +1180,13 @@ impl ffi::Buddy {
                 let store = Store::open(root)?;
                 let settings = store.get::<Settings>("settings")?.unwrap_or_default();
                 let provider = HttpProvider::new(settings.reasoning)?;
-                let answer = if store.get::<String>("active_guide")?.is_some() {
-                    services::harness::coach(&provider, &store, &transcript)?
-                } else {
-                    services::ask(&provider, None, &Progress::default(), &transcript)?
-                };
+                let answer = services::harness::chat(&provider, &store, &game, &transcript)?;
                 Ok(Outcome::Voice(transcript, answer))
             },
         );
     }
     pub fn realtime_transcript(mut self: Pin<&mut Self>, text: QString) {
+        self.as_mut().set_chat_error(q(""));
         if let Some(action) = services::voice::overlay_command(&text.to_string()) {
             self.as_mut().voice_command(action);
         }

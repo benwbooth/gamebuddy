@@ -43,6 +43,11 @@ Item {
             y = Math.max(0, Math.min(parent.height-height, y))
         }
     }
+    function sendMessage() {
+        const message = chatInput.text.trim()
+        if (!message || buddy.busy || recording || voiceTurnPending) return
+        if (buddy.ask(message)) chatInput.clear()
+    }
     function startTalking() {
         if(realtimeEnabled){if(!voice.active)voice.toggle_listening();return}
         if (buddy.busy || recording || voiceTurnPending) return
@@ -190,7 +195,24 @@ Item {
             Column {
                 width: parent.width; spacing: 10
                 Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 14; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { width: parent.width; text: buddy.answer || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: "#e3edf5"; font.pixelSize: 16; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { objectName: "companionChatReply"; width: parent.width; text: buddy.chat_error || buddy.answer || (buddy.busy && buddy.transcript ? "Thinking…" : "") || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: buddy.chat_error ? "#f6b7a5" : "#e3edf5"; font.pixelSize: 16; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            GbField {
+                id: chatInput
+                objectName: "companionChatInput"
+                Layout.fillWidth: true
+                placeholderText: "Message GameBuddy…"
+                Accessible.name: "Message GameBuddy"
+                onAccepted: companion.sendMessage()
+            }
+            GbButton {
+                objectName: "companionChatSend"
+                text: "Send"
+                enabled: chatInput.text.trim().length > 0 && !buddy.busy && !companion.recording && !companion.voiceTurnPending
+                onClicked: companion.sendMessage()
             }
         }
         RowLayout {

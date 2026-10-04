@@ -39,6 +39,8 @@ Without `--launch`, the desktop companion uses **Share game** for OS screen shar
 
 With Codex live voice selected, GameBuddy connects automatically at game launch, introduces itself, and offers brief cues when the next action is stable. **Hands-free** is on by default: if your mic is unmuted, just speak—no click or mute toggle needed. A muted mic waits for unmute. The local speech backend also starts listening automatically. **Stop listening** stops capture until you resume; **Voice off** disables spoken output; **Stop** pauses the voice session. Disable **Hands-free** or launch with `--no-listen` for manual activation. Pause to submit a speech turn; mute to stop capture. Say **“Open the guide”** or **“Arrange widgets”** to interact with the overlay. Hold-to-talk remains available. See [voice controls and platform coverage](docs/voice-input.md).
 
+Expand the companion and type into **Message GameBuddy…**, then press **Enter** or **Send**. Text uses your selected reasoning model, the current screen, and the same game conversation history and guide tools as composed voice. You can chat while a guide is preparing; guide edits become available once it is ready. Replies and any connection errors appear above the input. **Escape** returns keyboard input to the game.
+
 For local inference, Ollama must be running with the selected model installed. FFmpeg, yt-dlp and whisper.cpp are included in the Nix shell. Local transcription downloads the English whisper.cpp base model (~142 MB) on first use. Set `GAMEBUDDY_WHISPER_MODEL` to use an existing model and `GAMEBUDDY_WHISPER_CLI` to override its executable. The local speech option uses composed turns and pauses capture during spoken replies. The Codex live-voice option streams audio over WebRTC instead.
 
 Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.local/share/GameBuddy`). Override with `--data-dir` or `GAMEBUDDY_DATA_DIR`. Configure models in Options; keys are read from named environment variables.
@@ -68,6 +70,7 @@ scripts/test-resolution
 scripts/test-voice
 scripts/test-realtime
 node scripts/test-voice-lifecycle.mjs
+QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software qmltestrunner -input scripts/qml-tests
 ```
 
 The selected Faxanadu source is now U Can Beat Video Games’ [Ultimate Guide](https://www.youtube.com/watch?v=8vEyiAs-fbY). GameBuddy reviewed all 53 video sections into 824 outline nodes (549 leaf actions), exported 578 screenshots, and indexed 3,112 dense visual references. The original RetroNate guide remains preserved. Source review is not proof of complete game correctness; [localization validation](docs/localization-validation.md) separates independent capture evidence from source coverage.

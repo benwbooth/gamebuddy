@@ -129,7 +129,7 @@ ApplicationWindow {
         buddy: root.buddyObject; voice: voice; session: root.session
         enabledBackend: root.realtimeEnabled; spokenReplies: companion.spokenReplies
         automaticSession: compositor.active
-        localConversationActive: root.voiceTurnRunning || root.queuedVoice.length>0 || companion.recording || companion.pendingRecording || speech.state===TextToSpeech.Speaking
+        localConversationActive: buddy.busy || root.voiceTurnRunning || root.queuedVoice.length>0 || companion.recording || companion.pendingRecording || speech.state===TextToSpeech.Speaking
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
@@ -143,7 +143,7 @@ ApplicationWindow {
     Timer {
         interval: 40; repeat: true; running: true
         onTriggered: {
-            const path = voice.poll(buddy.voice_directory(), root.voiceTurnRunning || root.queuedVoice.length > 0,
+            const path = voice.poll(buddy.voice_directory(), buddy.busy || root.voiceTurnRunning || root.queuedVoice.length > 0,
                 speech.state !== TextToSpeech.Ready && speech.state !== TextToSpeech.Error,
                 companion.recording || companion.pendingRecording, root.realtimeEnabled)
             if (path.length) root.queuedVoice = path
@@ -484,7 +484,7 @@ ApplicationWindow {
                             GbButton { text: "Ask"; accent: true; enabled: !buddy.busy && question.text.trim().length > 0; onClicked: buddy.ask(question.text) }
                             GbButton { text: "Read answer"; enabled: buddy.answer.length > 0; onClicked: speech.say(buddy.answer) }
                         }
-                        Text { text: buddy.answer || "Ask for guidance, add a goal, choose a reference, or revise the outline. Hold the companion microphone button to speak."; color: buddy.answer ? root.ink : root.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; textFormat: Text.PlainText; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24 }
+                        Text { text: buddy.chat_error || buddy.answer || "Ask for guidance, add a goal, choose a reference, or revise the outline. Hold the companion microphone button to speak."; color: buddy.chat_error ? "#f6b7a5" : buddy.answer ? root.ink : root.muted; font.pixelSize: 13; wrapMode: Text.WordWrap; textFormat: Text.PlainText; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24 }
                     }
                 }
                 // Walkthrough library
