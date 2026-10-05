@@ -7,6 +7,7 @@ use std::{
 
 #[derive(Default)]
 pub struct PlayerInput {
+    utterance: u64,
     speaking: bool,
     last_change: Option<Instant>,
     started: Option<Instant>,
@@ -20,6 +21,7 @@ impl PlayerInput {
                 now.saturating_duration_since(last) > Duration::from_millis(1200)
             })
         {
+            self.utterance += 1;
             // The browser's echo check can confirm speech just after its first
             // transcript fragment arrives on the app-server connection.
             self.started = now.checked_sub(Duration::from_millis(500));
@@ -28,6 +30,9 @@ impl PlayerInput {
             self.last_change = Some(now)
         }
         self.speaking = speaking;
+    }
+    pub fn utterance(&self) -> u64 {
+        self.utterance
     }
     pub fn append(&mut self, text: &str, now: Instant) {
         self.chunks.push_back((now, text.to_owned()));
@@ -79,10 +84,16 @@ mod tests {
         let mut input = PlayerInput::default();
         let now = Instant::now();
         input.activity(true, now);
+        assert_eq!(input.utterance(), 1);
         input.append("What color is it?", now);
         input.activity(false, now + Duration::from_secs(2));
         assert!(!input.quiet(now + Duration::from_millis(2250)));
         input.activity(true, now + Duration::from_millis(2350));
+        assert_eq!(
+            input.utterance(),
+            1,
+            "a follow-up clause is the same request"
+        );
         input.append(" Put it in a widget.", now + Duration::from_secs(3));
         input.activity(false, now + Duration::from_secs(4));
         assert!(input.quiet(now + Duration::from_millis(4500)));
@@ -91,6 +102,11 @@ mod tests {
             "What color is it? Put it in a widget."
         );
         input.activity(true, now + Duration::from_secs(8));
+        assert_eq!(
+            input.utterance(),
+            2,
+            "an interruption supersedes the old request"
+        );
         input.append("Stop that. New question.", now + Duration::from_secs(8));
         assert_eq!(
             input.text(now + Duration::from_secs(9)),

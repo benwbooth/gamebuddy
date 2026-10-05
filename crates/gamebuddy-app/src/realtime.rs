@@ -244,7 +244,10 @@ impl ffi::RealtimeVoice {
                 client.request_with_notifications("thread/realtime/start", json!({"threadId":thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":gamebuddy_services::voice::prompts::SPEAKER,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
                 let mut sequence = 1000;
                 let mut context_requests = std::collections::HashSet::new();
+                let mut interrupt_requests = std::collections::HashSet::new();
                 let mut context_turn = None;
+                let mut reasoning_turn = None;
+                let mut reasoning_input = None;
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
@@ -272,8 +275,14 @@ impl ffi::RealtimeVoice {
                     while let Some(event) = client.poll()? {
                         if event["method"] == "turn/started" {
                             context_turn = Some(event["params"]["turn"]["id"].clone());
+                            reasoning_turn = context_turn.clone();
+                            reasoning_input = None;
                         }
                         if event["method"] == "turn/completed" {
+                            if reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"]) {
+                                reasoning_turn = None;
+                                reasoning_input = None;
+                            }
                             if context_turn.as_ref() == Some(&event["params"]["turn"]["id"]) {
                                 context_turn = None
                             }
@@ -286,6 +295,20 @@ impl ffi::RealtimeVoice {
                             }
                             pending_tools
                                 .retain(|(tool, _)| tool["params"]["turnId"] != *completed);
+                        }
+                        if event["id"]
+                            .as_u64()
+                            .is_some_and(|id| interrupt_requests.remove(&id))
+                        {
+                            if std::env::args().any(|a| a == "--voice-trace") {
+                                eprintln!(
+                                    "GAMEBUDDY_VOICE_BACKEND_INTERRUPT success={}",
+                                    event.get("error").is_none()
+                                );
+                            }
+                            // Completion can race interruption; a finished old
+                            // turn is not a failure of the new voice session.
+                            continue;
                         }
                         if event["id"]
                             .as_u64()
@@ -319,11 +342,24 @@ impl ffi::RealtimeVoice {
                             }
                         }
                     }
-                    let (quiet, request) = {
+                    let (quiet, request, utterance) = {
                         let input = input.lock().unwrap();
                         let now = Instant::now();
-                        (input.quiet(now), input.text(now))
+                        (input.quiet(now), input.text(now), input.utterance())
                     };
+                    // A late handoff must not deliver the previous answer over
+                    // a new question. Cancel as input begins, before its new
+                    // delegation needs the backend; pauses inside one request
+                    // keep the same utterance identity.
+                    if reasoning_input.is_some_and(|prior| prior != utterance)
+                        && let Some(turn_id) = &reasoning_turn
+                    {
+                        sequence += 1;
+                        interrupt_requests.insert(sequence);
+                        client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
+                        reasoning_input = None;
+                        context_turn = None;
+                    }
                     if quiet {
                         // Native delegation may begin midway through a request.
                         // Supply the finished utterance and current image before
@@ -341,6 +377,7 @@ impl ffi::RealtimeVoice {
                                 .is_some_and(|g| g.eq_ignore_ascii_case(&game))
                         {
                             sequence += 1;
+                            reasoning_input = Some(utterance);
                             context_requests.insert(sequence);
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(

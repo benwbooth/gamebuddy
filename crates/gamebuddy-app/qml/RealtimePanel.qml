@@ -38,7 +38,7 @@ WebEngineView {
     function assistantTranscript(text, complete) {
         // The transport can produce unsolicited speech. Captions follow the
         // same requested reply as playback, including when output is muted.
-        if(userSpeaking || (!waitingForReply && !assistantSpeaking && !captionStreaming))return
+        if(!waitingForReply && !assistantSpeaking && !captionStreaming)return
         if(complete){captionText=text;captionStreaming=false}
         else {captionText=(captionStreaming?captionText:"")+text;captionStreaming=true}
         if(trace && captionText.length)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" final="+complete)
@@ -196,7 +196,7 @@ WebEngineView {
         }
         else if(event.type==="input-active"){
             userSpeaking=event.value
-            if(userSpeaking){pendingCue="";captionText="";captionStreaming=false}
+            if(userSpeaking){pendingCue="";if(!captionStreaming)captionText=""}
             transport.player_speech(userSpeaking)
             if(userSpeaking)updateContext()
         }

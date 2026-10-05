@@ -470,15 +470,18 @@ fn realtime(
         })?;
         thread::sleep(Duration::from_millis(450));
         screenshot("realtime-live-captions.png")?;
-        wait("exact onset phrase is spoken", || {
-            Ok(store
-                .conversation_messages("Faxanadu", "amber bridges", None, 10)?
-                .iter()
-                .any(|m| m.role == "assistant"))
-        })?;
+        wait(
+            "onset phrase is spoken (recognition may singularize elephant)",
+            || {
+                Ok(store
+                    .conversation_messages("Faxanadu", "purple elephant", None, 10)?
+                    .iter()
+                    .any(|m| m.role == "assistant"))
+            },
+        )?;
         quiet()?;
         println!(
-            "GAMEBUDDY_CAPTIONS_TEST_PASS incremental subtitles before final transcript; verify Amber bridges in captured audio"
+            "GAMEBUDDY_CAPTIONS_TEST_PASS incremental subtitles before final transcript; verify Purple elephants in captured audio"
         );
     }
     if std::env::var_os("GAMEBUDDY_TEST_RESPONSIVE").is_some() {
