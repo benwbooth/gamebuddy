@@ -328,6 +328,13 @@ fn inside(opts: Options) -> Result<i32> {
         .args(["--game-pid", &pid.to_string()])
         .env("GAMEBUDDY_GAMESCOPE", "1")
         .env("QT_QPA_PLATFORM", "xcb")
+        // Xcursor otherwise guesses from the nested display height: a 2160p
+        // game produces double-size Qt cursors even with unscaled UI controls.
+        // Keep the player's explicit preference, and scope the default to UI.
+        .env(
+            "XCURSOR_SIZE",
+            std::env::var_os("XCURSOR_SIZE").unwrap_or_else(|| "24".into()),
+        )
         .env_remove("WAYLAND_DISPLAY")
         .stdin(Stdio::null());
     if let Some(path) = &opts.control {

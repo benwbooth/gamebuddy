@@ -28,6 +28,8 @@ WebEngineView {
     property double inputAt: 0
     property double outputAt: 0
     property bool waitingForReply: false
+    property bool workPending: false
+    property double workStartedAt: 0
     property bool returningPlayer: false
     property string voiceGame: ""
     property string pendingCue: ""
@@ -38,7 +40,7 @@ WebEngineView {
     property string captionText: ""
     property bool captionStreaming: false
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
-    function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
+    function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;workPending=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
     function speakApproved(text) {
         if(!text.length || !connected)return
         // Show the completed answer immediately in the companion. Captions
@@ -58,17 +60,20 @@ WebEngineView {
     function updateStatus() {
         if(!started || !connected || failed)return
         status=userSpeaking?"Listening…":assistantSpeaking?(capturing?"Speaking · you can interrupt":"Speaking · microphone off"):
-            backendBusy?"Checking your request…":waitingForReply?"Waiting for voice…":
+            workPending || backendBusy?"Thinking…"+(workStartedAt ? " · "+Math.floor((Date.now()-workStartedAt)/1000)+" s" : ""):waitingForReply?"Preparing voice…":
             capturing?"Live voice · speak naturally":"Guide voice ready · mic off"
     }
     onUserSpeakingChanged: updateStatus()
     onAssistantSpeakingChanged: updateStatus()
     onWaitingForReplyChanged: updateStatus()
     onBackendBusyChanged: updateStatus()
+    onWorkPendingChanged: { workStartedAt=workPending?Date.now():0;updateStatus() }
+    Timer { interval: 250; repeat: true; running: panel.workPending; onTriggered: panel.updateStatus() }
     onStartedChanged: if(!started)clearActivity()
     onStatusChanged: if(trace)console.warn("GAMEBUDDY_REALTIME_STATUS " + status)
     signal transcript(string text)
     signal answer(string text)
+    signal overlayAction(int action)
     // Keep the audio document attached to the live overlay window even when
     // the separate workbench is closed.
     width: 1; height: 1; visible: true; opacity: 0.01
@@ -111,11 +116,6 @@ WebEngineView {
                 summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
             instruction:"Background reference only. Do not answer gameplay questions from cached advice or this summary. The application forwards the complete request and location correction to the reasoning backend; remain silent until it supplies the answer. Never speak the player's side of a conversation."})
     }
-    function updateContext() {
-        if(!connected)return
-        const next=voiceContext()
-        if(next!==lastContext){lastContext=next;runJavaScript("gamebuddyVoice.updateContext("+JSON.stringify(next)+")")}
-    }
     function fail(message) {
         failed=true
         if(voice.active)voice.toggle_listening()
@@ -147,9 +147,9 @@ WebEngineView {
         }
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
-    // Keep continuous perception local. Refresh on player speech;
-    // background appends can interrupt a queued voice response. Gameplay
-    // questions also obtain a fresh screenshot through get_game_context.
+    // Keep perception updates out of the live speech session. Appending
+    // context while the player speaks can replace part of the transcript.
+    // The reasoning worker supplies current evidence after recognition.
     Timer {
         interval:100;repeat:true;running:panel.started
         onTriggered:{
@@ -172,6 +172,10 @@ WebEngineView {
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "")
+            else if(event.method==="gamebuddy/overlay-action"){
+                panel.overlayAction(p.action)
+                panel.runJavaScript("gamebuddyVoice.finishLocalRequest()")
+            }
             else if(event.method==="gamebuddy/reply-error"){
                 const text=p.text || "Request failed; please try again."
                 panel.answer(text)
@@ -202,7 +206,7 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-progress"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
+        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-pending"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
         if(trace && !["input-pcm","input-text","input-final","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
         if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
@@ -219,7 +223,6 @@ WebEngineView {
             userSpeaking=event.value
             if(userSpeaking){pendingCue="";recoveryCue="";recoveryAttempts=0;if(!captionStreaming)captionText=""}
             transport.player_speech(userSpeaking)
-            if(userSpeaking)updateContext()
         }
         else if(event.type==="input-text" || event.type==="input-final")transport.recognize_input(event.value,event.type==="input-final")
         else if(event.type==="speech-ready")transport.speak(event.value)
@@ -229,9 +232,10 @@ WebEngineView {
         }
         else if(event.type==="output-active"){
             if(event.value)pendingCue=""
-            if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started")
+            if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started at_ms="+Date.now())
             outputAt=Date.now();assistantSpeaking=event.value
         }
+        else if(event.type==="work-pending")workPending=event.value
         else if(event.type==="reply-pending"){waitingForReply=event.value;if(!waitingForReply)captionStreaming=false}
         else if(event.type==="cue-retry" && pendingCue.length)transport.speak(pendingCue)
         else if(event.type==="request-error"){captionText=event.value;captionStreaming=false}

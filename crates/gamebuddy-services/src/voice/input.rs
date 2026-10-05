@@ -72,6 +72,17 @@ impl PlayerInput {
                 now.saturating_duration_since(last) >= Duration::from_millis(500)
             })
     }
+    /// Speech activity can end before the remote transcript catches up. Prefer
+    /// the final transcript; fall back after a bounded quiet stream so a missing
+    /// final event cannot strand the request. Do not start then immediately
+    /// restart reasoning for each of the last few words.
+    pub fn settled(&self, now: Instant) -> bool {
+        self.quiet(now)
+            && (self.partial_start.is_none()
+                || self.chunks.back().is_none_or(|(last, _)| {
+                    now.saturating_duration_since(*last) >= Duration::from_millis(800)
+                }))
+    }
     pub fn text(&self, now: Instant) -> String {
         if self
             .chunks
@@ -86,6 +97,24 @@ impl PlayerInput {
             .filter(|(at, _)| self.started.is_none_or(|start| *at >= start))
             .map(|(_, text)| text.as_str())
             .collect();
+        // Recognition can produce stage directions for breaths or clicks.
+        // They must not become a new model request after the player stops.
+        let noise = value.trim().trim_matches(['[', ']']).to_ascii_lowercase();
+        if matches!(
+            noise.as_str(),
+            "sigh"
+                | "sighs"
+                | "sighing"
+                | "tongue click"
+                | "click"
+                | "cough"
+                | "coughing"
+                | "breathing"
+                | "silence"
+        ) && value.trim().starts_with('[')
+        {
+            return String::new();
+        }
         // Bound a deliberately long dictated request without splitting UTF-8.
         value
             .trim()
@@ -103,6 +132,16 @@ impl PlayerInput {
 mod tests {
     use super::*;
     #[test]
+    fn nonverbal_annotations_do_not_become_requests() {
+        let mut input = PlayerInput::default();
+        let now = Instant::now();
+        input.finish("[tongue click]", now);
+        assert!(input.text(now).is_empty());
+        let mut input = PlayerInput::default();
+        input.finish("How do I silence the alarm?", now);
+        assert_eq!(input.text(now), "How do I silence the alarm?");
+    }
+    #[test]
     fn final_transcript_padding_does_not_change_a_dispatched_request() {
         let mut input = PlayerInput::default();
         let now = Instant::now();
@@ -112,6 +151,25 @@ mod tests {
         let sent = input.text(now + Duration::from_secs(2));
         input.finish(" What next? ", now + Duration::from_secs(3));
         assert_eq!(input.text(now + Duration::from_secs(3)), sent);
+    }
+    #[test]
+    fn speech_end_waits_for_final_words_but_not_forever() {
+        let mut input = PlayerInput::default();
+        let now = Instant::now();
+        input.activity(true, now);
+        input.append("What color", now);
+        input.activity(false, now + Duration::from_secs(1));
+        input.append(" is the rectangle", now + Duration::from_millis(1400));
+        assert!(input.quiet(now + Duration::from_millis(1600)));
+        assert!(!input.settled(now + Duration::from_millis(1600)));
+        input.finish(
+            "What color is the rectangle?",
+            now + Duration::from_millis(1800),
+        );
+        assert!(input.settled(now + Duration::from_millis(1800)));
+        input.append(" And the background", now + Duration::from_secs(2));
+        assert!(!input.settled(now + Duration::from_millis(2700)));
+        assert!(input.settled(now + Duration::from_millis(2800)));
     }
     #[test]
     fn final_transcript_replaces_partial_delegation_without_losing_correction() {

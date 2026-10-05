@@ -169,6 +169,32 @@ pub fn save_turn(directory: &Path, samples: &[i16]) -> anyhow::Result<std::path:
 /// Focus changes require explicit commands, not arbitrary words in a strategy
 /// question. Values 3/4/6 match the overlay actions; 7/8 open guide/arrangement.
 pub fn overlay_command(text: &str) -> Option<i32> {
+    let words = command_words(text);
+    match words.as_str() {
+        "open the guide" | "open guide" | "show the guide" => Some(7),
+        "arrange widgets" | "edit widgets" => Some(8),
+        "close the guide" | "close guide" | "back to the game" | "release overlay" => Some(6),
+        "hide overlay" | "hide the overlay" => Some(4),
+        "show overlay" | "show the overlay" => Some(3),
+        _ => None,
+    }
+}
+
+/// Connection checks and short social turns need neither screenshots nor a
+/// reasoning round trip. Exact whole requests only; compound questions go to
+/// the backend so this never swallows a gameplay question or requested action.
+pub fn quick_reply(text: &str) -> Option<&'static str> {
+    match command_words(text).as_str() {
+        "hello" | "hi" | "hey" => Some("Hi. I'm listening."),
+        "are you there" | "are you still there" | "can you hear me" => {
+            Some("I'm here. I can hear you.")
+        }
+        "thanks" | "thank you" => Some("You're welcome."),
+        _ => None,
+    }
+}
+
+fn command_words(text: &str) -> String {
     let normalized = text
         .to_lowercase()
         .chars()
@@ -183,14 +209,7 @@ pub fn overlay_command(text: &str) -> Option<i32> {
     let words = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
     let words = words.strip_prefix("gamebuddy ").unwrap_or(&words);
     let words = words.strip_prefix("please ").unwrap_or(words);
-    match words {
-        "open the guide" | "open guide" | "show the guide" => Some(7),
-        "arrange widgets" | "edit widgets" => Some(8),
-        "close the guide" | "close guide" | "back to the game" | "release overlay" => Some(6),
-        "hide overlay" | "hide the overlay" => Some(4),
-        "show overlay" | "show the overlay" => Some(3),
-        _ => None,
-    }
+    words.strip_suffix(" gamebuddy").unwrap_or(words).to_owned()
 }
 
 #[cfg(test)]
@@ -334,5 +353,11 @@ mod tests {
         assert_eq!(overlay_command("Arrange widgets!"), Some(8));
         assert_eq!(overlay_command("How do I open the guide door?"), None);
         assert_eq!(overlay_command("Don't hide the overlay"), None);
+        assert_eq!(
+            quick_reply("Are you still there, GameBuddy?"),
+            Some("I'm here. I can hear you.")
+        );
+        assert_eq!(quick_reply("Hello. Where should I go?"), None);
+        assert_eq!(quick_reply("Thanks, now open the guide."), None);
     }
 }

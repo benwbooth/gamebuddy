@@ -135,6 +135,7 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
+        onOverlayAction: action => root.overlayAction(action)
     }
     VoiceInput {
         id: voice

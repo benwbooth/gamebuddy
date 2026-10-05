@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-overlay --bin gamebuddy --bin gamebuddy-cli --examples
 runtime_dir="$(mktemp -d /tmp/gamebuddy-realtime-test-XXXXXXXX)"
+export XDG_CONFIG_HOME="$runtime_dir/config"
 printf 'Realtime voice fixture: %s\n' "$runtime_dir"
 export GAMEBUDDY_TEST_DATA="$runtime_dir/data" GAMEBUDDY_TEST_REALTIME=1
 export GAMEBUDDY_TEST_SCREEN=1
@@ -44,7 +45,10 @@ for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sle
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
 if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
+  export GAMEBUDDY_TEST_PRESENCE_WAV="$runtime_dir/presence.wav" GAMEBUDDY_TEST_COMMAND_WAV="$runtime_dir/command.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Look at my game and create a text widget titled Waiting Test naming the visible colors. Then say exactly: The answer is ready.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 120 -w "$GAMEBUDDY_TEST_PRESENCE_WAV" 'Hello.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_COMMAND_WAV" 'Please open the guide.'
 fi
 if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   export GAMEBUDDY_TEST_GATE_WAV="$runtime_dir/gate.wav"
@@ -97,7 +101,7 @@ if [[ -n "${GAMEBUDDY_TEST_VOICE_MODEL:-}" ]]; then
 fi
 date +%s%3N > "$runtime_dir/recording-start-ms"
 parec --device="$PULSE_SINK.monitor" --file-format=wav "$runtime_dir/response.wav" & recorder=$!
-./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+./target/debug/gamebuddy --launch --windowed --no-prepare --ui-trace --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
     ./target/debug/examples/compositor_probe "$runtime_dir/proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
 kill -INT "$recorder"; wait "$recorder" || true; recorder=""
 ffmpeg -hide_banner -i "$runtime_dir/response.wav" -af volumedetect -f null - >"$runtime_dir/audio-check.txt" 2>&1
@@ -109,7 +113,10 @@ for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
 if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
-  rg -qi 'still working' "$runtime_dir/heard.txt"
+  if rg -qi "still working|i.m on it" "$runtime_dir/heard.txt"; then
+    printf 'Unexpected spoken filler in the recording\n' >&2
+    exit 1
+  fi
   if ! rg -qi 'answer is ready' "$runtime_dir/heard.txt"; then
     rg -qi '\bred\b' "$runtime_dir/heard.txt"
     rg -qi '\bgreen\b' "$runtime_dir/heard.txt"

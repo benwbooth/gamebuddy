@@ -357,6 +357,16 @@ fn main() -> anyhow::Result<()> {
         support::crop_probe::run(&conn, window, overlay, focus, root, toggle, screenshot)?;
         return Ok(());
     }
+    if let Some(script) = std::env::var_os("GAMEBUDDY_TEST_INPUT") {
+        let status = std::process::Command::new("node")
+            .arg(script)
+            .arg(&directory)
+            .status()?;
+        screenshot("native-input.png")?;
+        ensure!(status.success(), "Native overlay input checks failed");
+        println!("GAMEBUDDY_NATIVE_INPUT_PASS");
+        return Ok(());
+    }
     toggle()?;
     ensure!(
         cardinal(&conn, overlay, focus)? == 1,

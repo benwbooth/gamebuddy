@@ -185,12 +185,38 @@ Item {
         spacing: 13
         RowLayout {
             Layout.leftMargin: 62; Layout.fillWidth: true; Layout.preferredHeight: 46
-            ColumnLayout {
-                spacing: 1
-                Text { text: "GameBuddy"; color: "#e6f1f6"; font.pixelSize: 20; font.weight: Font.DemiBold }
-                Text { text: companion.session.game || "Your game companion"; color: "#91a9b9"; font.pixelSize: 14 }
+            Item {
+                Layout.fillWidth: true; Layout.preferredHeight: 46
+                ColumnLayout {
+                    anchors.fill: parent; spacing: 1
+                    Text { text: "GameBuddy"; color: "#e6f1f6"; font.pixelSize: 20; font.weight: Font.DemiBold }
+                    Text { text: companion.session.game || "Your game companion"; color: "#91a9b9"; font.pixelSize: 14; Layout.fillWidth: true; elide: Text.ElideRight }
+                }
+                MouseArea {
+                    id: titleDrag
+                    objectName: "companionTitleDrag"
+                    anchors.fill: parent
+                    hoverEnabled: true; cursorShape: Qt.SizeAllCursor; preventStealing: true
+                    property point scenePress
+                    property point startPosition
+                    property bool moved: false
+                    onPressed: mouse => { scenePress=mapToItem(companion.parent,mouse.x,mouse.y);startPosition=Qt.point(companion.x,companion.y);moved=false }
+                    onPositionChanged: mouse => {
+                        if (!pressed) return
+                        const p=mapToItem(companion.parent,mouse.x,mouse.y)
+                        if (!moved && Math.hypot(p.x-scenePress.x,p.y-scenePress.y)>Qt.styleHints.startDragDistance) {
+                            moved=true
+                            if (!companion.embedded) companion.hostWindow.startSystemMove()
+                        }
+                        if (moved && companion.embedded) {
+                            companion.x=Math.max(0,Math.min(companion.parent.width-companion.width,startPosition.x+p.x-scenePress.x))
+                            companion.y=Math.max(0,Math.min(companion.parent.height-companion.height,startPosition.y+p.y-scenePress.y))
+                        }
+                    }
+                    ToolTip.visible: containsMouse && !pressed
+                    ToolTip.text: "Drag to move GameBuddy"
+                }
             }
-            Item { Layout.fillWidth: true }
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
         }
         StartupStatus {

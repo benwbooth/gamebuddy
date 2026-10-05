@@ -76,7 +76,7 @@ impl ffi::RealtimeVoice {
             "cue-timeout",
             "connection",
             "ready",
-            "work-progress",
+            "work-pending",
         ]
         .contains(&kind.as_str())
             && let Ok(value) = serde_json::from_str::<Value>(&value.to_string())
@@ -312,6 +312,12 @@ impl ffi::RealtimeVoice {
                 let mut sequence = 1000;
                 let mut context_requests = std::collections::HashSet::new();
                 let mut start_requests = std::collections::HashMap::new();
+                let mut prepared_context: Option<(
+                    Value,
+                    u64,
+                    String,
+                    Option<gamebuddy_services::screen::Snapshot>,
+                )> = None;
                 let mut reasoning_since: Option<Instant> = None;
                 let mut interrupt_requests = std::collections::HashMap::new();
                 let mut context_turn = None;
@@ -321,6 +327,7 @@ impl ffi::RealtimeVoice {
                 let mut final_answer = String::new();
                 let mut supplied_frame = None;
                 let mut last_frame_check = Instant::now();
+                let mut refreshed_view = false;
                 let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
@@ -355,6 +362,10 @@ impl ffi::RealtimeVoice {
                     }
                     while let Some(event) = client.poll()? {
                         if event["method"] == "turn/started" {
+                            let unsolicited = start_requests.is_empty()
+                                && !prepared_context
+                                    .as_ref()
+                                    .is_some_and(|(id, ..)| *id == event["params"]["turn"]["id"]);
                             reasoning_since = Some(Instant::now());
                             context_turn = Some(event["params"]["turn"]["id"].clone());
                             reasoning_turn = context_turn.clone();
@@ -362,6 +373,34 @@ impl ffi::RealtimeVoice {
                             supplied_request.clear();
                             final_answer.clear();
                             supplied_frame = None;
+                            refreshed_view = false;
+                            if unsolicited {
+                                // The live speaker can still delegate despite
+                                // its prompt, sometimes on the first few words.
+                                // Only the application's complete transcript
+                                // owns a reasoning turn. Do not spend the rest
+                                // of the utterance steering a partial request.
+                                sequence += 1;
+                                let turn_id = event["params"]["turn"]["id"].clone();
+                                interrupt_requests.insert(sequence, turn_id.clone());
+                                client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
+                                context_turn = None;
+                                if std::env::args().any(|a| a == "--voice-trace") {
+                                    eprintln!("GAMEBUDDY_VOICE_EARLY_DELEGATION_CANCELLED");
+                                }
+                                continue;
+                            }
+                            if prepared_context
+                                .as_ref()
+                                .is_some_and(|(id, ..)| Some(id) == reasoning_turn.as_ref())
+                            {
+                                let (_, utterance, request, frame) =
+                                    prepared_context.take().unwrap();
+                                reasoning_input = Some(utterance);
+                                supplied_request = request;
+                                supplied_frame = frame;
+                                last_frame_check = Instant::now();
+                            }
                         }
                         if event["method"] == "item/completed"
                             && event["params"]["item"]["type"] == "agentMessage"
@@ -409,7 +448,7 @@ impl ffi::RealtimeVoice {
                             pending_tools
                                 .retain(|(tool, _)| tool["params"]["turnId"] != *completed);
                         }
-                        if let Some(request_utterance) = event["id"]
+                        if let Some((request_utterance, request, frame)) = event["id"]
                             .as_u64()
                             .and_then(|id| start_requests.remove(&id))
                         {
@@ -421,6 +460,17 @@ impl ffi::RealtimeVoice {
                                 emit(
                                     json!({"method":"gamebuddy/reply-error","params":{"text":"The request could not start. You can still speak to me; please try again."}}),
                                 );
+                            } else if event.get("error").is_none() {
+                                let turn_id = event["result"]["turn"]["id"].clone();
+                                if reasoning_turn.as_ref() == Some(&turn_id) {
+                                    reasoning_input = Some(request_utterance);
+                                    supplied_request = request;
+                                    supplied_frame = frame;
+                                    last_frame_check = Instant::now();
+                                } else {
+                                    prepared_context =
+                                        Some((turn_id, request_utterance, request, frame));
+                                }
                             }
                             continue;
                         }
@@ -462,7 +512,10 @@ impl ffi::RealtimeVoice {
                                 name.starts_with("get_")
                                     || matches!(name, "search_guide" | "read_reference")
                             });
-                            let reject = !readonly && !input.lock().unwrap().quiet(Instant::now());
+                            let reject = interrupt_requests
+                                .values()
+                                .any(|id| *id == event["params"]["turnId"])
+                                || (!readonly && !input.lock().unwrap().settled(Instant::now()));
                             pending_tools.push_back((event, reject));
                         } else {
                             client.reject(&event)?;
@@ -480,7 +533,7 @@ impl ffi::RealtimeVoice {
                     let (quiet, request, utterance) = {
                         let input = input.lock().unwrap();
                         let now = Instant::now();
-                        (input.quiet(now), input.text(now), input.utterance())
+                        (input.settled(now), input.text(now), input.utterance())
                     };
                     // A failed or missing completion must not strand subsequent
                     // requests. This bounds reasoning only, never speech playback.
@@ -526,8 +579,56 @@ impl ffi::RealtimeVoice {
                         // for an assistant transcript creates a deadlock when
                         // the speaker correctly stays silent for backend approval.
                         if delivery.dispatch(utterance, &request, reasoning_since.is_some()) {
+                            if let Some(action) =
+                                gamebuddy_services::voice::overlay_command(&request)
+                            {
+                                if std::env::args().any(|a| a == "--voice-trace") {
+                                    eprintln!(
+                                        "GAMEBUDDY_VOICE_LOCAL action={action} at_ms={}",
+                                        gamebuddy_services::screen::now_ms()
+                                    );
+                                }
+                                emit(
+                                    json!({"method":"gamebuddy/overlay-action","params":{"action":action}}),
+                                );
+                                delivery.abandon(utterance);
+                                diagnostics.record(
+                                    "local_command",
+                                    json!({"utterance":utterance,"action":action}),
+                                );
+                                continue;
+                            }
+                            if let Some(answer) = gamebuddy_services::voice::quick_reply(&request) {
+                                if std::env::args().any(|a| a == "--voice-trace") {
+                                    eprintln!(
+                                        "GAMEBUDDY_VOICE_LOCAL reply=true at_ms={}",
+                                        gamebuddy_services::screen::now_ms()
+                                    );
+                                }
+                                delivery.complete(utterance, &request, answer);
+                                diagnostics.record("local_reply", json!({"utterance":utterance}));
+                                continue;
+                            }
+                            let context_started = Instant::now();
+                            let frame = gamebuddy_services::screen::snapshot(&store).ok();
+                            let evidence = gamebuddy_services::harness::call_tool_with_images(
+                                &store,
+                                "get_game_context",
+                                json!({}),
+                            )
+                            .ok()
+                            .filter(|c| {
+                                c.value["game"]
+                                    .as_str()
+                                    .is_some_and(|g| g.eq_ignore_ascii_case(&game))
+                            });
+                            let label = format!(
+                                "CURRENT_GAME_CONTEXT for this request. Complete live player request: {request}. Inspect the supplied images directly; do not fetch the same context again."
+                            );
+                            let turn_input = evidence.as_ref().map(|c| c.codex_input(&label))
+                                .unwrap_or_else(|| vec![json!({"type":"text","text":format!("Complete live player request: {request}")})]);
                             sequence += 1;
-                            start_requests.insert(sequence, utterance);
+                            start_requests.insert(sequence, (utterance, request.clone(), frame));
                             reasoning_since = Some(Instant::now());
                             diagnostics.record(
                                 "request_dispatched",
@@ -535,16 +636,30 @@ impl ffi::RealtimeVoice {
                             );
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(
-                                    "GAMEBUDDY_VOICE_DISPATCH utterance={utterance} text_bytes={}",
+                                    "GAMEBUDDY_VOICE_CONTEXT images={} text_bytes={} initial=true",
+                                    evidence.as_ref().map_or(0, |c| c.images.len()),
                                     request.len()
                                 );
+                                eprintln!(
+                                    "GAMEBUDDY_VOICE_DISPATCH utterance={utterance} text_bytes={} images={} context_ms={} at_ms={}",
+                                    request.len(),
+                                    evidence.as_ref().map_or(0, |c| c.images.len()),
+                                    context_started.elapsed().as_millis(),
+                                    gamebuddy_services::screen::now_ms()
+                                );
                             }
-                            client.send(json!({"id":sequence,"method":"turn/start","params":{"threadId":thread,"input":[{"type":"text","text":format!("Complete live player request: {request}")}],"environments":[]}}))?;
+                            client.send(json!({"id":sequence,"method":"turn/start","params":{"threadId":thread,"input":turn_input,"environments":[]}}))?;
                         }
                         // Refresh native visual evidence while a long reasoning
                         // turn is in flight. A new camera view supersedes its old
                         // route before a queued instruction can be published.
-                        let changed_view = last_frame_check.elapsed() >= Duration::from_secs(1)
+                        // A continuously moving camera must not keep restarting
+                        // reasoning. Allow one automatic refresh per request;
+                        // tools still obtain fresh evidence before mutations.
+                        let changed_view = !refreshed_view
+                            && reasoning_since
+                                .is_some_and(|since| since.elapsed() >= Duration::from_secs(3))
+                            && last_frame_check.elapsed() >= Duration::from_secs(1)
                             && supplied_frame.as_ref().is_some_and(|frame| {
                                 !gamebuddy_services::screen::still_current(&store, frame)
                                     .unwrap_or(false)
@@ -557,9 +672,11 @@ impl ffi::RealtimeVoice {
                         // the next reasoning step, avoiding a context-fetch round
                         // trip. Rejected steers leave normal tools available.
                         if !request.is_empty()
+                            && start_requests.is_empty()
                             && (request != supplied_request || changed_view)
                             && let Some(turn_id) = context_turn.as_ref()
                         {
+                            refreshed_view |= changed_view;
                             if !supplied_request.is_empty() {
                                 for (event, reject) in &mut pending_tools {
                                     let name = event["params"]["tool"].as_str().unwrap_or_default();

@@ -34,6 +34,8 @@ cargo build --workspace
 ./target/debug/gamebuddy --workbench
 ```
 
+The Nix environment supplies Gamescope with continuous trackpad scroll and native pinch forwarding. Use `nix develop` or `scripts/gamebuddy-dev` for that input support; an external `GAMEBUDDY_GAMESCOPE_BIN` override must provide the same protocols. Image/map viewers accept two-finger pan and pinch zoom. The expanded companion can also be moved by dragging its title.
+
 On Linux, `--launch` starts Gamescope fullscreen at the host display's physical resolution, including ultrawide aspect ratios and fractional desktop scaling. Gamescope uses nearest filtering if additional scaling is needed; the game's own shaders and aspect-ratio settings still apply. `--windowed` defaults to 1280×720. `--width` and `--height` override the game resolution; specifying only one preserves the display aspect ratio. Click the icon to expand, drag to move, or hold to talk. **Shift+Tab** toggles interaction, **Ctrl+Shift+Tab** hides/restores everything, and **Escape** returns input to the game. Visible widgets can be dragged by their headers and resized from their bottom-right corners, even while the companion is collapsed. Hovering a widget captures only the pointer; keyboard input stays with the game. Click **×** to return a widget to the companion, then use **Widgets…** to show it again. **Hide widgets** / **Show widgets** toggle the whole set without losing layouts. **Options** opens inside the same overlay. Game-only watching starts automatically, including while references are still preparing. The companion shows what the vision model observes; **Pause watching** stops capture and screen-tool access. Location matching also runs once references are available. `--no-prepare` skips automatic reference preparation for offline tests; `--quiet` starts with spoken output disabled.
 
 Without `--launch`, the desktop companion uses **Share game** for OS screen sharing and opens Options in a separate workbench. Whole-desktop capture can include GameBuddy itself. Physical gamepad bindings remain to be connected; the session command interface is documented in [overlay backends](docs/overlay-backends.md).
@@ -56,6 +58,8 @@ Data lives in the platform's local data directory under `GameBuddy` (Linux: `~/.
 
 Point an MCP client's stdio configuration at the absolute `gamebuddy-mcp` executable and pass the app's `--data-dir`. Its environment needs the media tools for imports. Keep shell startup messages off protocol stdout.
 
+Voice requests show a silent **Thinking…** indicator until the answer is ready. Exact interface commands and brief connection checks run locally; gameplay questions use the selected reasoning model with the current screenshot and guide context. Background updates stay out of active speech recognition. Late transcript fragments settle before dispatch, and automatic visual refreshes are bounded so a moving camera cannot repeatedly restart an answer. Remote reasoning and speech still add latency; local observation-driven cues remain the path for immediate gameplay reactions.
+
 For Lunchpail development, run `./dev.sh` to build initially and rebuild on source changes, then set **GameBuddy executable** to the absolute `scripts/gamebuddy-dev` path and enable **Launch with GameBuddy**. The launch script runs the existing `target/debug/gamebuddy` in this project's Nix runtime environment; it never runs Cargo during game startup. The watcher does not restart a running game. A missing binary fails immediately with the build command. On Linux, Lunchpail uses the Gamescope session handshake automatically when enabled. The script supplies the development runtime; it is not an installed package. The game command, working directory and controller pipes remain owned by Lunchpail.
 
 For non-Nix builds, install Rust plus Qt 6 Core/Gui/Qml/Quick/QuickControls2/Multimedia/TextToSpeech/WebEngineQuick, expose `qmake` and Qt runtime plugins, then build with Cargo. Windows requires the MSVC Qt build for WebEngine. Native Windows/macOS verification is outstanding.
@@ -67,6 +71,10 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./target/debug/gamebuddy --expanded --smoke-test /tmp/gamebuddy-companion.png
 scripts/test-gamescope
+bash scripts/test-native-input
+GAMEBUDDY_TEST_POINTER_REPLAY=finger bash scripts/test-native-input
+GAMEBUDDY_TEST_POINTER_REPLAY=pinch bash scripts/test-native-input
+GAMEBUDDY_TEST_WORKING=1 scripts/test-realtime
 scripts/test-resolution
 scripts/test-voice
 scripts/test-realtime

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Exercise axes entering Gamescope's Wayland backend, not CDP/inner-XTest dispatch.
+# Requires KWin; the GPU-backed outer compositor and pointer are private.
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+input_width="${GAMEBUDDY_TEST_WIDTH:-1280}"
+input_height="${GAMEBUDDY_TEST_HEIGHT:-720}"
+if [[ "${1:-}" != --inside ]]; then
+  cargo build -p gamebuddy-app -p gamebuddy-overlay --bin gamebuddy --example compositor_probe --example input_probe
+  input_root="$(mktemp -d /tmp/gamebuddy-outer-input-XXXXXXXX)"
+  if [[ -n "${GAMEBUDDY_TEST_POINTER_REPLAY:-}" ]]; then
+    cc -shared -fPIC scripts/qml-tests/wayland-input-replay.c -ldl -o "$input_root/input-replay.so"
+    export GAMEBUDDY_TEST_REAL_GAMESCOPE="${GAMEBUDDY_GAMESCOPE_BIN:-$(command -v gamescope)}"
+    export GAMEBUDDY_TEST_INPUT_REPLAY_LIB="$input_root/input-replay.so"
+    cat > "$input_root/gamescope" <<'SH'
+#!/usr/bin/env bash
+export LD_PRELOAD="$GAMEBUDDY_TEST_INPUT_REPLAY_LIB"
+exec "$GAMEBUDDY_TEST_REAL_GAMESCOPE" "$@"
+SH
+    chmod +x "$input_root/gamescope"
+    export GAMEBUDDY_GAMESCOPE_BIN="$input_root/gamescope"
+  fi
+  export XDG_CONFIG_HOME="$input_root/config" QT_ACCESSIBILITY=0 NO_AT_BRIDGE=1
+  mkdir -p "$XDG_CONFIG_HOME"
+  cp scripts/qml-tests/kwin-test.conf "$XDG_CONFIG_HOME/kwinrc"
+  result=0
+  dbus-run-session -- kwin_wayland --virtual --xwayland --width "$input_width" --height "$input_height" --socket "$input_root/wayland-test" --no-lockscreen --no-global-shortcuts --no-kactivities --exit-with-session "bash $PWD/scripts/test-native-input --inside $input_root" > "$input_root/kwin.log" 2>&1 || result=$?
+  tail -20 "$input_root/runtime.log"
+  printf 'Native outer-input artifacts: %s\n' "$input_root"
+  [[ "$result" == 0 ]]
+  rg -q GAMEBUDDY_NATIVE_INPUT_PASS "$input_root/runtime.log"
+  exit
+fi
+input_root="$2"
+[[ "$input_root" == /tmp/gamebuddy-outer-input-* ]]
+export GAMEBUDDY_TEST_KWIN_PID="$PPID" GAMEBUDDY_TEST_OUTER_DISPLAY="$DISPLAY"
+export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
+export GAMEBUDDY_TEST_DATA="$input_root/data" GAMEBUDDY_TEST_INPUT="$PWD/scripts/test-native-input.mjs"
+if [[ -n "${GAMEBUDDY_TEST_REFERENCE_STORE:-}" ]]; then
+  node scripts/copy-ui-fixture.mjs "$GAMEBUDDY_TEST_REFERENCE_STORE" "$GAMEBUDDY_TEST_DATA"
+else
+  target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
+fi
+target/debug/gamebuddy --launch --width "$input_width" --height "$input_height" --gamescope-backend wayland --no-prepare --quiet --no-listen --ui-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- target/debug/examples/compositor_probe "$input_root/proof" > "$input_root/runtime.log" 2>&1

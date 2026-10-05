@@ -3,7 +3,7 @@ import QtTest
 import "../../crates/gamebuddy-app/qml" as UI
 
 Item {
-    width: 450; height: 600
+    width: 1280; height: 900
     QtObject {
         id: buddy
         property bool busy: false
@@ -37,6 +37,7 @@ Item {
         voice: voice
         session: ({game: "Faxanadu", screen: {status: "waiting"}})
         expanded: true
+        embedded: true
     }
     TestCase {
         name: "CompanionChat"
@@ -45,6 +46,7 @@ Item {
             buddy.busy = false; buddy.accept = true; buddy.requests = []
             buddy.transcript = ""; buddy.answer = ""; buddy.chat_error = ""
             companion.voiceTurnPending = false; companion.expanded = true
+            companion.x = 0; companion.y = 0
             findChild(companion, "companionChatInput").text = ""
         }
         function test_enter_sends_trimmed_text_once_without_microphone() {
@@ -111,6 +113,18 @@ Item {
             verify(input.width > 200)
             waitForRendering(companion)
             grabImage(companion).save("/tmp/gamebuddy-text-companion.png")
+        }
+        function test_title_drags_panel_without_sending_or_toggling() {
+            const handle=findChild(companion,"companionTitleDrag")
+            const p=handle.mapToItem(companion.parent,30,20)
+            mousePress(handle,30,20)
+            mouseMove(companion.parent,p.x+120,p.y+50)
+            mouseRelease(companion.parent,p.x+120,p.y+50)
+            compare(companion.x,120)
+            compare(companion.y,50)
+            compare(companion.expanded,true)
+            compare(buddy.requests.length,0)
+            compare(voice.active,false)
         }
     }
 }

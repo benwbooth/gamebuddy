@@ -64,7 +64,16 @@ export async function widgetInputs(api){
   assert.equal(await evaluate('visualViewport.scale'),1);
   const tablePan=await evaluate(`(()=>{const b=document.querySelector('[data-widget-id="scroll-table"] .body');return[b.scrollLeft,b.scrollTop]})()`);
   await evaluate(`testState.widgets[1].content.rows[0][0]='UpdatedValue';testRender(testState)`);
+  await until(()=>evaluate(`document.querySelector('[data-widget-id="scroll-table"] .body').textContent.includes('UpdatedValue')`),'Deferred table update was never applied');
   await until(()=>evaluate(`document.querySelector('[data-widget-id="scroll-table"] .body').scrollLeft===${tablePan[0]}`),'Refreshing content reset horizontal scroll');
   assert.deepEqual(await evaluate(`(()=>{const b=document.querySelector('[data-widget-id="scroll-table"] .body');return[b.scrollLeft,b.scrollTop]})()`),tablePan);
+  // A live observation used to replace the entire body during a scrollbar
+  // drag, breaking native pointer capture and causing intermittent pauses.
+  const drag=await evaluate(`(()=>{const b=document.querySelector('[data-widget-id="scroll-table"] .body'),r=b.getBoundingClientRect();window.draggedBody=b;return{x:r.right-8,y:r.top+45}})()`);
+  await call('Input.dispatchMouseEvent',{type:'mousePressed',...drag,button:'left',buttons:1,clickCount:1});
+  await evaluate(`testState.widgets[1].content.rows[0][0]='DuringDrag';testRender(testState)`);
+  assert(await evaluate(`draggedBody.isConnected`),'Live refresh replaced the viewport during scrollbar drag');
+  await call('Input.dispatchMouseEvent',{type:'mouseReleased',...drag,button:'left',clickCount:1});
+  await until(()=>evaluate(`document.querySelector('[data-widget-id="scroll-table"] .body').textContent.includes('DuringDrag')`),'Scrollbar release did not apply the latest update');
   console.log('PASS native two-axis text/table scrolling, Shift+wheel, touch pinch, keyboard fit and manual map continuity');
 }

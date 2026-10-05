@@ -11,6 +11,7 @@ assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0
 assert(new URL(endpoint).hostname==='127.0.0.1','Only a private local test port is supported');
 const db=new DatabaseSync(root+'/gamebuddy.sqlite');
 const doc=key=>{const row=db.prepare('SELECT body FROM documents WHERE key=?').get(key);return row?JSON.parse(row.body):null};
+db.exec('PRAGMA busy_timeout=5000');
 const id=doc('active_guide');
 const guide=()=>JSON.parse(db.prepare('SELECT body FROM guides WHERE id=?').get(id).body);
 assert.equal(guide().title,'Reader integration fixture','Refusing to modify non-fixture data');
@@ -73,7 +74,9 @@ try {
   // Keep subsequent controlled render checks isolated from the app refresh.
   await evaluate(`window.testRender=gamebuddy.render;gamebuddy.render=state=>{window.testState=state;window.testRender(state)}`);
   await until(()=>evaluate(`window.testState?.navigation.guidance.now.instructions===${JSON.stringify(advice)}`),'Published advice did not reach the Qt widget state');
-  await evaluate(`gamebuddy.render=()=>{};testState.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};testRender(testState)`);
+  // Ignore background fixture snapshots, but retain internal gesture/picker
+  // flushes of the exact state under test.
+  await evaluate(`gamebuddy.render=state=>{if(state===testState)testRender(state)};testState.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};testRender(testState)`);
   assert(await evaluate(`document.querySelector('.outline-next')?.textContent.includes(testState.navigation.guidance.now.instructions)`),'Next instructions are not pinned');
   assert(await evaluate(`document.querySelector('[aria-current=step]').dataset.stepId==='step-3' && document.querySelector('.outline-next').textContent.includes(${JSON.stringify(advice)})`),'Outline did not follow conversation advice');
   await screenshot('shared-next-action');

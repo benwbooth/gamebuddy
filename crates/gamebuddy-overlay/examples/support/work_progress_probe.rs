@@ -1,8 +1,11 @@
-//! Hold a real completed answer for 35 seconds while spoken status stays live.
+//! Hold a real completed answer for 35 seconds with silent visual status.
 use super::{play_player, wait};
 use anyhow::{Context, Result, ensure};
 use gamebuddy_services::Store;
-use std::process::Command;
+use std::{
+    process::Command,
+    time::{Duration, Instant},
+};
 
 pub fn run(
     store: &Store,
@@ -35,20 +38,25 @@ pub fn run(
     wait("real completed answer reaches controlled delay", || {
         Ok(std::fs::read_to_string(log)?[before..].contains("test-answer-held"))
     })?;
-    wait("repeated audible work updates", || {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
         let text = std::fs::read_to_string(log)?;
-        Ok(text[before..].matches("\"type\":\"work-progress\"").count() >= 3)
-    })?;
-    wait("final answer is spoken after status updates", || {
-        let text = std::fs::read_to_string(log)?;
-        Ok(text[before..]
+        if text[before..]
             .split_once("test-answer-released")
             .is_some_and(|(_, final_output)| {
                 final_output
                     .lines()
                     .any(|l| l.contains("\"type\":\"caption\"") && final_answer(l))
-            }))
-    })?;
+            })
+        {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "Final answer did not arrive after silent wait"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let end = gamebuddy_services::screen::now_ms();
     quiet()?;
     ensure!(capturing()?, "Progress updates closed the microphone");
@@ -60,6 +68,22 @@ pub fn run(
         "Status updates displaced the saved final answer"
     );
     let text = std::fs::read_to_string(log)?;
+    ensure!(
+        text[before..].contains("\"type\":\"work-pending\",\"value\":true"),
+        "Missing visual work status"
+    );
+    let held = text[before..]
+        .split_once("test-answer-held")
+        .context("Held answer")?
+        .1
+        .split_once("test-answer-released")
+        .context("Released answer")?
+        .0;
+    ensure!(
+        !held.contains("GAMEBUDDY_VOICE_GATE playback-allowed true")
+            && !held.contains("\"type\":\"work-progress\""),
+        "Spoken filler interrupted the pending request"
+    );
     ensure!(
         !text[before..].contains("cue-timeout"),
         "Speech timed out during progress test"

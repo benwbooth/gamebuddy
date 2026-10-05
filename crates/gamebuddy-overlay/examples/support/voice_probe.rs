@@ -325,9 +325,11 @@ fn realtime(
     };
     let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
     let quiet = || -> Result<()> {
-        wait("voice returns to waiting for player speech", || {
-            let text = std::fs::read_to_string(&log)?;
-            Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            wait("voice returns to waiting for player speech", || {
+                let text = std::fs::read_to_string(&log)?;
+                Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
                 > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
                 // A new request no longer opens playback before approval.
                 // A stop can therefore finish while it is already closed,
@@ -337,18 +339,34 @@ fn realtime(
                     .rev()
                     .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
                     .is_some_and(|line| line.ends_with("Live voice · speak naturally")))
-        })?;
-        let before = std::fs::read_to_string(&log)?
-            .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-            .count();
-        thread::sleep(Duration::from_secs(15));
-        ensure!(
-            std::fs::read_to_string(&log)?
+            })?;
+            let before = std::fs::read_to_string(&log)?;
+            let permits = before
                 .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                .count()
-                == before,
-            "Voice started speaking again without player speech or a selected cue"
-        );
+                .count();
+            thread::sleep(Duration::from_secs(15));
+            let after = std::fs::read_to_string(&log)?;
+            let next = after
+                .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
+                .count();
+            if next == permits {
+                break;
+            }
+            // Startup perception can legitimately select the first gameplay cue
+            // after the greeting. It is not unsolicited filler; start the quiet
+            // interval after that selected cue finishes, without hiding extra audio.
+            ensure!(
+                after[before.len()..]
+                    .matches("GAMEBUDDY_NARRATION characters=")
+                    .count()
+                    >= next - permits,
+                "Voice started speaking again without player speech or a selected cue"
+            );
+            ensure!(
+                Instant::now() < deadline,
+                "Voice never settled after selected cues"
+            );
+        }
         println!("GAMEBUDDY_VOICE_WAIT_TEST_PASS 15 seconds of silence with live screen updates");
         Ok(())
     };
@@ -380,6 +398,34 @@ fn realtime(
     })?;
     if std::env::var_os("GAMEBUDDY_TEST_WORKING").is_some() {
         work_progress_probe::run(&store, &log, quiet, capturing)?;
+        let before = std::fs::read_to_string(&log)?.len();
+        play_player(&std::env::var("GAMEBUDDY_TEST_PRESENCE_WAV")?)?;
+        let end = gamebuddy_services::screen::now_ms();
+        wait("local presence reply reaches playback", || {
+            let text = std::fs::read_to_string(&log)?;
+            Ok(text[before..].contains("GAMEBUDDY_VOICE_LOCAL reply=true")
+                && text[before..].contains("GAMEBUDDY_VOICE_PLAYBACK started"))
+        })?;
+        println!(
+            "GAMEBUDDY_LOCAL_REPLY_PASS speech_end_to_audio_ms={}",
+            gamebuddy_services::screen::now_ms().saturating_sub(end)
+        );
+        quiet()?;
+        play_player(&std::env::var("GAMEBUDDY_TEST_COMMAND_WAV")?)?;
+        let end = gamebuddy_services::screen::now_ms();
+        wait("voice opens the guide without reasoning", || {
+            Ok(cardinal(conn, overlay, focus)? == 1)
+        })?;
+        let text = std::fs::read_to_string(&log)?;
+        ensure!(
+            text[before..].contains("GAMEBUDDY_VOICE_LOCAL action=7")
+                && !text[before..].contains("GAMEBUDDY_VOICE_DISPATCH "),
+            "Local commands went through the reasoning backend"
+        );
+        println!(
+            "GAMEBUDDY_LOCAL_COMMAND_PASS speech_end_to_ui_ms={}",
+            gamebuddy_services::screen::now_ms().saturating_sub(end)
+        );
         screenshot("realtime-work-progress.png")?;
         return Ok(());
     }

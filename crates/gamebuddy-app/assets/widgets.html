@@ -65,6 +65,31 @@
   /* GUIDE_LIBRARY_SCRIPT */
   function fitBox(box){const width=clamp(box.width,Math.min(230,innerWidth),innerWidth),height=box.collapsed?64:clamp(box.height,Math.min(130,innerHeight),innerHeight);return {...box,x:clamp(box.x,0,innerWidth-width),y:clamp(box.y,0,innerHeight-height),width,height}}
   function regions(){console.info('GAMEBUDDY_REGIONS '+JSON.stringify([...host.querySelectorAll('.widget'),...(!tip.hidden?[tip]:[])].map(n=>{const r=n.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})))}
+  // Replacing a scrolling viewport drops Chromium's native scrollbar capture
+  // and trackpad inertia. Keep only the actively used widget mounted until the
+  // gesture ends; other widgets still receive current observations normally.
+  let scrollingWidget=null,scrollSettle=null;
+  const scrollPointers=new Set();
+  function settleScroll(){
+    clearTimeout(scrollSettle);
+    if(scrollPointers.size)return;
+    // Chromium can keep its native scroll target latched across short pauses.
+    // Replacing it after 250 ms delivers later wheel events but loses scrolling.
+    scrollSettle=setTimeout(()=>{scrollingWidget=null;if(latestState)window.gamebuddy.render(latestState)},1000);
+  }
+  document.addEventListener('wheel',event=>{
+    const widget=event.target.closest('.widget');if(!widget)return;
+    scrollingWidget=widget;settleScroll();
+  },{passive:true,capture:true});
+  document.addEventListener('pointerdown',event=>{
+    if(event.target.closest('button,a,input,select,summary'))return;
+    const body=event.target.closest('.body');if(!body)return;
+    scrollingWidget=body.closest('.widget');scrollPointers.add(event.pointerId);clearTimeout(scrollSettle);
+  },true);
+  for(const type of ['pointerup','pointercancel','lostpointercapture'])document.addEventListener(type,event=>{
+    if(scrollPointers.delete(event.pointerId))settleScroll();
+  },true);
+  window.addEventListener('blur',()=>{scrollPointers.clear();settleScroll()});
   function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts));regions()}
   function place(node,box){box=fitBox(box);node.style.left=box.x+'px';node.style.top=box.y+'px';node.style.width=box.width+'px';node.style.height=box.height+'px'}
   function begin(event,node,id,resize){if(locked)return;hideTip();event.preventDefault();const b=node.getBoundingClientRect();active={node,id,resize,x:event.clientX,y:event.clientY,box:{...layouts[id],x:b.x,y:b.y,width:b.width,height:b.height}};event.currentTarget.setPointerCapture(event.pointerId)}
@@ -198,6 +223,7 @@
     items.forEach((item,i)=>{
       const old=[...host.children].find(n=>n.dataset.widgetId===item.id), signature=JSON.stringify(item);
       if(old && item.content?.kind==='map' && old.mapStructure===mapStructure(item.content)){old.refreshMap(item.content);return}
+      if(old && old===scrollingWidget)return;
       if(old && item.id==='guide-library'){old.refreshLibrary(state);return}
       if(old && (old.signature===signature || old.querySelector('.picker.open')))return;
       const previousScroll=old?.querySelector('.body')?.scrollTop || 0,previousLeft=old?.querySelector('.body')?.scrollLeft || 0;
