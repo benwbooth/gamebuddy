@@ -826,13 +826,20 @@ pub fn context(
     let geometric_marker = spatial["observation"]["map_registration"]
         .as_object()
         .map(|_| &spatial["observation"]["map_registration"]);
+    let display_marker = if geometric_marker.is_none() {
+        crate::spatial_maps::display_area(store, guide, saved_progress.epoch)?
+            .filter(|m| atlas.maps.iter().any(|a| a.enabled && m["map_id"] == a.id))
+    } else {
+        None
+    };
     let selected_map = marker
         .map(|m| &m.map_id)
         .or_else(|| current_place.and_then(|p| p.map_id.as_ref()))
         .filter(|id| atlas.maps.iter().any(|m| &m.id == *id && m.enabled));
     let selected_map = geometric_marker
         .and_then(|m| m["map_id"].as_str())
-        .or(selected_map.map(String::as_str));
+        .or(selected_map.map(String::as_str))
+        .or_else(|| display_marker.as_ref().and_then(|m| m["map_id"].as_str()));
     if let (Some(current), Some(target)) = (current_place, target_place)
         && current.id != target.id
     {
@@ -873,7 +880,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

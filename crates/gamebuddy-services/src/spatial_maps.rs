@@ -303,6 +303,8 @@ struct MapTrack {
     #[serde(default)]
     confirmed: Option<Confirmed>,
     #[serde(default)]
+    display: Option<Confirmed>,
+    #[serde(default)]
     profile: Option<crate::spatial::Profile>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -405,6 +407,12 @@ pub(crate) fn stabilize(
         at: snapshot.captured_at_ms,
         pending: marker.clone(),
         votes,
+        // Keep display history independent of evidence accepted as current.
+        // The OSD can show an explicitly updating outline between matches;
+        // this must never ground location, arrows or model map imagery.
+        display: confirmed
+            .clone()
+            .or_else(|| previous.and_then(|p| p.display.clone().or_else(|| p.confirmed.clone()))),
         confirmed,
         profile: Some(profile),
     };
@@ -415,6 +423,34 @@ pub(crate) fn stabilize(
     };
     ensure!(saved, "Newer map observation exists");
     Ok(output)
+}
+
+/// Last verified camera area for a pending-state OSD only. Its original time
+/// survives failed matches and expires; progress/session/crop changes clear it.
+pub(crate) fn display_area(store: &Store, guide: &Guide, epoch: u64) -> Result<Option<Value>> {
+    let Some(track) = store.get::<MapTrack>(&format!("map-track:{}", guide.id))? else {
+        return Ok(None);
+    };
+    let status = crate::screen::status(store)?;
+    if status["status"] != "live"
+        || status["session_id"] != track.ticket.session
+        || status["capture_epoch"].as_u64() != Some(track.ticket.epoch)
+        || track.revision != guide.revision
+        || track.epoch != epoch
+        || track.profile.as_ref() != Some(&crate::spatial::profile(store, guide)?)
+    {
+        return Ok(None);
+    }
+    let Some(confirmed) = track
+        .display
+        .or(track.confirmed)
+        .filter(|c| crate::screen::now_ms().saturating_sub(c.at) <= 15_000)
+    else {
+        return Ok(None);
+    };
+    let mut marker = confirmed.output(crate::screen::now_ms());
+    marker["tracking_status"] = json!("updating");
+    Ok(Some(marker))
 }
 
 #[cfg(test)]
@@ -428,6 +464,38 @@ mod tests {
         marker: Option<Value>,
     ) -> Result<Option<Value>> {
         super::stabilize(store, guide, frame, epoch, &[100; 24 * 18 * 3], marker)
+    }
+    #[test]
+    fn pending_display_history_cannot_become_current_evidence_or_survive_resets() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# A")?;
+        let ticket = crate::screen::start(&store, "Game", true)?;
+        let path = dir.path().join("screen.png");
+        image::RgbImage::new(64, 64).save(&path)?;
+        crate::screen::publish(&store, &ticket, &path, "test")?;
+        let mut frame = crate::screen::snapshot(&store)?;
+        let marker =
+            Some(json!({"map_id":"map","region":{"x":0.1,"y":0.0,"width":0.1,"height":1.0}}));
+        let now = crate::screen::now_ms();
+        frame.captured_at_ms = now - 2000;
+        assert!(stabilize(&store, &guide, &frame, 0, marker.clone())?.is_none());
+        frame.captured_at_ms = now - 1000;
+        assert!(stabilize(&store, &guide, &frame, 0, marker)?.is_some());
+        frame.captured_at_ms = now;
+        assert!(super::stabilize(&store, &guide, &frame, 0, &[0; 24 * 18 * 3], None)?.is_none());
+        let display = display_area(&store, &guide, 0)?.unwrap();
+        assert_eq!(display["observed_at_ms"], now - 1000);
+        assert_eq!(display["tracking_status"], "updating");
+        assert!(display_area(&store, &guide, 1)?.is_none());
+        let key = format!("map-track:{}", guide.id);
+        let mut track: MapTrack = store.get(&key)?.unwrap();
+        track.display.as_mut().unwrap().at = now - 16000;
+        store.put(&key, &track)?;
+        assert!(display_area(&store, &guide, 0)?.is_none());
+        crate::screen::start(&store, "Game", true)?;
+        assert!(display_area(&store, &guide, 0)?.is_none());
+        Ok(())
     }
     #[test]
     fn projection_rejects_edge_clamping_but_allows_small_camera_overscan() {

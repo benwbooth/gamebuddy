@@ -323,7 +323,15 @@ fn realtime(
         wait("voice returns to waiting for player speech", || {
             let text = std::fs::read_to_string(&log)?;
             Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-                > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+                > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
+                // A new request no longer opens playback before approval.
+                // A stop can therefore finish while it is already closed,
+                // without another playback-allowed transition to false.
+                && text
+                    .lines()
+                    .rev()
+                    .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
+                    .is_some_and(|line| line.ends_with("Live voice · speak naturally")))
         })?;
         let before = std::fs::read_to_string(&log)?
             .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
@@ -365,6 +373,60 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_SCENE").is_some() {
+        let id: String = store.get("active_guide")?.context("Guide")?;
+        let guide = store.guide(&id)?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let state = gamebuddy_services::navigation::context(
+                &store,
+                &guide,
+                &store.progress(&guide)?,
+                &Default::default(),
+            )?;
+            if state["map"]["geometric_marker"].is_object() {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Saved gate view never matched its atlas map"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+        let key = format!("next-action:{id}");
+        let mut old: serde_json::Value = store.get(&key)?.context("Prior recommendation")?;
+        old["session"] = gamebuddy_services::screen::status(&store)?["session_id"].clone();
+        old["instructions"] = serde_json::json!("Keep walking right along the corridor.");
+        store.put(&key, &old)?;
+        let before = std::fs::read_to_string(&log)?.len();
+        play_player(&std::env::var("GAMEBUDDY_TEST_GATE_WAV")?)?;
+        wait("gate advice selects the key interaction", || {
+            let advice: serde_json::Value = store.get(&key)?.unwrap_or_default();
+            Ok(advice["instructions"]
+                .as_str()
+                .is_some_and(|s| s.to_lowercase().contains("key")))
+        })?;
+        quiet()?;
+        let tail = std::fs::read_to_string(&log)?[before..].to_string();
+        ensure!(
+            tail.contains("images=2"),
+            "Gate reasoning did not receive both actual screen and map images"
+        );
+        ensure!(
+            tail.contains("GAMEBUDDY_VOICE_PLAYBACK started"),
+            "Gate answer was never played"
+        );
+        ensure!(
+            tail.lines()
+                .any(|l| l.contains("\"type\":\"caption\"") && l.to_lowercase().contains("key")),
+            "Played captions did not mention the key"
+        );
+        screenshot("realtime-gate-context.png")?;
+        println!(
+            "GAMEBUDDY_GATE_VOICE_TEST_PASS actual captured gate + atlas images; old right advice replaced by key interaction; captions and audible reply"
+        );
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
         let id: String = store.get("active_guide")?.context("guide")?;
         ensure!(
@@ -509,7 +571,7 @@ fn realtime(
         wait("live captions arrive before the answer completes", || {
             let text = std::fs::read_to_string(&log)?;
             let tail = &text[before..];
-            Ok(tail.contains("GAMEBUDDY_CAPTION_UPDATE") && tail.contains("final=false"))
+            Ok(tail.contains("GAMEBUDDY_CAPTION_UPDATE") && tail.contains("playback=true"))
         })?;
         thread::sleep(Duration::from_millis(450));
         screenshot("realtime-live-captions.png")?;
@@ -524,7 +586,7 @@ fn realtime(
         )?;
         quiet()?;
         println!(
-            "GAMEBUDDY_CAPTIONS_TEST_PASS incremental subtitles before final transcript; verify Purple elephants in captured audio"
+            "GAMEBUDDY_CAPTIONS_TEST_PASS subtitles follow the audio playback clock; verify Purple elephants in captured audio"
         );
     }
     if std::env::var_os("GAMEBUDDY_TEST_RESPONSIVE").is_some() {
@@ -589,10 +651,24 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
             .matches("GAMEBUDDY_VOICE_PLAYBACK started")
             .count())
     };
+    let wait_story = |before| -> Result<()> {
+        // Speech is released only after the backend completes the requested
+        // five paragraphs. Give long-form generation its own bounded budget;
+        // ordinary gameplay and interruption tools retain their shorter checks.
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while playback_count()? <= before {
+            ensure!(
+                Instant::now() < deadline,
+                "Completed long-form reply never started"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    };
     let before = playback_count()?;
     play_player(&story)?;
     let started = Instant::now();
-    wait("long reply starts", || Ok(playback_count()? > before))?;
+    wait_story(before)?;
     println!(
         "GAMEBUDDY_RESPONSIVE_STORY_START latency_seconds={:.1}",
         started.elapsed().as_secs_f32()
@@ -627,7 +703,9 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     wait("interrupted answer finishes", || {
         let text = std::fs::read_to_string(log)?;
         Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
+            && text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+                > text.rfind("GAMEBUDDY_VOICE_GATE reply-permit player"))
     })?;
     let before = playback_count()?;
     let last_message = store
@@ -637,10 +715,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
         .unwrap_or(0);
     play_player(&story)?;
     let started = Instant::now();
-    wait(
-        "second long reply starts",
-        || Ok(playback_count()? > before),
-    )?;
+    wait_story(before)?;
     let spoken_started = Instant::now();
     // The request is at least 250 words; a naturally paced five-paragraph
     // response can legitimately exceed a minute and a half.
@@ -674,9 +749,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     })?;
     let before = playback_count()?;
     play_player(&story)?;
-    wait("speech for a short interruption", || {
-        Ok(playback_count()? > before)
-    })?;
+    wait_story(before)?;
     thread::sleep(Duration::from_secs(3));
     let prior_input = std::fs::read_to_string(log)?
         .matches("\"type\":\"input-active\",\"value\":true")

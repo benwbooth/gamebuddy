@@ -42,6 +42,10 @@ JS
 player=$!
 for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
+  export GAMEBUDDY_TEST_GATE_WAV="$runtime_dir/gate.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_GATE_WAV" 'Look at the game. I am stuck against the wall at the far right edge of town. What should I do here?'
+fi
 if [[ -n "${GAMEBUDDY_TEST_LOCATION:-}" ]]; then
   export GAMEBUDDY_TEST_LOCATION_WAV="$runtime_dir/location.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_LOCATION_WAV" 'I already walked there. I am at the restoration vendors now. Stop telling me to walk left toward them. What should I do here?'
@@ -57,6 +61,11 @@ if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STOP_WAV" 'Stop.'
 fi
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
+if [[ -n "${GAMEBUDDY_TEST_STORE:-}" ]]; then
+  [[ "$GAMEBUDDY_TEST_STORE" == /tmp/* && -n "${GAMEBUDDY_TEST_SCENE:-}" ]]
+  cp "$GAMEBUDDY_TEST_STORE/gamebuddy.sqlite" "$GAMEBUDDY_TEST_DATA/gamebuddy.sqlite"
+  cp -a "$GAMEBUDDY_TEST_STORE/maps" "$GAMEBUDDY_TEST_DATA/maps"
+fi
 cat >"$runtime_dir/settings.json" <<'JSON'
 {"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
 JSON
@@ -65,6 +74,7 @@ if [[ -n "${GAMEBUDDY_TEST_VOICE_MODEL:-}" ]]; then
   node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.reasoning.model=process.env.GAMEBUDDY_TEST_VOICE_MODEL;fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
 fi
+date +%s%3N > "$runtime_dir/recording-start-ms"
 parec --device="$PULSE_SINK.monitor" --file-format=wav "$runtime_dir/response.wav" & recorder=$!
 ./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
     ./target/debug/examples/compositor_probe "$runtime_dir/proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
@@ -77,8 +87,12 @@ ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -
 for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
-rg -qi '\bred\b' "$runtime_dir/heard.txt"
-rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
+  rg -qi '\bkey\b' "$runtime_dir/heard.txt"
+else
+  rg -qi '\bred\b' "$runtime_dir/heard.txt"
+  rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+fi
 if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
   rg -qi 'purple elephants?' "$runtime_dir/heard.txt"
 fi

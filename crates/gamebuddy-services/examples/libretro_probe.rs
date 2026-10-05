@@ -1,5 +1,5 @@
-//! Isolated software-rendered gameplay oracle. Never reads/writes player saves.
-//! Usage: libretro_probe CORE ROM OUTPUT_DIR [INPUT_SCRIPT]
+//! Isolated software-rendered gameplay oracle. Never writes player saves; an optional raw initial-state file is read only.
+//! Usage: libretro_probe CORE ROM OUTPUT_DIR [INPUT_SCRIPT] [RAW_INITIAL_STATE]
 //! Script: idle:300,start:2,idle:180,right:1000,save:0,left:200,restore:0
 use anyhow::{Context, Result, ensure};
 use libloading::Library;
@@ -161,6 +161,18 @@ unsafe fn run() -> Result<()> {
         ),
         "Core could not load ROM"
     );
+    if let Some(path) = args.get(5) {
+        let state = std::fs::read(path)?;
+        ensure!(
+            call!(
+                "retro_unserialize",
+                unsafe extern "C" fn(*const c_void, usize) -> bool,
+                state.as_ptr().cast(),
+                state.len()
+            ),
+            "Initial state could not be loaded"
+        );
+    }
     let mut saved = vec![];
     let mut frame = 0u64;
     let mut epoch = 0u64;

@@ -55,12 +55,6 @@ impl Narrator {
             self.event_votes = 0;
             return None;
         }
-        if self
-            .last_conversation
-            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(45))
-        {
-            return None;
-        }
         let guidance = &context["guidance"];
         let ready = guidance["status"] == "ready"
             && context["screen"]["status"] == "live"
@@ -74,6 +68,12 @@ impl Narrator {
         } else {
             String::new()
         };
+        let recently_talking = self
+            .last_conversation
+            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(45));
+        if !self.introduced && recently_talking {
+            return None;
+        }
         if !self.introduced {
             self.introduced = true;
             self.last_spoken = Some(now);
@@ -128,7 +128,10 @@ impl Narrator {
                 && scene["confidence"].as_f64().unwrap_or_default() >= 0.8
                 && self
                     .last_spoken
-                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(90))
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(8))
+                && self
+                    .last_conversation
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(3))
             {
                 self.spoken_events.insert(event, now);
                 self.last_spoken = Some(now);
@@ -137,6 +140,12 @@ impl Narrator {
         } else {
             self.pending_event.clear();
             self.event_votes = 0;
+        }
+        if self
+            .last_conversation
+            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(45))
+        {
+            return None;
         }
         if action != self.pending {
             self.pending = action.clone();
@@ -251,6 +260,26 @@ mod tests {
             c["screen"]["scene"]["captured_at_ms"] = json!(at);
             assert!(n.next(&c, t + Duration::from_secs(at)).is_none());
         }
+    }
+    #[test]
+    fn a_confirmed_threat_is_not_silenced_for_45_seconds_after_guidance() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        n.next(&c, t);
+        c["conversation_active"] = json!(true);
+        assert!(n.next(&c, t + Duration::from_secs(100)).is_none());
+        c["conversation_active"] = json!(false);
+        c["screen"]["scene"]["event"] = json!("danger");
+        c["screen"]["scene"]["feedback"] = json!("Watch the enemy ahead.");
+        c["screen"]["scene"]["confidence"] = json!(0.95);
+        c["screen"]["scene"]["captured_at_ms"] = json!(101);
+        assert!(n.next(&c, t + Duration::from_secs(101)).is_none());
+        c["screen"]["scene"]["captured_at_ms"] = json!(104);
+        assert_eq!(
+            n.next(&c, t + Duration::from_secs(104)).as_deref(),
+            Some("Watch the enemy ahead.")
+        );
     }
     #[test]
     fn action_jitter_cannot_repeat_a_hint_and_new_hints_are_spaced_out() {

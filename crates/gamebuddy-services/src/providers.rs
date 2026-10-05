@@ -118,6 +118,9 @@ pub struct ModelRequest {
 }
 pub trait ReasoningProvider {
     fn complete(&self, request: ModelRequest) -> Result<String>;
+    fn complete_structured(&self, request: ModelRequest, _schema: Value) -> Result<String> {
+        self.complete(request)
+    }
 }
 pub struct HttpProvider {
     pub config: ProviderConfig,
@@ -150,6 +153,14 @@ impl HttpProvider {
 }
 impl ReasoningProvider for HttpProvider {
     fn complete(&self, r: ModelRequest) -> Result<String> {
+        self.complete_with_schema(r, None)
+    }
+    fn complete_structured(&self, r: ModelRequest, schema: Value) -> Result<String> {
+        self.complete_with_schema(r, Some(schema))
+    }
+}
+impl HttpProvider {
+    fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
         match self.config.kind {
             ProviderKind::Codex => {
                 return crate::subscription::codex_complete(&self.config.model, r);
@@ -165,7 +176,7 @@ impl ReasoningProvider for HttpProvider {
             ProviderKind::Ollama => (format!("{base}/api/chat"), {
                 let mut body = json!({"model":self.config.model,"stream":false,"think":false,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":16384,"num_predict":4096}});
                 if r.json {
-                    body["format"] = json!("json");
+                    body["format"] = schema.unwrap_or(json!("json"));
                 }
                 body
             }),

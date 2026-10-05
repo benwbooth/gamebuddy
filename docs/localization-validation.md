@@ -58,6 +58,16 @@ The follow-up flicker report exposed a separate confirmation bug: reprocessing a
 
 The regression includes duplicate captures, short missed registrations, expiration without timestamp renewal, changed scenes, distant-map confirmation and reset invalidation. The latest saved vendor capture matched with 295 inliers and retained the map across 30 sampled updates. The saved-frame integration test exports the actual native navigation updates beside its initial state as `.updates.json`. The optional Qt reader test replays those updates and audits the camera highlight on animation frames, including metadata-only refreshes between geometric updates. That run covered 70 updates and 408 rendered frames with no hidden, offscreen, replaced or occluded highlight. This remains a saved-capture replay in an isolated Qt session, not a new live-game temporal-accuracy measurement.
 
+## October 4: town-edge context and pending display
+
+A later saved session still showed the correct far-right Eolis map registration but no semantic scene: the observer result failed with `missing field confidence`. The saved backend recommendation already said to use the exit-gate key, while the generated voice transcript continued to say to go right. This separates capture, local scene parsing and voice delivery failures.
+
+The current observer uses an Ollama JSON schema and supplies explicit obstacle/threat/exit fields. Previous descriptive text and confidence are no longer fed back as evidence. Native image reasoning receives changed views during active requests, and the voice playback gate accepts completed backend answers only. The captured gate and its actual atlas were replayed through XComposite, Qt, WebRTC, real reasoning tools and a dedicated audio sink. The recorded answer said to use a Key of Jack / Key J; the Now card and outline showed that same key interaction. The test did not modify the player's guide, progress or saves.
+
+Display history is now separate from live localization evidence. During a pending/missed match, the OSD can retain the last verified area as a dashed **Camera area · updating** outline for at most fifteen seconds from its original match. It does not establish current location, navigation arrows or the red map crop sent to reasoning. Freshness, session/crop/revision/progress/calibration changes and disabled maps bound this history. Confirmed map geometry keeps its existing stricter evidence checks.
+
+Concurrent capture, Qwen scene observation and learned matching retained the marker through 502 polls of the saved CRT gate frame. A separate real-core movement sequence, initialized from a read-only temporary copy of the player's state, retained it through 530 polls. Neither replay reproduced a stationary dropout; the explicit pending-display regression covers the remaining asynchronous gap. The Qt audit mixed thirty movement states with forty further updates, including controlled pending states: 363 rendered frames, zero hidden, offscreen, replaced or occluded highlights. These are bounded local replays, not proof of full-game tracking accuracy or monster recognition across unseen encounters.
+
 ## Reproduce with your own game files
 
 ```sh

@@ -263,7 +263,9 @@ fn main() -> anyhow::Result<()> {
         "Overlay contaminated game-only capture"
     );
     if std::env::var_os("GAMEBUDDY_TEST_MIC_SOURCE").is_some() {
-        if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
+        if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some()
+            && std::env::var_os("GAMEBUDDY_TEST_SCENE").is_none()
+        {
             let gc = conn.generate_id()?;
             conn.create_gc(gc, window, &CreateGCAux::new().foreground(0xff2020))?
                 .check()?;
@@ -293,6 +295,56 @@ fn main() -> anyhow::Result<()> {
             .check()?;
             conn.free_gc(gc)?.check()?;
             conn.flush()?;
+        }
+        if let Ok(path) = std::env::var("GAMEBUDDY_TEST_SCENE") {
+            let image = image::open(path)?.thumbnail(1280, 720).to_rgb8();
+            let (w, h) = image.dimensions();
+            let (x, y) = ((1280 - w) / 2, (720 - h) / 2);
+            let gc = conn.generate_id()?;
+            conn.create_gc(gc, window, &CreateGCAux::new())?.check()?;
+            for row in (0..h).step_by(32) {
+                let height = (h - row).min(32);
+                let mut bytes = Vec::new();
+                for py in row..row + height {
+                    for px in 0..w {
+                        let p = image.get_pixel(px, py).0;
+                        bytes.extend([p[2], p[1], p[0], 0]);
+                    }
+                }
+                conn.put_image(
+                    ImageFormat::Z_PIXMAP,
+                    window,
+                    gc,
+                    w as u16,
+                    height as u16,
+                    x as i16,
+                    (y + row) as i16,
+                    0,
+                    screen.root_depth,
+                    &bytes,
+                )?
+                .check()?;
+            }
+            conn.free_gc(gc)?.check()?;
+            conn.flush()?;
+            let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
+            let id: String = store.get("active_guide")?.context("Fixture guide")?;
+            let ticket = gamebuddy_services::screen::status(&store)?["session_id"]
+                .as_str()
+                .context("Capture session")?
+                .to_owned();
+            let ticket = gamebuddy_services::screen::ticket(&store, &ticket)?;
+            gamebuddy_services::screen::set_crop(
+                &store,
+                &ticket,
+                gamebuddy_core::Crop {
+                    x: x as f32 / 1280.,
+                    y: y as f32 / 720.,
+                    width: w as f32 / 1280.,
+                    height: h as f32 / 720.,
+                },
+            )?;
+            println!("GAMEBUDDY_CAPTURED_SCENE_READY guide={id} width={w} height={h}");
         }
         support::voice_probe::run(&conn, window, overlay, focus, &directory, screenshot)?;
         return Ok(());

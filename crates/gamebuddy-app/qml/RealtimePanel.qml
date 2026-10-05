@@ -35,14 +35,10 @@ WebEngineView {
     property bool captionStreaming: false
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
     function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
-    function assistantTranscript(text, complete) {
-        // The transport can produce unsolicited speech. Captions follow the
-        // same requested reply as playback, including when output is muted.
-        if(!waitingForReply && !assistantSpeaking && !captionStreaming)return
-        if(complete){captionText=text;captionStreaming=false}
-        else {captionText=(captionStreaming?captionText:"")+text;captionStreaming=true}
-        if(trace && captionText.length)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" final="+complete)
-        if(captionText.length)panel.answer(captionText)
+    function speakApproved(text) {
+        if(!text.length || !connected)return
+        pendingCue=text
+        runJavaScript("gamebuddyVoice.queueSpeech("+JSON.stringify(text)+")")
     }
     function updateStatus() {
         if(!started || !connected || failed)return
@@ -120,14 +116,12 @@ WebEngineView {
         const text=transport.next_narration(context())
         if(text.length){
             if(trace)console.warn("GAMEBUDDY_NARRATION characters="+text.length)
-            panel.answer(text)
             if(enabledBackend){
                 // This cue already contains the selected words. Appending
                 // commentary here can race and cancel its queued speech.
                 // Authorize playback before the cue can produce remote audio.
-                pendingCue=text
-                runJavaScript("gamebuddyVoice.allowReply('cue')",()=>transport.speak(text))
-            }
+                speakApproved(text)
+            } else panel.answer(text)
         }
     }
     Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
@@ -155,10 +149,9 @@ WebEngineView {
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
-            else if(event.method==="thread/realtime/transcript/delta" && p.role==="assistant")panel.assistantTranscript(p.delta || "",false)
+            else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "")
             else if(event.method==="thread/realtime/transcript/done") {
                 if(p.role==="user")panel.transcript(p.text)
-                else if(p.role==="assistant")panel.assistantTranscript(p.text || "",true)
             }
         }
     }
@@ -199,12 +192,18 @@ WebEngineView {
             transport.player_speech(userSpeaking)
             if(userSpeaking)updateContext()
         }
+        else if(event.type==="speech-ready")transport.speak(event.value)
+        else if(event.type==="caption"){
+            captionText=event.value;captionStreaming=captionText.length>0
+            if(trace)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" playback=true")
+            panel.answer(captionText)
+        }
         else if(event.type==="output-active"){
             if(event.value)pendingCue=""
             if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started")
             outputAt=Date.now();assistantSpeaking=event.value
         }
-        else if(event.type==="reply-pending")waitingForReply=event.value
+        else if(event.type==="reply-pending"){waitingForReply=event.value;if(!waitingForReply)captionStreaming=false}
         else if(event.type==="cue-retry" && pendingCue.length)transport.speak(pendingCue)
         else if(event.type==="cue-timeout"){pendingCue="";status="Voice cue unavailable · you can still speak"}
         else if(event.type==="playback-allowed" || event.type==="reply-permit"){if(trace)console.warn("GAMEBUDDY_VOICE_GATE "+event.type+" "+event.value)}

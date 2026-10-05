@@ -98,6 +98,9 @@ try {
   await new Promise(resolve=>setTimeout(resolve,100));
   await evaluate(`{const viewport=stableMap.querySelector('.map-viewport');window.savedMapPan={x:viewport.scrollLeft,y:viewport.scrollTop,width:stableImage.parentElement.style.width};testState.navigation.map.spatial.emulator={age_ms:9999};testRender(testState)}`);
   assert(await evaluate(`(()=>{const viewport=stableMap.querySelector('.map-viewport');return (savedMapPan.x>0||savedMapPan.y>0)&&viewport.scrollLeft===savedMapPan.x&&viewport.scrollTop===savedMapPan.y&&stableImage.parentElement.style.width===savedMapPan.width})()`),'Metadata-only refresh reset map pan or zoom');
+  await evaluate(`testState.navigation.map.updating_camera_area={...testState.navigation.map.geometric_marker,tracking_status:'updating',observed_at_ms:Date.now()-1000};testState.navigation.map.geometric_marker=null;testRender(testState)`);
+  assert(await evaluate(`!stableMap.querySelector('.map-marker').hidden && stableMap.querySelector('.map-marker').classList.contains('updating') && stableMap.querySelector('.map-marker span').textContent.includes('updating')`),'Pending matches must retain an explicitly updating outline');
+  await evaluate(`testState.navigation.map.updating_camera_area=null`);
   await evaluate(`testState.navigation.map.geometric_marker=null;testState.navigation.map.current_place=null;testState.navigation.map.selected_map_id=null;testRender(testState)`);
   assert(await evaluate(`stableMap.querySelector('.map-marker').hidden && stableImage===document.querySelector('.map-viewport img')`),'Stale location must hide its marker without flashing the image');
   await click('[aria-label="Minimize Reader fixture · Location map"]');
@@ -147,7 +150,7 @@ try {
         requestAnimationFrame(inspect)}
       requestAnimationFrame(inspect);
       const timeout=setTimeout(()=>{clearInterval(timer);done=true;reject(Error('Camera-area audit timed out'))},20000);
-      const timer=setInterval(()=>{try{if(ticks<updates.length)Object.assign(testState.navigation,updates[ticks]);else{testState.navigation.map.spatial.message=ticks%2?'':'Starting visual tracking…';if(ticks%4===3)testState.navigation.map.geometric_marker.region.x+=.00001}testRender(testState);
+      const timer=setInterval(()=>{try{if(ticks<updates.length)Object.assign(testState.navigation,updates[ticks]);else{testState.navigation.map.spatial.message=ticks%2?'':'Starting visual tracking…';if(ticks%4===3)testState.navigation.map.geometric_marker.region.x+=.00001}const current=testState.navigation.map.geometric_marker;if(ticks%3===1&&current){testState.navigation.map.updating_camera_area={...current,tracking_status:'updating',observed_at_ms:Date.now()-500};testState.navigation.map.geometric_marker=null}testRender(testState);if(current)testState.navigation.map.geometric_marker=current;testState.navigation.map.updating_camera_area=null;
         if(++ticks===updates.length+40){clearInterval(timer);clearTimeout(timeout);done=true;resolve({ticks,frames,hidden,offscreen,replaced,occluded})}}catch(error){clearInterval(timer);clearTimeout(timeout);done=true;reject(error)}},100)
     })`);
     assert(continuity.frames>40&&continuity.hidden===0&&continuity.offscreen===0&&continuity.replaced===0&&continuity.occluded===0,'Camera highlight flickered in Qt: '+JSON.stringify(continuity));

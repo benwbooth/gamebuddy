@@ -6,16 +6,28 @@
   const receiver=document.getElementById('receiver');
   let outputMuted=false,replyUntil=0,lastReplyAudio=0,assistantDoneAt=0,awaitingAnswer=false;
   let backendBusy=false,playerSpeaking=false,localSpeech=false,confirmedInputUntil=0,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
-  let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false;
+  let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,lastIncomingAudio=0;
+  let captionParts=[],captionText='',captionFirstMs=null,captionAudioStart=null,captionPending=[],captionGeneration=0;
+  function resetCaptions(){captionParts=[];captionText='';captionFirstMs=null;captionAudioStart=null;captionPending=[];captionGeneration++;emit('caption','')}
+  function queueSpeech(text){queuedSpeech=text;emit('reply-pending',true)}
+  function approveSpeech(){approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
+  function captionsAt(sample,playbackTime){
+    if(captionFirstMs===null||captionAudioStart===null)return;
+    const ms=captionFirstMs+(sample-captionAudioStart)*1000/audioContext.sampleRate;
+    while(captionParts.length&&captionParts[0].start<=ms){
+      const part=captionParts.shift();captionText+=part.text;
+      captionPending.push({text:captionText,at:playbackTime+(audioContext.outputLatency||0),generation:captionGeneration});
+    }
+  }
   const assistantTurns=new Set();
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value,at:Date.now()}));
   function updatePlayback(){
-    const allowed=!outputMuted&&!playerSpeaking&&replyUntil>Date.now();
+    const allowed=approved&&!outputMuted&&!playerSpeaking&&replyUntil>Date.now();
     if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
     return allowed;
   }
   // Frameless voice can generate audio without a player turn. Enforce playback
-  // locally: a real VAD turn or an explicit app cue grants one reply. Its
+  // locally: only a completed backend answer or an app cue grants speech. Its
   // native turn completion, not a word-count timer, determines when it ends.
   function allowReply(kind,preserveTurns=false){
     replyUntil=Date.now()+90000;lastReplyAudio=0;assistantDoneAt=0;awaitingAnswer=false;
@@ -32,7 +44,7 @@
     // before cutting off the speaker. Audio keeps streaming throughout.
     if(active&&Date.now()-lastReplyAudio<1000&&Date.now()>confirmedInputUntil){pendingOverlapUntil=Date.now()+2500;return}
     if(active)pendingOverlapUntil=0;
-    if(active&&!playerSpeaking){replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
+    if(active&&!playerSpeaking){queuedSpeech=null;approved=false;outputMeter?.clear();resetCaptions();replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
     if(active!==playerSpeaking)emit('input-active',active);
     playerSpeaking=active;
     if(!active&&replyUntil)replyUntil=Date.now()+90000;
@@ -61,6 +73,10 @@
       }
     }
     if(v.type==='turn.created'&&v.turn?.role==='assistant'){
+      if(approved&&approvedTurn!==null&&approvedTurn!==v.turn.id){
+        approved=false;outputMeter?.clear();emit('reply-pending',false);updatePlayback();
+      }
+      if(approved)approvedTurn=v.turn.id;
       // Old recognition cannot validate residual echo from this new reply.
       confirmedInputUntil=0;
       if(replaceQueuedTurn){outputMeter?.clear();replaceQueuedTurn=false}
@@ -68,7 +84,13 @@
     }
     // Audio/text can start before turn.created. A prior backchannel's done
     // event must not close playback in that interval.
-    if(v.type==='output_transcript.added'&&replyUntil){assistantDoneAt=0;awaitingAnswer=false;replyUntil=Date.now()+90000}
+    if(v.type==='output_transcript.added'&&approved&&replyUntil){
+      assistantDoneAt=0;awaitingAnswer=false;replyUntil=Date.now()+90000;
+      if(typeof v.item?.text==='string'&&Number.isFinite(v.start_ms)){
+        if(outputMuted){captionText+=v.item.text;emit('caption',captionText)}
+        else {if(captionFirstMs===null)captionFirstMs=v.start_ms;captionParts.push({start:v.start_ms,text:v.item.text})}
+      }
+    }
     if(v.type==='turn.done'&&v.turn?.role==='assistant'){
       // Completion of a turn interrupted by a newer request must not close
       // that newer request's playback permission.
@@ -77,7 +99,7 @@
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
-      replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
+      approved=false;queuedSpeech=null;outputMeter?.clear();resetCaptions();replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
       updatePlayback();
     }
     if(v.type==='error')emit('error',v.error?.message||'Voice transport error');
@@ -90,6 +112,15 @@
   }
   function sampleMeters(){
     const now=Date.now();let rms=0;
+    // A late completed backend answer can arrive while the voice model is
+    // still generating an unapproved answer. Wait for that turn and its RTP
+    // tail to drain before appending the chosen words or opening playback.
+    if(queuedSpeech!==null&&!playerSpeaking&&!assistantTurns.size&&now-lastIncomingAudio>=500){
+      const text=queuedSpeech;queuedSpeech=null;approveSpeech();emit('speech-ready',text);
+    }
+    while(captionPending.length&&captionPending[0].at<=(audioContext?.currentTime||0)){
+      const part=captionPending.shift();if(part.generation===captionGeneration&&approved&&!outputMuted)emit('caption',part.text);
+    }
     if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
     if(replyUntil&&(playerSpeaking||backendBusy))replyUntil=now+90000;
     // Some new sessions acknowledge an app cue without generating a turn.
@@ -99,7 +130,7 @@
       if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true)}
       else if(now-cueWaitingAt>=6000&&!cueRetried){cueRetried=true;emit('cue-retry',true)}
     }
-    if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&lastReplyAudio&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
+    if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&(lastReplyAudio||outputMuted)&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
     const allowed=updatePlayback();
     const audible=allowed&&rms>0.002;
     if(audible){playedMs+=20;lastReplyAudio=now;awaitingAnswer=false;replyUntil=now+90000;cueWaitingAt=0}
@@ -127,7 +158,7 @@
   }
   function closeMic(){captureGeneration++;pendingOverlapUntil=0;confirmedInputUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
   function disconnectOutput(){if(outputMeter?.processor){outputMeter.processor.onaudioprocess=null;outputMeter.processor.disconnect()}disconnectMeter(outputMeter);outputMeter=null;receiver.srcObject=null}
-  function stop(){generation++;clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
+  function stop(){generation++;queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open'||!sessionReady)return;
@@ -163,7 +194,7 @@
       if(!stale()){inputMeter=meter(stream);emit('capture',true)}
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
-  window.gamebuddyVoice={stop,setMicrophone,updateContext,allowReply,playerSpeech,setBackendBusy,
+  window.gamebuddyVoice={stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {
@@ -189,26 +220,29 @@
           if(e.receiver && 'jitterBufferTarget' in e.receiver){e.receiver.jitterBufferTarget=300;emit('playout-buffer',300)}
           const source=audio.createMediaStreamSource(stream),processor=audio.createScriptProcessor(1024,1,1),analyser=audio.createAnalyser(),gain=audio.createGain();
           analyser.fftSize=4096;
-          const samples=new Float32Array(audio.sampleRate*30),preRoll=new Float32Array(Math.ceil(audio.sampleRate*0.2));
-          let read=0,size=0,preAt=0,preSize=0,quietSamples=0;
+          const samples=new Float32Array(audio.sampleRate*30),sampleTimes=new Float64Array(samples.length),preRoll=new Float32Array(Math.ceil(audio.sampleRate*0.2));
+          let read=0,size=0,preAt=0,preSize=0,quietSamples=0,inputSample=0;
           const clear=()=>{read=0;size=0;preAt=0;preSize=0;quietSamples=0};
-          const append=value=>{if(size===samples.length){read=(read+1)%samples.length;size--}samples[(read+size)%samples.length]=value;size++};
+          const append=(value,at)=>{if(size===samples.length){read=(read+1)%samples.length;size--}const index=(read+size)%samples.length;samples[index]=value;sampleTimes[index]=at;size++};
           processor.onaudioprocess=event=>{
             const input=event.inputBuffer.getChannelData(0),output=event.outputBuffer.getChannelData(0);
             output.fill(0);
-            if(outputMuted||replyUntil<=Date.now()){clear();return}
+            const blockStart=inputSample;inputSample+=input.length;
             let energy=0;for(const value of input)energy+=value*value;
             const speaking=energy/input.length>0.000004;
+            if(speaking)lastIncomingAudio=Date.now();
+            if(!approved||outputMuted||replyUntil<=Date.now()){clear();return}
+            if(speaking&&captionAudioStart===null)captionAudioStart=blockStart;
             // Do not queue seconds of transport silence/comfort noise while
             // the player talks. Keep pre-roll for quiet consonant onsets.
             const waiting=!size&&!speaking || playerSpeaking&&!speaking&&quietSamples>=preRoll.length;
             if(waiting){for(const value of input){preRoll[preAt]=value;preAt=(preAt+1)%preRoll.length;preSize=Math.min(preRoll.length,preSize+1)}}
             else {
-              for(let i=0;i<preSize;i++)append(preRoll[(preAt-preSize+i+preRoll.length)%preRoll.length]);preSize=0;
-              for(const value of input)append(value);
+              for(let i=0;i<preSize;i++)append(preRoll[(preAt-preSize+i+preRoll.length)%preRoll.length],blockStart-preSize+i);preSize=0;
+              for(let i=0;i<input.length;i++)append(input[i],blockStart+i);
               quietSamples=speaking?0:quietSamples+input.length;
             }
-            if(!playerSpeaking){for(let i=0;i<output.length&&size;i++){output[i]=samples[read];read=(read+1)%samples.length;size--}}
+            if(!playerSpeaking){for(let i=0;i<output.length&&size;i++){output[i]=samples[read];captionsAt(sampleTimes[read],(event.playbackTime||audio.currentTime||0)+i/audio.sampleRate);read=(read+1)%samples.length;size--}}
           };
           source.connect(processor);processor.connect(analyser);analyser.connect(gain);gain.connect(audio.destination);
           outputMeter={source,processor,analyser,zero:gain,clear,data:new Float32Array(analyser.fftSize)};
@@ -226,7 +260,7 @@
       }catch(e){if(own===generation){stop();emit('error',stage+': '+e.name+': '+e.message)}}
     },
     async answer(sdp){const pc=peer,own=generation;try{if(pc)await pc.setRemoteDescription({type:'answer',sdp})}catch(e){if(own===generation)emit('error',e.message)}},
-    muteOutput(muted){outputMuted=muted;updatePlayback()}
+    muteOutput(muted){outputMuted=muted;if(muted)resetCaptions();updatePlayback()}
   };
 })();
 </script></body></html>
