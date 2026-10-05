@@ -146,7 +146,7 @@ WebEngineView {
             } else panel.answer(text)
         }
     }
-    Timer { interval: 1000; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
+    Timer { interval: 250; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
     // Keep perception updates out of the live speech session. Appending
     // context while the player speaks can replace part of the transcript.
     // The reasoning worker supplies current evidence after recognition.
@@ -172,6 +172,7 @@ WebEngineView {
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "")
+            else if(event.method==="gamebuddy/state-changed")panel.buddy.poll_widgets()
             else if(event.method==="gamebuddy/overlay-action"){
                 panel.overlayAction(p.action)
                 panel.runJavaScript("gamebuddyVoice.finishLocalRequest()")
@@ -268,6 +269,8 @@ WebEngineView {
         if(wasStarted && panel.started)panel.runJavaScript("gamebuddyVoice.setMicrophone("+panel.voice.active+","+JSON.stringify(panel.voice.device_name)+")")
     } }
     onSessionChanged: {
+        if(automaticSession)Qt.callLater(panel.narrate)
+
         update()
     }
 }

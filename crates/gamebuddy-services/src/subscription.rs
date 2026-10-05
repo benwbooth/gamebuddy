@@ -246,6 +246,15 @@ pub fn codex_complete(
     effort: &str,
     r: ModelRequest,
 ) -> Result<String> {
+    let started = Instant::now();
+    let trace = std::env::var_os("GAMEBUDDY_PROVIDER_TRACE").is_some();
+    if trace {
+        eprintln!(
+            "GAMEBUDDY_PROVIDER_START model={model} effort={effort} prompt_bytes={} images={}",
+            r.prompt.len(),
+            r.images.len()
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(180);
     let thread = client.thread_with_options(model, &r.system, json!([]), None, effort, deadline)?;
     let mut input = vec![json!({"type":"text","text":r.prompt})];
@@ -260,8 +269,16 @@ pub fn codex_complete(
     }
     client.request("turn/start", params, deadline)?;
     let mut answer = String::new();
+    let mut first_output = false;
     loop {
         let event = client.receive(deadline)?;
+        if trace && !first_output && event["method"] == "item/agentMessage/delta" {
+            first_output = true;
+            eprintln!(
+                "GAMEBUDDY_PROVIDER_FIRST_OUTPUT model={model} elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+        }
         client.reject(&event)?;
         if event["params"]["threadId"] != thread {
             continue;
@@ -281,6 +298,13 @@ pub fn codex_complete(
                     turn["error"]
                 );
                 ensure!(!answer.trim().is_empty(), "Codex returned no answer");
+                if trace {
+                    eprintln!(
+                        "GAMEBUDDY_PROVIDER_COMPLETE model={model} elapsed_ms={} answer_bytes={}",
+                        started.elapsed().as_millis(),
+                        answer.len()
+                    );
+                }
                 return Ok(answer);
             }
             _ => {}

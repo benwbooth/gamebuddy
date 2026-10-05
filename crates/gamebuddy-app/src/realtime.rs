@@ -609,6 +609,15 @@ impl ffi::RealtimeVoice {
                                 diagnostics.record("local_reply", json!({"utterance":utterance}));
                                 continue;
                             }
+                            if let Ok(Some(answer)) =
+                                gamebuddy_services::outcomes::quick_report(&store, &game, &request)
+                            {
+                                emit(json!({"method":"gamebuddy/state-changed","params":{}}));
+                                delivery.complete(utterance, &request, &answer);
+                                diagnostics
+                                    .record("local_world_report", json!({"utterance":utterance}));
+                                continue;
+                            }
                             let context_started = Instant::now();
                             let frame = gamebuddy_services::screen::snapshot(&store).ok();
                             let evidence = gamebuddy_services::harness::call_tool_with_images(
@@ -722,8 +731,10 @@ impl ffi::RealtimeVoice {
                             client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
                             supplied_request = request.clone();
                         }
-                        if let Some((event, reject)) = pending_tools.pop_front() {
-                            answer_tool(&mut client, &store, &game, &event, &request, reject)?;
+                        if let Some((event, reject)) = pending_tools.pop_front()
+                            && answer_tool(&mut client, &store, &game, &event, &request, reject)?
+                        {
+                            emit(json!({"method":"gamebuddy/state-changed","params":{}}));
                         }
                     }
                 }
@@ -744,7 +755,7 @@ fn answer_tool(
     event: &Value,
     request: &str,
     rejected: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let tool_started = Instant::now();
     let params = &event["params"];
     let active_game = if params["tool"] == "get_game_screen" {
@@ -813,5 +824,19 @@ fn answer_tool(
         );
     }
     client.send(json!({"id":event["id"],"result":{"success":success,"contentItems":content}}))?;
-    Ok(())
+    Ok(success
+        && matches!(
+            params["tool"].as_str(),
+            Some(
+                "report_world_state"
+                    | "review_route"
+                    | "report_step_complete"
+                    | "report_location"
+                    | "set_next_action"
+                    | "edit_plan"
+                    | "restore_plan"
+                    | "show_widget"
+                    | "remove_widget"
+            )
+        ))
 }

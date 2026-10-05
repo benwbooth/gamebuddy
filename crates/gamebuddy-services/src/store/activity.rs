@@ -59,7 +59,17 @@ impl Store {
                 )?;
                 paths.push(path);
             }
+            let before = progress.clone();
             progress.completed.insert(event.step_id.clone());
+            crate::outcomes::apply_effects(
+                self,
+                &observation.guide,
+                &before,
+                &mut progress,
+                &event.evidence,
+                "observed_action",
+                frame.captured_at_ms,
+            )?;
             records.push(
                 serde_json::json!({"step_id":event.step_id,"evidence":event,"images":paths,
                 "session":frame.ticket.session,"observed_at_ms":frame.captured_at_ms,

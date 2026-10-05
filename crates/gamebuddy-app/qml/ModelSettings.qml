@@ -15,6 +15,8 @@ ScrollView {
         const settings = JSON.parse(backend.settings_json)
         if (!settings.reasoning || !settings.vision) return
         reasoning.load(settings.reasoning); vision.load(settings.vision)
+        automaticPlanning.checked = !settings.planning
+        planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : 0
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         dirty = false; loaded = true
@@ -24,10 +26,12 @@ ScrollView {
         if (!visible || !loaded) return
         if (!reasoning.models.length && !reasoning.pendingOperation) reasoning.request("models")
         if (!vision.models.length && !vision.pendingOperation) vision.request("models")
+        if (!automaticPlanning.checked && !planning.models.length && !planning.pendingOperation) planning.request("models")
     }
     function save() {
         const settings = JSON.parse(backend.settings_json)
         settings.reasoning = reasoning.configuration(); settings.vision = vision.configuration()
+        settings.planning = automaticPlanning.checked ? null : planning.configuration()
         settings.speech = voice.currentIndex === 1 ? "codex_realtime" : "local"
         settings.fast_voice = fast.checked; settings.duck_game_audio = duck.checked
         backend.save_settings(JSON.stringify(settings))
@@ -45,8 +49,8 @@ ScrollView {
             GbButton { text:"Discard changes"; enabled:page.dirty; onClicked:page.reload() }
         }
         ProviderCard {
-            id:reasoning; backend:page.backend; role:"reasoning"; heading:"Advice & walkthroughs"
-            description:"Text answers, guide preparation, and spoken replies with local speech."
+            id:reasoning; backend:page.backend; role:"reasoning"; heading:"Interactive advice"
+            description:"Answers player questions and resolves corrections. Lower thinking reduces response time."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             onEdited:page.dirty = true
         }
@@ -55,6 +59,21 @@ ScrollView {
             description:"Reads screenshots when the guide needs a visual check. Choose a model that accepts images."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             onEdited:page.dirty = true
+        }
+        CheckBox {
+            id:automaticPlanning; objectName:"automaticPlanning"; text:"Choose background planning model automatically"
+            Layout.leftMargin:24; checked:true; onClicked:{page.dirty=true; if(!checked) page.discover()}
+        }
+        Text {
+            text:"Background planning prepares reusable route rules. With Codex advice, automatic planning uses GPT-6.1 Sol at medium thinking. Inventory and route updates then run locally."
+            color:"#a3b4c7"; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
+        }
+        ProviderCard {
+            id:planning; backend:page.backend; role:"planning"; heading:"Background route planning"
+            visible:!automaticPlanning.checked
+            description:"Interprets requirements and optional branches ahead of play without delaying voice or map updates."
+            Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
+            onEdited:page.dirty=true
         }
         Text { text:"Voice"; color:"#eaf2fa"; font.pixelSize:20; Layout.leftMargin:24 }
         ComboBox {

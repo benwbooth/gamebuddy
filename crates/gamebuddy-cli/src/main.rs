@@ -292,6 +292,9 @@ fn main() -> Result<()> {
             let settings: Settings = serde_json::from_slice(&std::fs::read(path)?)?;
             settings.reasoning.validate()?;
             settings.vision.validate()?;
+            if let Some(planning) = &settings.planning {
+                planning.validate()?;
+            }
             store.put("settings", &settings)?;
             println!("Model configuration saved");
         }

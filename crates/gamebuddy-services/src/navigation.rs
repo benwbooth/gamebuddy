@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use gamebuddy_core::{
     Atlas, Guide, MapAsset, MapLink, Place, PlaceBinding, PlaceTracker, Progress, SyncEstimate,
-    guidance_from,
+    guidance_with_outcomes,
 };
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -771,7 +771,10 @@ pub fn context(
     // the objective.
     let recommendation = advice::current(store, guide, progress, &session)?;
     let completed_cursor = advice::completed_cursor(store, guide, progress)?;
-    let mut advice = guidance_from(
+    let outcomes = crate::outcomes::prepared(store, guide)?;
+    let default_outcomes = gamebuddy_core::outcomes::OutcomeModel::default();
+    let outcome_model = outcomes.as_ref().map_or(&default_outcomes, |p| &p.model);
+    let mut advice = guidance_with_outcomes(
         guide,
         progress,
         &tracker,
@@ -779,8 +782,15 @@ pub fn context(
             .as_ref()
             .map(|r| r.step_id.as_str())
             .or(completed_cursor.as_deref()),
+        outcome_model,
     );
-    if let Some(recommendation) = &recommendation {
+    if let Some(recommendation) = &recommendation
+        && !outcome_model
+            .view(guide, progress)
+            .skipped
+            .contains_key(&recommendation.step_id)
+        && !matches!(advice.status.as_str(), "goals_complete" | "blocked")
+    {
         advice::apply_location_advice(guide, recommendation, &mut advice);
     }
     if let Some(recommendation) = &recommendation
@@ -891,7 +901,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

@@ -1,7 +1,7 @@
 //! Small, current evidence for interactive coaching. The full atlas, outline
 //! and geometry diagnostics remain available through their dedicated tools.
 use super::*;
-use gamebuddy_core::{PlaceTracker, Progress, guidance_from};
+use gamebuddy_core::{PlaceTracker, Progress, guidance_with_view};
 
 pub(super) fn navigation(value: &Value) -> Value {
     let mut recommendation = value["recommendation"].clone();
@@ -38,6 +38,10 @@ pub(super) fn location_actions(
 ) -> Result<Value> {
     let atlas = crate::navigation::atlas(store, guide)?;
     let ids = nav["spatial"]["observation"]["related_step_ids"].as_array();
+    let prepared = crate::outcomes::prepared(store, guide)?;
+    let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
+    let model = prepared.as_ref().map_or(&fallback, |p| &p.model);
+    let view = model.view(guide, progress);
     let actions: Vec<_> = ids
         .into_iter()
         .flatten()
@@ -45,12 +49,14 @@ pub(super) fn location_actions(
         .filter_map(|id| guide.step(id))
         .take(20)
         .map(|step| {
-            let mut status = action_status(guide, progress, &step.id);
+            let mut status = action_status(guide, progress, &step.id, &view);
             let supported =
                 crate::navigation::advice::supports_action(guide, &step.id, &nav["spatial"]);
             status["location_supported"] = json!(supported);
             if supported
                 && status["complete"] == false
+                && status["not_needed"] == false
+                && status["world_requirements_blocked"] == false
                 && !guide
                     .steps
                     .iter()
@@ -69,18 +75,29 @@ pub(super) fn location_actions(
     )
 }
 
-pub(super) fn action_status(guide: &Guide, progress: &Progress, id: &str) -> Value {
+pub(super) fn action_status(
+    guide: &Guide,
+    progress: &Progress,
+    id: &str,
+    view: &gamebuddy_core::outcomes::PlanningView,
+) -> Value {
     let complete = gamebuddy_core::step_complete(guide, progress, id);
     let leaf = !guide
         .steps
         .iter()
         .any(|s| s.parent_id.as_deref() == Some(id));
-    let advice = guidance_from(guide, progress, &PlaceTracker::default(), Some(id));
-    json!({"complete":complete,"eligible_next_action":!complete && leaf && advice.now.as_ref().is_some_and(|s|s.id==id),
+    let advice = guidance_with_view(guide, progress, &PlaceTracker::default(), Some(id), view);
+    json!({"complete":complete,"not_needed":view.skipped.contains_key(id),"reason":view.skipped.get(id),"world_requirements_blocked":view.blocked.contains_key(id),"eligible_next_action":!complete && leaf && !view.skipped.contains_key(id) && !view.blocked.contains_key(id) && advice.now.as_ref().is_some_and(|s|s.id==id),
         "unconfirmed_prerequisites":advice.requirements.iter().map(|s|&s.id).collect::<Vec<_>>()})
 }
 
-pub(super) fn nearby_actions(guide: &Guide, progress: &Progress, current: &Value) -> Value {
+pub(super) fn nearby_actions(
+    guide: &Guide,
+    progress: &Progress,
+    current: &Value,
+    model: &gamebuddy_core::outcomes::OutcomeModel,
+) -> Value {
+    let view = model.view(guide, progress);
     let actions: Vec<_> = gamebuddy_core::player_outline(guide)
         .into_iter()
         .filter(|step| {
@@ -101,7 +118,9 @@ pub(super) fn nearby_actions(guide: &Guide, progress: &Progress, current: &Value
             .skip(start)
             .take(12)
             .filter_map(|s| guide.step(&s.id))
-            .map(|step| { json!({"step":step,"status":action_status(guide,progress,&step.id)}) })
+            .map(|step| {
+                json!({"step":step,"status":action_status(guide,progress,&step.id,&view)})
+            })
             .collect::<Vec<_>>()
     )
 }
@@ -148,7 +167,12 @@ mod tests {
         )
         .unwrap();
         guide.steps[1].prerequisites = vec!["step-1".into()];
-        let actions = nearby_actions(&guide, &Progress::default(), &json!({"id":"step-1"}));
+        let actions = nearby_actions(
+            &guide,
+            &Progress::default(),
+            &json!({"id":"step-1"}),
+            &Default::default(),
+        );
         assert_eq!(actions[0]["status"]["eligible_next_action"], true);
         assert_eq!(actions[1]["status"]["eligible_next_action"], false);
         assert_eq!(

@@ -39,6 +39,26 @@ impl Narrator {
                 ..Self::default()
             };
         }
+        let scene = &context["screen"]["scene"];
+        if context["screen"]["status"] == "live"
+            && scene["fresh"] == true
+            && scene["confidence"].as_f64().unwrap_or_default() >= 0.8
+        {
+            let at = scene["captured_at_ms"].as_u64().unwrap_or_default();
+            let event = field(scene, "event");
+            if at > self.last_scene_at {
+                self.last_scene_at = at;
+                if event == self.pending_event {
+                    self.event_votes = self.event_votes.saturating_add(1);
+                } else {
+                    self.pending_event = event.into();
+                    self.event_votes = 1;
+                }
+            }
+        } else {
+            self.pending_event.clear();
+            self.event_votes = 0;
+        }
         // Keep the latest action pending while the player or Buddy is speaking.
         // Seeing an action during a conversation is not proof it was spoken.
         if context["conversation_active"] == true {
@@ -47,7 +67,7 @@ impl Narrator {
         }
         if self
             .last_conversation
-            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1))
+            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(250))
         {
             return None;
         }
@@ -97,33 +117,8 @@ impl Narrator {
         if can_coach && urgent {
             return Some(self.coach(coaching, now));
         }
-        if ready && !field(action, "id").is_empty() && self.spoken_actions.insert(action_key) {
-            self.last_spoken = Some(now);
-            // Actual instructions, immediately on the next poll. No named-place
-            // requirement or minute-long delay after the previous objective.
-            return Some(cue(context));
-        }
-        if can_coach
-            && self
-                .last_spoken
-                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(3))
-        {
-            return Some(self.coach(coaching, now));
-        }
-
-        let scene = &context["screen"]["scene"];
         if live && scene["fresh"] == true {
-            let at = scene["captured_at_ms"].as_u64().unwrap_or_default();
             let event = field(scene, "event");
-            if at > self.last_scene_at {
-                self.last_scene_at = at;
-                if event == self.pending_event {
-                    self.event_votes = self.event_votes.saturating_add(1);
-                } else {
-                    self.pending_event = event.into();
-                    self.event_votes = 1;
-                }
-            }
             let supplied = field(scene, "feedback");
             let feedback = if supplied.trim().is_empty() {
                 match event {
@@ -144,16 +139,27 @@ impl Narrator {
                 && scene["confidence"].as_f64().unwrap_or_default() >= 0.8
                 && self
                     .last_spoken
-                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(8))
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(250))
             {
                 self.spoken_events.insert(event.into(), now);
                 self.last_spoken = Some(now);
                 return Some(brief(feedback));
             }
-        } else {
-            self.pending_event.clear();
-            self.event_votes = 0;
         }
+        if ready && !field(action, "id").is_empty() && self.spoken_actions.insert(action_key) {
+            self.last_spoken = Some(now);
+            // Actual instructions, immediately on the next poll. No named-place
+            // requirement or minute-long delay after the previous objective.
+            return Some(cue(context));
+        }
+        if can_coach
+            && self
+                .last_spoken
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(3))
+        {
+            return Some(self.coach(coaching, now));
+        }
+
         None
     }
 
@@ -282,6 +288,49 @@ mod tests {
         assert_eq!(
             n.next(&c, t + Duration::from_secs(12)).as_deref(),
             Some("Watch the enemy ahead.")
+        );
+    }
+
+    #[test]
+    fn verified_events_precede_new_objectives_and_survive_conversation() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        n.next(&action("a"), t);
+        let mut c = action("b");
+        c["conversation_active"] = json!(true);
+        for at in [1, 2] {
+            c["screen"]["scene"] = json!({"fresh":true,"confidence":0.95,"event":"danger","feedback":"Watch the enemy ahead.","captured_at_ms":at});
+            assert!(n.next(&c, t + Duration::from_millis(at * 100)).is_none());
+        }
+        c["conversation_active"] = json!(false);
+        assert!(n.next(&c, t + Duration::from_millis(400)).is_none());
+        assert_eq!(
+            n.next(&c, t + Duration::from_millis(450)).as_deref(),
+            Some("Watch the enemy ahead.")
+        );
+        assert_eq!(
+            n.next(&c, t + Duration::from_millis(700)).as_deref(),
+            Some("Walk right to b. Climb the ladder.")
+        );
+    }
+
+    #[test]
+    fn uncertain_event_is_not_a_confirmation() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        n.next(&c, t);
+        c["screen"]["scene"] =
+            json!({"fresh":true,"confidence":0.4,"event":"death","captured_at_ms":1});
+        assert!(n.next(&c, t + Duration::from_secs(1)).is_none());
+        c["screen"]["scene"] =
+            json!({"fresh":true,"confidence":0.95,"event":"death","captured_at_ms":2});
+        assert!(n.next(&c, t + Duration::from_secs(2)).is_none());
+        c["screen"]["scene"]["captured_at_ms"] = json!(3);
+        assert!(
+            n.next(&c, t + Duration::from_secs(3))
+                .unwrap()
+                .contains("died")
         );
     }
 }

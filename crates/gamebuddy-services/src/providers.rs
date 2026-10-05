@@ -41,6 +41,9 @@ impl Default for ProviderConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Slow source planning runs separately from interactive voice.
+    #[serde(default)]
+    pub planning: Option<ProviderConfig>,
     pub reasoning: ProviderConfig,
     pub vision: ProviderConfig,
     #[serde(default)]
@@ -59,6 +62,7 @@ fn ducking_enabled() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            planning: None,
             reasoning: ProviderConfig::default(),
             vision: ProviderConfig::default(),
             speech: SpeechBackend::default(),
@@ -67,6 +71,19 @@ impl Default for Settings {
         }
     }
 }
+impl Settings {
+    pub fn planning_config(&self) -> ProviderConfig {
+        self.planning.clone().unwrap_or_else(|| {
+            let mut config = self.reasoning.clone();
+            if config.kind == ProviderKind::Codex {
+                config.model = "gpt-6.1-sol".into();
+                config.reasoning_effort = "medium".into();
+            }
+            config
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechBackend {

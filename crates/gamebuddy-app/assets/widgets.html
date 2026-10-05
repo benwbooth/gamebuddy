@@ -210,9 +210,9 @@
     if(state.layouts)layouts={...state.layouts,...layouts};
     let items=[...(state.widgets||[])];
     if(state.navigation)items.unshift({id:'location-map',title:(state.game||state.guide?.game||'Game')+' · Location map',content:{kind:'map',map:state.navigation.map,guide_id:state.guide?.id,location_status:state.navigation.location?.status,location_detail:state.navigation.location?.detail}});
-    if(state.navigation?.guidance)items.unshift({id:'current-step',title:(state.navigation.guidance.requirements?.length?'Check prerequisite · ':'')+(state.navigation.guidance.now?.title||'Next action'),content:{kind:'guidance',guidance:state.navigation.guidance}});
+    if(state.navigation?.guidance)items.unshift({id:'current-step',title:(state.navigation.guidance.requirements?.length?'Check prerequisite · ':'')+(state.navigation.guidance.now?.title||(state.navigation.guidance.status==='goals_complete'?'Goal complete':'Next action')),content:{kind:'guidance',guidance:state.navigation.guidance}});
     else if(state.current)items.unshift({id:'current-step',title:state.current.title,content:{kind:'text',body:state.current.instructions},source_step_ids:[state.current.id]});
-    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:{...state.guide,steps:state.navigation?.player_steps||state.guide.steps},progress:{...state.progress,current_step:state.navigation?.guidance?.now?.id || state.navigation?.cursor?.id || state.current?.id || state.progress?.current_step},estimate:{status:state.navigation?.location?.status||state.estimate?.status,detail:state.navigation?.location?.detail||state.estimate?.detail},preparation:state.preparation,guidance:state.navigation?.guidance}});
+    if(state.guide)items.unshift({id:'walkthrough-outline',title:state.guide.game+' · Walkthrough',content:{kind:'outline',guide:{...state.guide,steps:state.navigation?.player_steps||state.guide.steps},progress:{...state.progress,current_step:state.navigation?.guidance ? (state.navigation.guidance.now?.id || null) : (state.current?.id || state.progress?.current_step)},estimate:{status:state.navigation?.location?.status||state.estimate?.status,detail:state.navigation?.location?.detail||state.estimate?.detail},preparation:state.preparation,planning:state.navigation?.planning,guidance:state.navigation?.guidance}});
     if(state.guide)items.push({id:'guide-library',title:state.guide.game+' · Guide library',content:{kind:'library'}});
     const hasWidgets=items.length>0;
     items=items.filter(w=>(state.widget_visibility?.[w.id] ?? (w.id!=='guide-library')));
@@ -241,9 +241,10 @@
       else if(c.kind==='outline'){
         body.classList.add('tree');const g=c.guide,steps=g.steps||[],byId=new Map(steps.map(s=>[s.id,s])),children=new Map();
         if(guideId!==g.id){openNodes=new Set();followed=null;guideId=g.id}
+        const notNeeded=new Map((c.planning?.not_needed||[]).map(s=>[s.step_id,s.reason]));
         const current=c.progress?.current_step, completed=new Set([...(c.progress?.completed||[]),...(c.progress?.reported_completed||[])]), changed=current!==followed;
         followed=current;const currentPath=new Set();let currentNode=byId.get(current);while(currentNode?.parent_id){currentPath.add(currentNode.parent_id);openNodes.add(currentNode.parent_id);currentNode=byId.get(currentNode.parent_id)}
-        const nextAction=c.guidance?.now?.id===current?c.guidance.now:byId.get(current);if(nextAction){const pinned=text('div','','outline-next');pinned.append(text('div','Next player action','eyebrow'),text('strong',nextAction.title),evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([current])));body.append(pinned)}else body.append(text('div','Preparing player actions…','location'));
+        const nextAction=c.guidance?.now?.id===current?c.guidance.now:byId.get(current);if(nextAction){const pinned=text('div','','outline-next');pinned.append(text('div','Next player action','eyebrow'),text('strong',nextAction.title),evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([current])));body.append(pinned)}else body.append(text('div',c.guidance?.status==='goals_complete'?'Selected goal complete.':c.guidance?.status==='blocked'?'Plan needs attention.':'Preparing player actions…','location'));
         if(c.guidance?.reason)body.append(text('div',c.guidance.reason,'preparation'));
         if(c.preparation)body.append(text('div',c.preparation.message,'preparation'));
 
@@ -251,7 +252,7 @@
         function branch(parent){const ul=document.createElement('ul');for(const s of children.get(parent)||[]){
           const li=document.createElement('li'), hasChildren=children.has(s.id), row=text(hasChildren?'summary':'button',(completed.has(s.id)?'✓ ':s.id===current?'▶ ':'')+s.title,hasChildren?'':'step');
           if(!hasChildren)row.type='button';row.dataset.stepId=s.id;if(s.id===current){row.classList.add('current');row.setAttribute('aria-current','step')}
-          if(completed.has(s.id))row.classList.add('done');evidence(row,'Step sources',()=>stepEvidence([s.id]));
+          if(completed.has(s.id))row.classList.add('done');else if(notNeeded.has(s.id)){row.append(text('span',' · Not needed','source'));row.title=notNeeded.get(s.id);row.dataset.routeStatus='not-needed'}evidence(row,'Step sources',()=>stepEvidence([s.id]));
           if(hasChildren){const details=document.createElement('details');details.open=openNodes.has(s.id);row.addEventListener('click',event=>{if(currentPath.has(s.id))event.preventDefault()});details.addEventListener('toggle',()=>{if(currentPath.has(s.id)&&!details.open){details.open=true;return}if(details.open)openNodes.add(s.id);else openNodes.delete(s.id)});details.append(row,branch(s.id));li.append(details)}
           else {row.addEventListener('click',()=>{console.info('GAMEBUDDY_STEP '+s.id);if(s.id===current)return;const existing=li.querySelector('.instructions');if(existing)existing.remove();else li.append(evidence(text('div',s.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))});li.append(row);if(s.id===current)li.append(evidence(text('div',nextAction.instructions,'instructions'),'Step sources',()=>stepEvidence([s.id])))}
           ul.append(li)
@@ -263,7 +264,7 @@
       }
       else if(c.kind==='guidance'){
         body.classList.add('guidance');const advice=c.guidance||{};evidence(titles,'Suggested action sources',()=>stepEvidence(advice.now?[advice.now.id]:[]));
-        body.append(text('div',advice.requirements?.length?'Prerequisite unconfirmed':advice.status==='ready'?'Now · suggested action':advice.status==='blocked'?'Plan needs attention':advice.status==='plan'?'Plan · task progress unconfirmed':'Plan · location unconfirmed','eyebrow'));
+        body.append(text('div',advice.requirements?.length?'Prerequisite unconfirmed':advice.status==='ready'?'Now · suggested action':advice.status==='blocked'?'Plan needs attention':advice.status==='goals_complete'?'Selected goal complete':advice.status==='plan'?'Plan · task progress unconfirmed':'Plan · location unconfirmed','eyebrow'));
         body.append(text('div',advice.reason||'Waiting for game context.','reason'));
         if(advice.now)body.append(evidence(text('div',advice.now.instructions,'advice'),'Suggested action sources',()=>stepEvidence([advice.now.id])));
         if(advice.requirements?.length)body.append(evidence(text('div','Unconfirmed: '+advice.requirements.map(s=>s.title).join(' · '),'map-note'),'Prerequisite sources',()=>stepEvidence(advice.requirements.map(s=>s.id))));

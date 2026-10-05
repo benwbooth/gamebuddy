@@ -2,7 +2,7 @@
 use crate::{Store, screen};
 use anyhow::{Result, ensure};
 use gamebuddy_core::navigation::direction::{ScreenDirection, movement};
-use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate, guidance_from};
+use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate, guidance_with_outcomes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -195,11 +195,32 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         current(store, guide, &progress, &session)?.filter(|r| r.step_id == action.step_id);
     // Refining the accepted current objective does not re-open old gates when
     // the player scrolls beyond the frame that originally supported it.
-    let guidance = guidance_from(
+    let prepared = crate::outcomes::prepared(store, guide)?;
+    let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
+    let model = prepared.as_ref().map_or(&fallback, |p| &p.model);
+    let view = model.view(guide, &progress);
+    ensure!(
+        !view.goal_complete,
+        "The selected outcome is already satisfied. Ask about optional goals before publishing more work."
+    );
+    ensure!(
+        !view.skipped.contains_key(&action.step_id),
+        "This action is not needed for the current goal: {}. Use the updated guidance or ask whether the player wants its optional rewards.",
+        view.skipped
+            .get(&action.step_id)
+            .map(String::as_str)
+            .unwrap_or_default()
+    );
+    ensure!(
+        !view.blocked.contains_key(&action.step_id),
+        "This action has unsatisfied world requirements. Resolve the missing fact before giving directions."
+    );
+    let guidance = guidance_with_outcomes(
         guide,
         &progress,
         &PlaceTracker::default(),
         Some(&action.step_id),
+        model,
     );
     let spatial = crate::spatial::context(store, guide)?;
     let location_supported = supports_action(guide, &action.step_id, &spatial);

@@ -90,6 +90,10 @@ impl Store {
         progress.epoch += 1;
         progress.completed.retain(|id| unchanged(id));
         progress.reported_completed.retain(|id| unchanged(id));
+        progress
+            .world
+            .facts
+            .retain(|_, fact| fact.step_id.as_deref().is_none_or(unchanged));
         if progress.current_step.as_deref().is_some_and(|id| {
             !unchanged(id) || guide.step(id).is_none_or(|s| !guide.step_enabled(s))
         }) {
@@ -318,7 +322,17 @@ impl Store {
             progress.epoch == epoch,
             "Game progress changed; read the current context"
         );
+        let before = progress.clone();
         progress.reported_completed.insert(step_id.into());
+        crate::outcomes::apply_effects(
+            self,
+            guide,
+            &before,
+            &mut progress,
+            report,
+            "player_reported_action",
+            crate::screen::now_ms(),
+        )?;
         crate::navigation::advice::after_completion(self, guide, &mut progress, step_id)?;
         let tracker_key = crate::navigation::tracker_key(guide);
         if let Some(mut tracker) = self.get::<gamebuddy_core::PlaceTracker>(&tracker_key)?
@@ -366,6 +380,7 @@ impl Store {
             progress.epoch == epoch,
             "Progress changed; reload the reader and try again"
         );
+        let before = progress.clone();
         if checked {
             progress.completed.insert(step_id.into());
         } else {
@@ -403,6 +418,15 @@ impl Store {
                 .completed
                 .extend(previously_done.into_iter().filter(|id| !ids.contains(id)));
         }
+        crate::outcomes::apply_effects(
+            self,
+            guide,
+            &before,
+            &mut progress,
+            "Player changed the action checkbox",
+            "confirmed_action",
+            crate::screen::now_ms(),
+        )?;
         let key = crate::navigation::tracker_key(guide);
         if let Some(mut tracker) = self.get::<gamebuddy_core::PlaceTracker>(&key)?
             && tracker.epoch == epoch
@@ -463,6 +487,132 @@ impl Store {
             params![
                 guide.id,
                 serde_json::json!({"report":report,"location":tracker}).to_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(progress)
+    }
+    pub(crate) fn publish_outcomes(
+        &self,
+        guide: &Guide,
+        previous: Option<&crate::outcomes::Prepared>,
+        prepared: &crate::outcomes::Prepared,
+    ) -> Result<()> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision,
+            "Outline changed during route preparation"
+        );
+        let key = format!("outcomes:{}", guide.id);
+        let current = crate::outcomes::prepared(self, guide)?;
+        ensure!(
+            serde_json::to_value(current.as_deref())? == serde_json::to_value(previous)?,
+            "Route rules changed during preparation; retry with the corrected rules"
+        );
+        self.put(&key, prepared)?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub(crate) fn review_outcomes(
+        &self,
+        guide: &Guide,
+        update: crate::outcomes::RouteReview,
+    ) -> Result<Progress> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut progress = self.progress(guide)?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision && progress.epoch == update.epoch,
+            "Progress changed; read current context"
+        );
+        let mut prepared = crate::outcomes::prepared(self, guide)?
+            .map(|p| (*p).clone())
+            .unwrap_or(crate::outcomes::Prepared {
+                guide_revision: guide.revision,
+                reviewed_scopes: vec![],
+                model: Default::default(),
+                provider_model: "conversation_review".into(),
+                elapsed_ms: 0,
+            });
+        prepared.model.merge(update.rules);
+        prepared.model.validate(guide)?;
+        // A source-backed conversational review is a completed planning pass
+        // for this region. Do not immediately overwrite it in the background.
+        let scope = crate::outcomes::scope(guide, &progress).0;
+        if !prepared.reviewed_scopes.contains(&scope) {
+            prepared.reviewed_scopes.push(scope);
+        }
+        // A changed effect is not retrospective evidence for a different fact.
+        progress.world.facts.retain(|id, fact| {
+            fact.step_id.as_deref().is_none_or(|step| {
+                prepared.model.actions.iter().any(|r| {
+                    r.step_id == step
+                        && r.effects
+                            .iter()
+                            .any(|e| e.id == *id && e.value == fact.value)
+                })
+            })
+        });
+        progress.epoch += 1;
+        self.put(&format!("outcomes:{}", guide.id), &prepared)?;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        tx.execute("INSERT INTO events(guide_id,kind,body) VALUES(?1,'outcome_review',?2)", params![guide.id,serde_json::json!({"reason":update.reason,"rules":prepared.model,"epoch":progress.epoch}).to_string()])?;
+        tx.commit()?;
+        Ok(progress)
+    }
+    pub(crate) fn report_world(
+        &self,
+        guide: &Guide,
+        update: crate::outcomes::Report,
+    ) -> Result<Progress> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut progress = self.progress(guide)?;
+        ensure!(
+            self.guide(&guide.id)?.revision == guide.revision && progress.epoch == update.epoch,
+            "Progress changed; read current context"
+        );
+        for fact in update.facts {
+            progress.world.facts.insert(
+                fact.id,
+                gamebuddy_core::outcomes::KnownFact {
+                    value: fact.value,
+                    evidence: update.player_report.clone(),
+                    source: "player_report".into(),
+                    step_id: None,
+                    at_ms: crate::screen::now_ms(),
+                },
+            );
+        }
+        if let Some(include) = update.include_optional {
+            progress.world.include_optional = include;
+        }
+        if update.clear_goal {
+            progress.world.goal = None;
+        }
+        if let Some(goal) = update.goal {
+            progress.world.goal = Some(goal);
+        }
+        progress.epoch += 1;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        tx.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'world_report',?2)",
+            rusqlite::params![
+                guide.id,
+                serde_json::json!({"report":update.player_report,"progress":progress}).to_string()
             ],
         )?;
         tx.commit()?;

@@ -56,6 +56,14 @@ pub fn save_review(store: &Store, observation: &Observation, review: &Review) ->
     {
         return Ok(completed);
     }
+    if crate::outcomes::prepared(store, guide)?.is_some_and(|p| {
+        p.model
+            .view(guide, &progress)
+            .skipped
+            .contains_key(&coaching.step_id)
+    }) {
+        return Ok(completed);
+    }
     if matches!(coaching.kind, Kind::NextAction) {
         navigation::advice::publish(
             store,
@@ -111,6 +119,14 @@ pub fn current_coaching(
             .as_str()
             .is_none_or(|id| gamebuddy_core::step_complete(guide, progress, id))
     {
+        return Ok(None);
+    }
+    if crate::outcomes::prepared(store, guide)?.is_some_and(|p| {
+        p.model
+            .view(guide, progress)
+            .skipped
+            .contains_key(cue["step_id"].as_str().unwrap_or_default())
+    }) {
         return Ok(None);
     }
     let signature: Vec<u8> = serde_json::from_value(cue["frame_signature"].clone())?;

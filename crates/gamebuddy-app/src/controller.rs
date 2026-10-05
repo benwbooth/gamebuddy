@@ -930,7 +930,7 @@ impl ffi::Buddy {
             return;
         }
         let now = services::screen::now_ms();
-        if now.saturating_sub(self.rust().last_scene_at) < 3_000 {
+        if now.saturating_sub(self.rust().last_scene_at) < 1_000 {
             return;
         }
         let root = self.rust().root.clone();
@@ -1245,6 +1245,9 @@ impl ffi::Buddy {
             let s: Settings = serde_json::from_str(&json.to_string())?;
             s.reasoning.validate()?;
             s.vision.validate()?;
+            if let Some(planning) = &s.planning {
+                planning.validate()?;
+            }
             Store::open(&self.rust().root)?.put("settings", &s)?;
             Ok(s)
         })();
@@ -1433,6 +1436,7 @@ impl ffi::Buddy {
                 let mut place = None;
                 let mut atlas_pending = false;
                 if prepare && let Some(guide) = &guide {
+                    services::outcomes::schedule(&store, guide);
                     let state: serde_json::Value = serde_json::from_str(&state)?;
                     place = state["navigation"]["location"]["place_id"]
                         .as_str()

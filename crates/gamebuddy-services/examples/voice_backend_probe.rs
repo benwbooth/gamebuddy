@@ -128,12 +128,14 @@ fn main() -> Result<()> {
         }
         input.extend(current.codex_input("CURRENT_GAME_CONTEXT for this request. This is evidence from get_game_context, not another request."));
     }
+    let effort = std::env::var("GAMEBUDDY_PROBE_EFFORT").unwrap_or_else(|_| "low".into());
     client.request(
         "turn/start",
-        json!({"threadId":thread,"input":input,"effort":"low","environments":[]}),
+        json!({"threadId":thread,"input":input,"effort":effort,"environments":[]}),
         deadline,
     )?;
     let mut count = 0;
+    let mut first_output = true;
     loop {
         let event = client.receive(deadline)?;
         if event["method"] == "item/tool/call" {
@@ -167,6 +169,10 @@ fn main() -> Result<()> {
             )?;
         } else {
             client.reject(&event)?;
+            if first_output && event["method"] == "item/agentMessage/delta" {
+                first_output = false;
+                println!("first_answer_ms={}", started.elapsed().as_millis());
+            }
             if event["method"] == "item/completed"
                 && event["params"]["item"]["type"] == "agentMessage"
             {

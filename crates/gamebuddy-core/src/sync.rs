@@ -26,6 +26,8 @@ pub struct SyncEstimate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Progress {
+    #[serde(default)]
+    pub world: crate::outcomes::WorldState,
     pub epoch: u64,
     pub current_step: Option<String>,
     pub completed: HashSet<String>,
@@ -55,6 +57,7 @@ impl Synchronizer {
         self.progress.current_step = None;
         self.progress.completed.clear();
         self.progress.reported_completed.clear();
+        self.progress.world.facts.clear();
         self.last_observation = None;
         self.pending_step = None;
         self.pending_count = 0;

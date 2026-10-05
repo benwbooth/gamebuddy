@@ -230,7 +230,7 @@ pub fn prepare(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Res
         guide: guide.clone(),
         frames,
         actions,
-        context: json!({"guidance":nav["guidance"],"location":{
+        context: json!({"planning":nav["planning"],"guidance":nav["guidance"],"location":{
             "status":nav["spatial"]["observation"]["tracker"]["status"],
             "related_step_ids":nav["spatial"]["observation"]["related_step_ids"],
             "ambiguous_actions":nav["spatial"]["observation"]["step_ambiguity"]},
@@ -291,7 +291,7 @@ pub fn assess(provider: &impl ReasoningProvider, observation: &Observation) -> R
         images:vec![sequence_image(&observation.frames)?], json:true,
     };
     let mut request = request;
-    request.prompt.push_str(&format!(" Current route and location evidence: {}. Also return coaching: null or an object with kind (next_action, strategy, danger, recovery), step_id from the supplied actions, text, evidence, confidence, and screen_direction (left, right, up, down, or null). Actively guide the player: when they enter a new area, reach the next step, face a visible obstacle, or visibly struggle, offer one concrete immediate instruction or useful source-backed strategy in at most two short spoken sentences. For next_action, text becomes the shared Now instruction; select the action appropriate to this player's latest view and current forward route, without marking skipped steps complete. Similar scenery can belong to forward and return visits: do not select a later return route unless the player's actual progress or screenshot sequence establishes that phase. Strategy must be supported by the supplied instructions or route_notes and relevant to visible enemies/platforms. Struggling requires repeated failed attempts, repeated damage, or death visible across distinct frames; standing still alone is not struggling. Do not invent controls, hidden item counts, inventory, paths or strategies. Describe the specific visible evidence and relevant source instruction in evidence. Do not repeat previous coaching unless a new visible failure or changed situation makes a reminder useful. Use confidence 0 to 1. screen_direction is only for an immediate movement in a next_action, supported by the latest screenshot and source instructions; otherwise null. Prefer useful, concise coaching over silence when the situation clearly warrants it. Return coaching null for uneventful play or uncertain advice.", observation.context));
+    request.prompt.push_str(&format!(" Current route and location evidence: {}. Also return coaching: null or an object with kind (next_action, strategy, danger, recovery), step_id from the supplied actions, text, evidence, confidence, and screen_direction (left, right, up, down, or null). Actively guide the player: when they enter a new area, reach the next step, face a visible obstacle, or visibly struggle, offer one concrete immediate instruction or useful source-backed strategy in at most two short spoken sentences. For next_action, text becomes the shared Now instruction; select the action appropriate to this player's latest view and current forward route, without marking skipped steps complete. Use planning facts and not_needed to respect alternative acquisition and optional detours. Never recommend an action whose outcome is already satisfied just to finish a video section. Similar scenery can belong to forward and return visits: do not select a later return route unless the player's actual progress or screenshot sequence establishes that phase. Strategy must be supported by the supplied instructions or route_notes and relevant to visible enemies/platforms. Struggling requires repeated failed attempts, repeated damage, or death visible across distinct frames; standing still alone is not struggling. Do not invent controls, hidden item counts, inventory, paths or strategies. Describe the specific visible evidence and relevant source instruction in evidence. Do not repeat previous coaching unless a new visible failure or changed situation makes a reminder useful. Use confidence 0 to 1. screen_direction is only for an immediate movement in a next_action, supported by the latest screenshot and source instructions; otherwise null. Prefer useful, concise coaching over silence when the situation clearly warrants it. Return coaching null for uneventful play or uncertain advice.", observation.context));
     serde_json::from_value(crate::parse_json(
         &provider.complete_structured(request, schema)?,
     )?)
@@ -312,7 +312,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     if job.running
-        || snapshot.captured_at_ms.saturating_sub(job.last_start) < 8_000
+        || snapshot.captured_at_ms.saturating_sub(job.last_start) < 2_000
         || job.last_image == snapshot.jpeg
     {
         return;

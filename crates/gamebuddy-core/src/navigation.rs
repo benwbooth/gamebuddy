@@ -442,6 +442,7 @@ fn unfinished<'a>(
     progress: &Progress,
     id: &str,
     visited: &mut HashSet<String>,
+    plan: &crate::outcomes::PlanningView,
 ) -> Option<&'a Step> {
     if !visited.insert(id.to_owned()) {
         return None;
@@ -450,7 +451,11 @@ fn unfinished<'a>(
     if !guide.step_enabled(step) {
         return None;
     }
-    if !step_complete(guide, progress, id) {
+    if plan.skipped.contains_key(id) {
+        if let Some(next) = plan.redirects.get(id) {
+            return unfinished(guide, progress, next, visited, plan);
+        }
+    } else if !step_complete(guide, progress, id) {
         let children: Vec<_> = guide
             .steps
             .iter()
@@ -461,14 +466,14 @@ fn unfinished<'a>(
         }
         for child in children {
             if !step_complete(guide, progress, &child.id)
-                && let Some(s) = unfinished(guide, progress, &child.id, visited)
+                && let Some(s) = unfinished(guide, progress, &child.id, visited, plan)
             {
                 return Some(s);
             }
         }
     }
     for next in route_successors(guide, step) {
-        if let Some(s) = unfinished(guide, progress, next, visited) {
+        if let Some(s) = unfinished(guide, progress, next, visited, plan) {
             return Some(s);
         }
     }
@@ -512,12 +517,20 @@ pub fn route_successors<'a>(guide: &'a Guide, step: &'a Step) -> Vec<&'a str> {
     result
 }
 
-fn requirements<'a>(guide: &'a Guide, progress: &Progress, step: &'a Step) -> Vec<&'a Step> {
+fn requirements<'a>(
+    guide: &'a Guide,
+    progress: &Progress,
+    step: &'a Step,
+    plan: &crate::outcomes::PlanningView,
+) -> Vec<&'a Step> {
+    if let Some(ids) = plan.requirements.get(&step.id) {
+        return ids.iter().filter_map(|id| guide.step(id)).collect();
+    }
     let mut result = vec![];
     let mut current = Some(step);
     while let Some(s) = current {
         for id in &s.prerequisites {
-            if !step_complete(guide, progress, id)
+            if !plan.resolved(guide, progress, id)
                 && let Some(required) = guide.step(id)
                 && !result.iter().any(|r: &&Step| r.id == required.id)
             {
@@ -543,35 +556,73 @@ pub fn guidance_from(
     location: &PlaceTracker,
     recommendation: Option<&str>,
 ) -> Guidance {
-    let goal_ids: Vec<_> = guide.goals.iter().flat_map(|g| &g.step_ids).collect();
-    if !goal_ids.is_empty() && goal_ids.iter().all(|id| step_complete(guide, progress, id)) {
-        return Guidance { status: "goals_complete".into(), reason: "Your selected goals are complete according to saved confirmations and player reports.".into(), ..Default::default() };
+    guidance_with_outcomes(
+        guide,
+        progress,
+        location,
+        recommendation,
+        &crate::outcomes::OutcomeModel::default(),
+    )
+}
+
+pub fn guidance_with_outcomes(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    recommendation: Option<&str>,
+    model: &crate::outcomes::OutcomeModel,
+) -> Guidance {
+    let plan = model.view(guide, progress);
+    guidance_with_view(guide, progress, location, recommendation, &plan)
+}
+
+pub fn guidance_with_view(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    recommendation: Option<&str>,
+    plan: &crate::outcomes::PlanningView,
+) -> Guidance {
+    if plan.goal_complete {
+        return Guidance { status: "goals_complete".into(), reason: "Your selected outcome is satisfied by the saved world facts. Alternative methods need not be completed.".into(), ..Default::default() };
     }
-    let goal = guide
+    if plan.goal_blocked {
+        return Guidance { status: "blocked".into(), reason: "The selected outcome needs evidence or a supported acquisition route. Reconsider the plan before giving movement instructions.".into(), ..Default::default() };
+    }
+    let goal_ids: Vec<_> = guide
         .goals
         .iter()
         .flat_map(|g| &g.step_ids)
+        .chain(plan.goal_steps.iter())
+        .collect();
+    if !goal_ids.is_empty() && goal_ids.iter().all(|id| step_complete(guide, progress, id)) {
+        return Guidance { status: "goals_complete".into(), reason: "Your selected goals are complete according to saved confirmations and player reports.".into(), ..Default::default() };
+    }
+    let goal = goal_ids
+        .iter()
+        .copied()
         .filter(|id| !step_complete(guide, progress, id))
-        .find_map(|id| unfinished(guide, progress, id, &mut HashSet::new()));
+        .find_map(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan));
     if !goal_ids.is_empty() && goal.is_none() {
         return Guidance { status: "blocked".into(), reason: "The selected goal has no enabled unfinished instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
     }
-    let start = recommendation
-        .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new()))
-        .or(goal)
+    let start = goal
+        .or_else(|| {
+            recommendation.and_then(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan))
+        })
         .or_else(|| {
             location
                 .reference_step_id
                 .as_deref()
                 .or(progress.current_step.as_deref())
-                .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new()))
+                .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan))
         })
         .or_else(|| {
             guide
                 .steps
                 .iter()
                 .filter(|s| s.parent_id.is_none())
-                .find_map(|s| unfinished(guide, progress, &s.id, &mut HashSet::new()))
+                .find_map(|s| unfinished(guide, progress, &s.id, &mut HashSet::new(), plan))
         });
     let Some(target) = start else {
         return Guidance {
@@ -588,7 +639,15 @@ pub fn guidance_from(
         if !seen.insert(selected.id.clone()) {
             return Guidance { status: "blocked".into(), target: Some(target.clone()), reason: "The inherited prerequisites conflict. Adjust the outline before following this route.".into(), ..Default::default() };
         }
-        let required = requirements(guide, progress, selected);
+        if let Some(reason) = plan.blocked.get(&selected.id) {
+            return Guidance {
+                status: "blocked".into(),
+                target: Some(target.clone()),
+                reason: reason.clone(),
+                ..Default::default()
+            };
+        }
+        let required = requirements(guide, progress, selected, plan);
         missing.extend(
             required
                 .iter()
@@ -599,7 +658,7 @@ pub fn guidance_from(
         let Some(first) = required.first() else {
             break;
         };
-        let Some(next) = unfinished(guide, progress, &first.id, &mut HashSet::new()) else {
+        let Some(next) = unfinished(guide, progress, &first.id, &mut HashSet::new(), plan) else {
             return Guidance { status: "blocked".into(), target: Some(target.clone()), requirements: missing, reason: "A prerequisite has no enabled instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
         };
         selected = next;
@@ -635,7 +694,7 @@ pub fn guidance_from(
         } else {
             route_successors(guide, cursor)
                 .into_iter()
-                .find_map(|id| unfinished(guide, &preview, id, &mut HashSet::new()))
+                .find_map(|id| unfinished(guide, &preview, id, &mut HashSet::new(), plan))
         };
         let Some(mut candidate) = candidate else {
             break;
@@ -647,11 +706,16 @@ pub fn guidance_from(
                 blocked = true;
                 break;
             }
-            let required = requirements(guide, &preview, candidate);
+            if plan.blocked.contains_key(&candidate.id) {
+                blocked = true;
+                break;
+            }
+            let required = requirements(guide, &preview, candidate, plan);
             let Some(first) = required.first() else {
                 break;
             };
-            let Some(required) = unfinished(guide, &preview, &first.id, &mut HashSet::new()) else {
+            let Some(required) = unfinished(guide, &preview, &first.id, &mut HashSet::new(), plan)
+            else {
                 blocked = true;
                 break;
             };

@@ -25,3 +25,5 @@ pub mod spatial_maps;
 pub mod spatial_worker;
 pub mod telemetry;
 pub mod walkthrough;
+
+pub mod outcomes;
