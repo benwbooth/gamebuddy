@@ -79,7 +79,7 @@ WebEngineView {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, spatial:session.navigation?.spatial, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
-            preparing:buddy.preparing, guide_revision:session.guide?.revision, microphone_active:voice.active, returning_player:returningPlayer,
+            preparing:buddy.preparing, guide_ready:!!session.guide && session.reference_count>0, guide_revision:session.guide?.revision, microphone_active:voice.active, returning_player:returningPlayer,
             conversation_active:conversationActive || localConversationActive || voice.speaking || buddy.busy,
             instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})
     }
@@ -196,7 +196,7 @@ WebEngineView {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
         if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-progress"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
-        if(trace && !["input-pcm","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
+        if(trace && !["input-pcm","input-text","input-final","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
         if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
         if(event.type==="input-pcm"){
@@ -214,6 +214,7 @@ WebEngineView {
             transport.player_speech(userSpeaking)
             if(userSpeaking)updateContext()
         }
+        else if(event.type==="input-text" || event.type==="input-final")transport.recognize_input(event.value,event.type==="input-final")
         else if(event.type==="speech-ready")transport.speak(event.value)
         else if(event.type==="caption"){
             captionText=event.value;captionStreaming=captionText.length>0

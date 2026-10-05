@@ -73,8 +73,8 @@ assert(muted(),'backend completion alone does not authorize audio');
 assert(!activity.some(e=>e.type==='caption'&&e.value.includes('walking')),'unapproved speech has no captions');
 voice.queueSpeech('Use a J key at the door.');tick(1000);
 assert(muted(),'completed answer waits while the old generated turn is still active');
-for(let i=0;i<15;i++){render([.25,.5]);tick(1000)}
-assert(!activity.some(e=>e.type==='cue-timeout'),'an actively draining answer must not expire after six seconds');
+for(let i=0;i<3;i++){render([.25,.5]);tick(1000)}
+assert(!activity.some(e=>e.type==='cue-timeout'),'a short old turn can drain before recovery');
 wire({type:'turn.done',turn:{id:'wrong-advice',role:'assistant'}});
 render([.25,.5]);tick(400);
 assert(muted(),'drain the old RTP tail before approving the new words');
@@ -163,6 +163,9 @@ voice.playerSpeech(true);wire({type:'input_transcript.added',item:{text:'Please 
 tick(6000);assert.equal(progress().length,progressBefore,'never acknowledge over the player');
 voice.playerSpeech(false);tick(2400);
 assert.equal(progress().length,progressBefore,'fast answers need no filler');
+const confirmedRequests=activity.filter(e=>e.type==='input-active'&&e.value).length;
+voice.playerSpeech(true);voice.playerSpeech(false);
+assert.equal(activity.filter(e=>e.type==='input-active'&&e.value).length,confirmedRequests,'unrecognized background noise cannot replace the request');
 tick(120);
 assert.equal(progress().length,progressBefore+1,'slow request gets an acknowledgment after 2.5 quiet seconds');
 assert.match(progress().at(-1).value,/^\d+:\d+$/,'persistent progress diagnostics contain counters, not speech text');
@@ -177,12 +180,14 @@ assert.equal(progress().length,progressBefore+2,'long work gets another bounded 
 wire({type:'turn.created',turn:{id:'progress-2',role:'assistant'}});
 output.level=.1;tick(200);
 voice.queueSpeech('The verified answer.');voice.setBackendBusy(false);
+voice.playerSpeech(true);voice.playerSpeech(false);
 const answersBefore=activity.filter(e=>e.type==='speech-ready').length;
 tick(200);assert.equal(activity.filter(e=>e.type==='speech-ready').length,answersBefore,'the final answer waits for the short status to finish');
 wire({type:'turn.done',turn:{id:'progress-2',role:'assistant'}});output.level=0;tick(600);
 assert.equal(activity.filter(e=>e.type==='speech-ready').at(-1).value,'The verified answer.','progress cannot overwrite or discard the final answer');
+assert(activity.some(e=>e.type==='input-text'&&e.value==='Please check the guide.'),'recognition reaches the request dispatcher without waiting for backend notifications');
 wire({type:'turn.created',turn:{id:'final-after-progress',role:'assistant'}});
-output.level=.1;tick(1000);
+output.level=.1;tick(3000);
 wire({type:'turn.done',turn:{id:'final-after-progress',role:'assistant'}});output.level=0;tick(600);
 wire({type:'input_transcript.added',item:{text:'Late words from the answered request.'}});tick(20000);
 assert.equal(progress().length,progressBefore+2,'late transcript and completed answer do not restart progress');
@@ -198,6 +203,14 @@ voice.playerSpeech(true);wire({type:'input_transcript.added',item:{text:'Another
 assert.equal(progress().length,progressBefore+3,'spoken-replies mute suppresses status updates');
 voice.requestFailed('Please try again.');voice.muteOutput(false);tick(20000);
 assert.equal(progress().length,progressBefore+3,'a failed request never keeps claiming to work');
+voice.setBackendBusy(false);
+wire({type:'turn.created',turn:{id:'unwanted-long-answer',role:'assistant'}});
+const blockedTimeouts=activity.filter(e=>e.type==='cue-timeout').length;
+const blockedReady=activity.filter(e=>e.type==='speech-ready').length;
+voice.queueSpeech('The saved answer is ready.');
+for(let i=0;i<7;i++){render([.25,.5]);tick(1000)}
+assert.equal(activity.filter(e=>e.type==='cue-timeout').length,blockedTimeouts+1,'continuous unapproved audio must trigger bounded speech recovery');
+assert.equal(activity.filter(e=>e.type==='speech-ready').length,blockedReady,'unwanted audio cannot inherit the ready answer permission');
 assert(!current.track.stopped,'status playback preserves the interruptible microphone');
 await voice.setMicrophone(false,'Test mic');
 assert(current.track.stopped,'muting closes capture while voice output remains connected');

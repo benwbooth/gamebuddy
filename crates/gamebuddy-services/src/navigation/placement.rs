@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use gamebuddy_core::{Atlas, Crop, Guide};
+use gamebuddy_core::{Atlas, Crop, Guide, MapAsset, Place};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -65,6 +65,35 @@ pub fn needed(store: &Store, guide: &Guide, place: &str) -> bool {
     })
 }
 
+/// A named area is a useful reference even when an interior has no map of its
+/// own. This selects candidate pixels only; it never establishes a position.
+pub(super) fn area_map<'a>(atlas: &'a Atlas, place: &Place) -> Option<&'a MapAsset> {
+    fn words(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+    let label = words(&place.label);
+    let id = words(&place.id);
+    let mut candidates: Vec<_> = atlas
+        .maps
+        .iter()
+        .filter(|map| map.enabled)
+        .filter_map(|map| {
+            let title = words(&map.title);
+            (!title.is_empty()
+                && title.iter().map(String::len).sum::<usize>() >= 3
+                && (label.starts_with(&title) || id.starts_with(&title)))
+            .then_some((title.len(), map))
+        })
+        .collect();
+    candidates.sort_by_key(|(length, _)| std::cmp::Reverse(*length));
+    let (length, map) = candidates.first()?;
+    // Equally specific candidates need an actual visual association.
+    (candidates.get(1).is_none_or(|(other, _)| other < length)).then_some(*map)
+}
+
 pub fn prepare(store: &Store, guide: &Guide, place_id: &str) -> Result<()> {
     let at = screen::now_ms();
     store.put_for_guide(
@@ -89,6 +118,11 @@ pub fn prepare(store: &Store, guide: &Guide, place_id: &str) -> Result<()> {
         // has to establish a visible landmark in the actual map image.
         let family = place.id.split('-').next().unwrap_or_default();
         let mut ids: Vec<_> = place.map_id.iter().collect();
+        if let Some(map) = area_map(&atlas, place)
+            && !ids.contains(&&map.id)
+        {
+            ids.push(&map.id);
+        }
         for related in &atlas.places {
             if related.id.split('-').next() == Some(family)
                 && let Some(id) = &related.map_id

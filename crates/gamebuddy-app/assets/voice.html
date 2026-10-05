@@ -5,7 +5,7 @@
   let inputMeter=null,outputMeter=null,meterTimer=null,meterTick=0;
   const receiver=document.getElementById('receiver');
   let outputMuted=false,replyUntil=0,lastReplyAudio=0,assistantDoneAt=0,awaitingAnswer=false;
-  let backendBusy=false,playerSpeaking=false,localSpeech=false,confirmedInputUntil=0,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
+  let backendBusy=false,playerSpeaking=false,localSpeech=false,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
   let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,queuedSpeechAt=0,lastIncomingAudio=0;
   let workPending=false,workAnswered=false,workInput='',workRequest=0,workStartedAt=0,workQuietAt=0,workLastCue=0,workUpdates=0,progressCue='';
   let captionParts=[],captionText='',captionFirstMs=null,captionAudioStart=null,captionPending=[],captionGeneration=0;
@@ -55,12 +55,13 @@
     emit('reply-pending',true);
     updatePlayback();
   }
-  function playerSpeech(active){
+  function playerSpeech(active,recognized=false){
     localSpeech=active;
-    // AEC can briefly leave residual echo while it converges. During playback,
-    // require the server's recognized input as well as local speech activity
-    // before cutting off the speaker. Audio keeps streaming throughout.
-    if(active&&Date.now()-lastReplyAudio<1000&&Date.now()>confirmedInputUntil){pendingOverlapUntil=Date.now()+2500;return}
+    // VAD also detects game sounds, breathing and keyboard noise. Only actual
+    // recognized words can replace a request or interrupt approved speech.
+    // Keep streaming audio so recognition can confirm a short interruption.
+    if(active&&!recognized&&!playerSpeaking){pendingOverlapUntil=Date.now()+2500;return}
+    if(!active&&!playerSpeaking)return;
     if(active)pendingOverlapUntil=0;
     if(active&&!playerSpeaking){clearWork();workAnswered=false;workInput='';workRequest++;progressCue='';queuedSpeech=null;approved=false;outputMeter?.clear();resetCaptions();replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
     if(active!==playerSpeaking)emit('input-active',active);
@@ -83,13 +84,13 @@
     if(v.type==='delegation.created')setBackendBusy(true);
     if(v.type==='input_transcript.added'&&mic&&v.item?.text?.trim()){
       if(replyUntil)assistantDoneAt=0; // continued words supersede an earlier acknowledgment
-      confirmedInputUntil=Date.now()+1500;
       // A short "stop" can end before its transcript arrives. Preserve that
       // recent local overlap so its answer is not silently denied playback.
       if(localSpeech||Date.now()<pendingOverlapUntil){
         const stillSpeaking=localSpeech;pendingOverlapUntil=0;
-        playerSpeech(true);if(!stillSpeaking)playerSpeech(false);
+        playerSpeech(true,true);if(!stillSpeaking)playerSpeech(false);
       }
+      emit('input-text',v.item.text);
       // A short stop may be recognized well before its final turn event.
       workInput=(workInput+v.item.text).slice(-8000);
       if(/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(workInput.trim()))clearWork();
@@ -100,8 +101,6 @@
         approved=false;outputMeter?.clear();emit('reply-pending',false);updatePlayback();
       }
       if(approved)approvedTurn=v.turn.id;
-      // Old recognition cannot validate residual echo from this new reply.
-      confirmedInputUntil=0;
       if(replaceQueuedTurn){outputMeter?.clear();replaceQueuedTurn=false}
       assistantTurns.add(v.turn.id);assistantDoneAt=0;
     }
@@ -119,6 +118,7 @@
       // that newer request's playback permission.
       if(assistantTurns.delete(v.turn.id))assistantDoneAt=Date.now();
     }
+    if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&v.turn.transcript?.trim())emit('input-final',v.turn.transcript);
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
@@ -141,9 +141,10 @@
     if(queuedSpeech!==null&&!playerSpeaking&&!assistantTurns.size&&now-lastIncomingAudio>=500){
       const text=queuedSpeech;queuedSpeech=null;approveSpeech();emit('speech-ready',text);
     }
-    if(queuedSpeech!==null&&!playerSpeaking&&(now-lastIncomingAudio>=6000&&now-queuedSpeechAt>=6000||now-queuedSpeechAt>=90000)){
-      // A missing native turn.done must not hold the completed answer and the
-      // listening UI indefinitely. The companion already has its text.
+    if(queuedSpeech!==null&&!playerSpeaking&&(now-queuedSpeechAt>=6000&&(!approved||now-lastIncomingAudio>=6000)||now-queuedSpeechAt>=90000)){
+      // Suppressed speech can stream for minutes. After six seconds, recover
+      // the speech connection using the saved answer rather than waiting for
+      // those unwanted words to finish. Already approved audio may drain.
       queuedSpeech=null;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);
     }
     updateProgress(now);
@@ -185,9 +186,9 @@
       const summary=[];stats.forEach(s=>{if((s.type==='inbound-rtp'||s.type==='outbound-rtp')&&s.kind==='audio')summary.push({type:s.type,packets:s.packetsSent??s.packetsReceived,bytes:s.bytesSent??s.bytesReceived,concealed:s.concealedSamples,jitterDelay:s.jitterBufferDelay,jitterEmitted:s.jitterBufferEmittedCount})});emit('transport-stats',summary);
     }).catch(()=>{});
   }
-  function closeMic(){captureGeneration++;pendingOverlapUntil=0;confirmedInputUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
+  function closeMic(){captureGeneration++;pendingOverlapUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
   function disconnectOutput(){if(outputMeter?.processor){outputMeter.processor.onaudioprocess=null;outputMeter.processor.disconnect()}disconnectMeter(outputMeter);outputMeter=null;receiver.srcObject=null}
-  function stop(){generation++;clearWork();progressCue='';workQuietAt=0;queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
+  function stop(){generation++;clearWork();progressCue='';workQuietAt=0;queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open'||!sessionReady)return;

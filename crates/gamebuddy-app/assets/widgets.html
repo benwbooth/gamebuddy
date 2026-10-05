@@ -79,7 +79,7 @@
   // Keep the map surface, image, menus and scroll viewport mounted across observations.
   function mountLocationMap(body,initial,titles){
         body.classList.add('map-panel');let c=initial,map=c.map||{},locations=[];const maps=map.maps||[],places=map.places||[];
-        const locationOptions=()=>locations.map(p=>({id:p.id,label:(p.current?'▶ You are here · ':'')+p.label+(!p.map_id?' · map unavailable':'')}));
+        const locationOptions=()=>locations.map(p=>({id:p.id,label:(p.current?'▶ You are here · ':'')+p.label+(p.area_reference?' · area map':!p.map_id?' · map unavailable':'')}));
         locations=map.locations||maps.map(m=>({id:'map:'+m.id,map_id:m.id,label:m.title}));
         let loadedAsset=null,framingKey='';
         if(mapGuide!==c.guide_id){mapGuide=c.guide_id;mapChoice=null;followMap=true;mapZoom=1;mapScroll={x:0,y:0};browsedPlace=null}
@@ -101,7 +101,7 @@
         const gestures=imageGestures(viewport,stage,{getZoom:()=>mapZoom,setZoom:value=>{mapZoom=value;zoom()},manual:browse});
         mapObserver=new ResizeObserver(zoom);mapObserver.observe(viewport);
         function choose(id){
-          const asset=maps.find(m=>m.id===id);precision.textContent=map.geometric_marker?'Your visible game area is highlighted. Hover for matching evidence.':c.location_detail||'Waiting for a location report or a visual match.';if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(locations.find(p=>browsedPlace?p.place_id===browsedPlace:followMap&&map.current_place?p.place_id===map.current_place.id:p.map_id===id)?.id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
+          const asset=maps.find(m=>m.id===id);precision.textContent=map.geometric_marker?'Your visible game area is highlighted. Hover for matching evidence.':map.area_reference?'Surrounding area map · your position inside this room is not marked.':c.location_detail||'Waiting for a location report or a visual match.';if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(locations.find(p=>browsedPlace?p.place_id===browsedPlace:followMap&&map.current_place?p.place_id===map.current_place.id:p.map_id===id)?.id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
           const browsing=places.find(p=>p.id===browsedPlace);
           status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'You are here · estimated: ')+map.current_place.label:(map.geometric_marker?'You are here · '+(maps.find(m=>m.id===map.geometric_marker.map_id)?.title||'matched map area'):map.spatial?.observation?.tracker?.status==='tracked'?'Visual place matched':'Locating player'))+(browsing?' · Browsing '+browsing.label:'');
           const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;

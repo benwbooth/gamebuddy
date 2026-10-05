@@ -812,10 +812,12 @@ pub fn context(
         .map(|p| placement::get(store, guide, &p.id))
         .transpose()?
         .flatten();
-    let marker = placement
+    let mapped_place = placement
         .as_ref()
         .and_then(|p| p.marker.as_ref())
-        .filter(|m| !geometric_ready && m.validate(&atlas).is_ok());
+        .filter(|m| m.validate(&atlas).is_ok());
+    let marker = mapped_place.filter(|_| !geometric_ready);
+    let area_map = current_place.and_then(|p| placement::area_map(&atlas, p));
     let geometric_marker = spatial["observation"]["map_registration"]
         .as_object()
         .map(|_| &spatial["observation"]["map_registration"]);
@@ -825,14 +827,19 @@ pub fn context(
     } else {
         None
     };
-    let selected_map = marker
+    let selected_map = mapped_place
         .map(|m| &m.map_id)
         .or_else(|| current_place.and_then(|p| p.map_id.as_ref()))
         .filter(|id| atlas.maps.iter().any(|m| &m.id == *id && m.enabled));
     let selected_map = geometric_marker
         .and_then(|m| m["map_id"].as_str())
         .or(selected_map.map(String::as_str))
-        .or_else(|| display_marker.as_ref().and_then(|m| m["map_id"].as_str()));
+        .or_else(|| display_marker.as_ref().and_then(|m| m["map_id"].as_str()))
+        .or_else(|| area_map.map(|m| m.id.as_str()));
+    let area_reference = geometric_marker.is_none()
+        && marker.is_none()
+        && display_marker.is_none()
+        && area_map.is_some_and(|m| selected_map == Some(m.id.as_str()));
     if let (Some(current), Some(target)) = (current_place, target_place)
         && current.id != target.id
     {
@@ -845,9 +852,12 @@ pub fn context(
         .map(|place| {
             let map = maps
                 .iter()
-                .find(|m| Some(m.id.as_str()) == place.map_id.as_deref());
+                .find(|m| Some(m.id.as_str()) == place.map_id.as_deref())
+                .copied()
+                .or_else(|| placement::area_map(&atlas, place));
             json!({"id":format!("place:{}",place.id),"place_id":place.id,"label":place.label,
             "map_id":map.map(|m|&m.id),"landmarks":place.landmarks,
+            "area_reference":place.map_id.is_none() && map.is_some(),
             "current":current_place.is_some_and(|p|p.id==place.id)})
         })
         .collect();
@@ -873,7 +883,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 
@@ -920,6 +930,98 @@ pub fn set_map_enabled(store: &Store, guide: &Guide, id: &str, enabled: bool) ->
 mod tests {
     use super::*;
     use gamebuddy_core::import_markdown;
+    #[test]
+    fn an_unmapped_interior_can_show_its_area_without_inventing_a_marker() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = import_markdown("Game", "Guide", "# Visit the cathedral")?;
+        store.save_guide(&guide)?;
+        let map = MapAsset {
+            id: "town-map".into(),
+            title: "North Town".into(),
+            url: "https://example.org/town.png".into(),
+            source_url: "https://example.org/atlas".into(),
+            credit: "Artist".into(),
+            enabled: true,
+        };
+        let place = Place {
+            id: "north-town-cathedral".into(),
+            label: "North Town cathedral interior".into(),
+            map_id: None,
+            landmarks: "The guru's room".into(),
+        };
+        let mut atlas = Atlas {
+            guide_id: guide.id.clone(),
+            guide_revision: guide.revision,
+            maps: vec![map.clone()],
+            places: vec![place.clone()],
+            bindings: vec![PlaceBinding {
+                step_id: "step-1".into(),
+                place_id: place.id.clone(),
+                evidence: "Guide's cathedral visit".into(),
+            }],
+            ..Default::default()
+        };
+        save(&store, &guide, &atlas)?;
+        store.put("active_guide", &guide.id)?;
+        let ticket = crate::screen::start(&store, &guide.game, true)?;
+        std::fs::create_dir_all(store.root.join("maps"))?;
+        let picture = image::RgbImage::from_pixel(96, 72, image::Rgb([10, 180, 40]));
+        picture.save(cached_map_path(&store, &map))?;
+        let frame = dir.path().join("frame.png");
+        picture.save(&frame)?;
+        crate::screen::publish(&store, &ticket, &frame, "test")?;
+        let reported = report_location(
+            &store,
+            &guide,
+            LocationReport {
+                place_id: place.id.clone(),
+                step_id: None,
+                player_report: "I'm in North Town's cathedral.".into(),
+                expected_revision: guide.revision,
+                epoch: 0,
+            },
+        )?;
+        let state = &reported["navigation"]["map"];
+        assert_eq!(state["selected_map_id"], map.id);
+        assert_eq!(state["area_reference"], true);
+        assert_eq!(state["locations"][0]["map_id"], map.id);
+        assert!(state["marker"].is_null());
+        assert!(state["geometric_marker"].is_null());
+        assert!(store.progress(&guide)?.completed.is_empty());
+        assert!(store.progress(&guide)?.reported_completed.is_empty());
+        let evidence =
+            crate::harness::call_tool_with_images(&store, "get_game_context", json!({}))?;
+        assert_eq!(
+            evidence.images.len(),
+            2,
+            "prefetch the area map without another model round trip"
+        );
+        assert_eq!(evidence.value["map_image"]["image_scope"], "whole_map");
+        assert!(evidence.value["map_image"]["camera_marker"].is_null());
+        atlas.maps.push(MapAsset {
+            id: "duplicate".into(),
+            ..map.clone()
+        });
+        assert!(
+            placement::area_map(&atlas, &place).is_none(),
+            "ambiguous area names abstain"
+        );
+        atlas.maps[1].enabled = false;
+        assert_eq!(placement::area_map(&atlas, &place).unwrap().id, map.id);
+        atlas.maps[0].title = "North".into();
+        let unrelated = Place {
+            id: "northern-cave".into(),
+            label: "Northern cave".into(),
+            ..place
+        };
+        assert!(
+            placement::area_map(&atlas, &unrelated).is_none(),
+            "partial words are not area names"
+        );
+        Ok(())
+    }
+
     #[test]
     fn invalid_maps_do_not_poison_storage_and_preferences_survive_compiler_writes() {
         let dir = tempfile::tempdir().unwrap();

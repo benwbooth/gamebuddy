@@ -88,6 +88,7 @@ impl PlayerInput {
             .collect();
         // Bound a deliberately long dictated request without splitting UTF-8.
         value
+            .trim()
             .chars()
             .rev()
             .take(8000)
@@ -101,6 +102,17 @@ impl PlayerInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_transcript_padding_does_not_change_a_dispatched_request() {
+        let mut input = PlayerInput::default();
+        let now = Instant::now();
+        input.activity(true, now);
+        input.append("What next?", now);
+        input.activity(false, now + Duration::from_secs(1));
+        let sent = input.text(now + Duration::from_secs(2));
+        input.finish(" What next? ", now + Duration::from_secs(3));
+        assert_eq!(input.text(now + Duration::from_secs(3)), sent);
+    }
     #[test]
     fn final_transcript_replaces_partial_delegation_without_losing_correction() {
         let mut input = PlayerInput::default();

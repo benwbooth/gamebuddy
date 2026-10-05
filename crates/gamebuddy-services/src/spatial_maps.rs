@@ -68,10 +68,17 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
         .open(directory.join("maps.lock"))?;
     lock.try_lock_exclusive()
         .context("Atlas image indexing is already running")?;
-    let mut engine = Engine::learned(store, Dimension::TwoD, "maps")?;
     let key = format!("spatial-maps:{}", guide.id);
-    let mut index = store
-        .get::<Index>(&key)?
+    let cached = store.get::<Index>(&key)?;
+    let reusable = cached
+        .as_ref()
+        .is_some_and(|i| i.complete && i.maps == maps);
+    let mut engine = Engine::learned(
+        store,
+        Dimension::TwoD,
+        if reusable { "live" } else { "maps" },
+    )?;
+    let mut index = cached
         .filter(|i| i.encoder == engine.encoder && i.maps == maps)
         .unwrap_or(Index {
             complete: false,

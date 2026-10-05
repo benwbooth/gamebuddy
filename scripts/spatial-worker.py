@@ -36,8 +36,16 @@ with contextlib.redirect_stdout(sys.stderr):
     torch.set_num_threads(4)
     torch.hub.set_dir(str(args.cache / "weights"))
     device = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") if args.device == "auto" else args.device
-    processor = AutoImageProcessor.from_pretrained(args.model, cache_dir=str(args.cache / "weights"))
-    encoder = AutoModel.from_pretrained(args.model, cache_dir=str(args.cache / "weights")).eval().to(device)
+    def cached_model(factory):
+        # Reopening a prepared game must not wait for Hugging Face metadata
+        # requests. First-time setup can still download missing model files.
+        try:
+            return factory.from_pretrained(args.model, cache_dir=str(args.cache / "weights"), local_files_only=True)
+        except OSError:
+            return factory.from_pretrained(args.model, cache_dir=str(args.cache / "weights"))
+
+    processor = cached_model(AutoImageProcessor)
+    encoder = cached_model(AutoModel).eval().to(device)
     extractor = DISK(max_num_keypoints=512).eval().to(device)
     matcher = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(device)
     digest = hashlib.sha256()

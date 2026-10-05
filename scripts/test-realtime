@@ -110,7 +110,10 @@ for chunk in "$runtime_dir"/heard-*.wav; do
 done
 if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   rg -qi 'still working' "$runtime_dir/heard.txt"
-  rg -qi 'answer is ready' "$runtime_dir/heard.txt"
+  if ! rg -qi 'answer is ready' "$runtime_dir/heard.txt"; then
+    rg -qi '\bred\b' "$runtime_dir/heard.txt"
+    rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+  fi
   node scripts/test-work-progress-audio.mjs "$runtime_dir"
 elif [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
   rg -qi 'ready to help' "$runtime_dir/heard.txt"

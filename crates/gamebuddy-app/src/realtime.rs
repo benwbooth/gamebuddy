@@ -32,6 +32,8 @@ pub mod ffi {
         #[qinvokable]
         fn player_speech(self: Pin<&mut RealtimeVoice>, active: bool);
         #[qinvokable]
+        fn recognize_input(self: Pin<&mut RealtimeVoice>, text: QString, complete: bool);
+        #[qinvokable]
         fn disconnect(self: Pin<&mut RealtimeVoice>);
     }
     impl cxx_qt::Threading for RealtimeVoice {}
@@ -90,6 +92,21 @@ impl ffi::RealtimeVoice {
             .lock()
             .unwrap()
             .activity(active, Instant::now());
+    }
+    pub fn recognize_input(self: Pin<&mut Self>, text: QString, complete: bool) {
+        let text = text.to_string();
+        let mut input = self.rust().input.lock().unwrap();
+        if complete {
+            input.finish(&text, Instant::now());
+        } else {
+            input.append(&text, Instant::now());
+        }
+        if let Some(tx) = &self.rust().commands {
+            let _ = tx.send(Command::Diagnostic(
+                "recognized-input".into(),
+                json!({"text_bytes":text.len(),"complete":complete,"utterance":input.utterance()}),
+            ));
+        }
     }
     pub fn detect_speech(mut self: Pin<&mut Self>, samples: QString) -> bool {
         if let Ok(samples) = serde_json::from_str::<Vec<i16>>(&samples.to_string())
@@ -266,22 +283,10 @@ impl ffi::RealtimeVoice {
                     {
                         approved_speech.set(false);
                     }
-                    if event["method"] == "thread/realtime/transcript/delta"
-                        && event["params"]["role"] == "user"
-                    {
-                        input.lock().unwrap().append(
-                            event["params"]["delta"].as_str().unwrap_or_default(),
-                            Instant::now(),
-                        );
-                    }
-                    if event["method"] == "thread/realtime/transcript/done"
-                        && event["params"]["role"] == "user"
-                    {
-                        input.lock().unwrap().finish(
-                            event["params"]["text"].as_str().unwrap_or_default(),
-                            Instant::now(),
-                        );
-                    }
+                    // The browser delivers recognition directly to shared
+                    // input state. Reading the duplicate app-server transcript
+                    // here delays recognition behind tools and can split or
+                    // repeat an already dispatched request.
                     if matches!(
                         event["method"].as_str(),
                         Some("turn/started" | "turn/completed")

@@ -383,11 +383,25 @@ pub fn build(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Result<Wo
         .context("Spatial preparation is already running for this guide")?;
     let p = calibrate(store, guide, notify)?;
     let previous = load(store, guide)?;
+    let reusable = previous.as_ref().is_some_and(|world| {
+        world.profile == p
+            && world.status == "ready"
+            && (!world.encoder.starts_with("learned-v1:") || world.graph_revision >= 1)
+            && guide
+                .sources
+                .iter()
+                .filter(|s| s.media_path.is_some() && guide.source_enabled(&s.id))
+                .all(|s| {
+                    world.processed.get(&s.id).copied().unwrap_or(0) >= s.duration_ms.unwrap_or(0)
+                })
+    });
     let mut engine = if previous
         .as_ref()
         .is_some_and(|w| w.encoder.starts_with("learned-v1:"))
     {
-        Engine::learned(store, p.dimension, "build")?
+        // Reuse the same model process as live tracking for a cache check.
+        // Starting a separate build model delays the first live match.
+        Engine::learned(store, p.dimension, if reusable { "live" } else { "build" })?
     } else {
         Engine::new(store, p.dimension, "build")?
     };
@@ -406,6 +420,17 @@ pub fn build(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Result<Wo
             processed: HashMap::new(),
             status: "building".into(),
         });
+    if reusable
+        && world.status == "ready"
+        && (world.encoder.starts_with("learned-v1:")
+            || store
+                .get::<crate::spatial_worker::WorkerConfig>("spatial-worker")?
+                .is_none())
+    {
+        // Do not render every mosaic or rewrite all descriptors on each launch.
+        // Model identity, source signature and profile were checked above.
+        return Ok(world);
+    }
     for source in guide
         .sources
         .iter()
@@ -1558,6 +1583,48 @@ pub(crate) fn grounded_location(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_world_is_not_rewritten_on_every_launch() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(directory.path())?;
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# Town")?;
+        store.save_guide(&guide)?;
+        let profile = Profile {
+            dimension: Dimension::TwoD,
+            ..Default::default()
+        };
+        set_profile(&store, &guide, profile.clone())?;
+        let mut world = World {
+            graph_revision: 1,
+            source_signature: source_signature(&guide),
+            color: true,
+            guide_id: guide.id.clone(),
+            encoder: spatial::ENCODER.into(),
+            profile,
+            views: vec![],
+            rooms: vec![],
+            transitions: vec![],
+            processed: HashMap::new(),
+            status: "ready".into(),
+        };
+        store.put(&key(&guide), &world)?;
+        let before = load_cached(&store, &guide)?.unwrap();
+        build(&store, &guide, &|_| {})?;
+        let after = load_cached(&store, &guide)?.unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&before, &after),
+            "ready reference documents must remain resident"
+        );
+        world.status = "building".into();
+        store.put(&key(&guide), &world)?;
+        assert_eq!(
+            build(&store, &guide, &|_| {})?.status,
+            "ready",
+            "unfinished preparation still resumes"
+        );
+        Ok(())
+    }
+
     #[test]
     fn current_area_advice_does_not_require_backtracking_or_fabricated_completion() -> Result<()> {
         use crate::navigation::advice::{NextAction, publish};

@@ -97,7 +97,7 @@ pub fn call_tool_with_images(store: &Store, name: &str, arguments: Value) -> Res
                 "The attached image is the current game screen. Older scene descriptions and saved advice may describe a different screen; inspect the image before giving a next action."
             );
             let mut images = vec![snapshot.jpeg];
-            if value["navigation"]["map"]["geometric_marker"].is_object()
+            if value["navigation"]["map"]["selected_map_id"].is_string()
                 && let Ok(guide) = active_guide(store)
                 && let Ok(map) = map::read(store, &guide, &value["navigation"]["map"], None)
             {

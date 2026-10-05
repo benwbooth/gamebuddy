@@ -85,7 +85,7 @@ impl Narrator {
             let next = if ready {
                 self.spoken_actions.insert(action);
                 cue(context)
-            } else if context["preparing"] == true {
+            } else if context["preparing"] == true && context["guide_ready"] != true {
                 "I'm preparing your guide. Speak whenever you need me.".into()
             } else {
                 "Your guide is open. Speak whenever you need me.".into()

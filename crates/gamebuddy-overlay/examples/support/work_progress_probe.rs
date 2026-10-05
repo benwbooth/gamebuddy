@@ -25,7 +25,12 @@ pub fn run(
     wait("real screenshot tool creates requested widget", || {
         Ok(gamebuddy_services::harness::widgets(store, &guide)?
             .iter()
-            .any(|w| w.title == "Waiting Test"))
+            // Speech recognition varies the title. The newly requested
+            // screenshot content is the behavior under test.
+            .any(|w| {
+                matches!(&w.content, gamebuddy_core::WidgetContent::Text { body }
+                if body.to_lowercase().contains("red") && body.to_lowercase().contains("green"))
+            }))
     })?;
     wait("real completed answer reaches controlled delay", || {
         Ok(std::fs::read_to_string(log)?[before..].contains("test-answer-held"))
@@ -36,18 +41,22 @@ pub fn run(
     })?;
     wait("final answer is spoken after status updates", || {
         let text = std::fs::read_to_string(log)?;
-        Ok(text[before..].lines().any(|l| {
-            l.contains("\"type\":\"caption\"") && l.to_lowercase().contains("answer is ready")
-        }))
+        Ok(text[before..]
+            .split_once("test-answer-released")
+            .is_some_and(|(_, final_output)| {
+                final_output
+                    .lines()
+                    .any(|l| l.contains("\"type\":\"caption\"") && final_answer(l))
+            }))
     })?;
     let end = gamebuddy_services::screen::now_ms();
     quiet()?;
     ensure!(capturing()?, "Progress updates closed the microphone");
     ensure!(
         store
-            .conversation_messages(&guide.game, "answer is ready", None, 10)?
+            .conversation_messages(&guide.game, "", None, 10)?
             .iter()
-            .any(|m| m.role == "assistant"),
+            .any(|m| m.role == "assistant" && final_answer(&m.text)),
         "Status updates displaced the saved final answer"
     );
     let text = std::fs::read_to_string(log)?;
@@ -62,6 +71,28 @@ pub fn run(
             == 1,
         "Progress replayed a tool action"
     );
+    if std::env::var_os("GAMEBUDDY_TEST_NOISE").is_some() {
+        ensure!(
+            text[before..].contains("test-unrecognized-noise"),
+            "Noise injection did not start"
+        );
+        ensure!(
+            text[before..].matches("GAMEBUDDY_VOICE_DISPATCH ").count() == 1,
+            "Background noise cancelled or repeated the recognized request"
+        );
+        ensure!(
+            !text[before..].contains("request-error"),
+            "Noise caused a request error"
+        );
+        println!("GAMEBUDDY_UNRECOGNIZED_NOISE_PASS");
+    }
     println!("GAMEBUDDY_WORK_PROGRESS_PASS start_ms={start} end_ms={end}");
     Ok(())
+}
+
+fn final_answer(text: &str) -> bool {
+    let text = text.to_lowercase();
+    // The model may answer with the requested screen description instead of
+    // the requested fixed phrase. Both must arrive after the held answer.
+    text.contains("answer is ready") || (text.contains("red") && text.contains("green"))
 }
