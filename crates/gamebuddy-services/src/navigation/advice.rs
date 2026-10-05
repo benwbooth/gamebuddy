@@ -1,7 +1,7 @@
 //! One persisted recommendation shared by conversation, the outline and Now card.
 use crate::{Store, screen};
 use anyhow::{Result, ensure};
-use gamebuddy_core::navigation::direction::{DirectionCue, ScreenDirection, movement};
+use gamebuddy_core::navigation::direction::{ScreenDirection, movement};
 use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate, guidance_from};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -52,58 +52,6 @@ pub(crate) fn public(recommendation: &Recommendation) -> Value {
         movement.remove("ticket");
     }
     value
-}
-
-// Screen-relative advice does not require resolving one semantic place among
-// several shops/doors sharing the same street. Bind explicit directions to the
-// actual view and expire them on a scene, capture or session change.
-pub(crate) fn direction(
-    store: &Store,
-    guide: &Guide,
-    guidance: &gamebuddy_core::Guidance,
-    recommendation: Option<&Recommendation>,
-    spatial: &Value,
-    now: u64,
-) -> Result<Option<DirectionCue>> {
-    let Some(step) = guidance
-        .now
-        .as_ref()
-        .filter(|_| ["ready", "unlocated"].contains(&guidance.status.as_str()))
-    else {
-        return Ok(None);
-    };
-    let explicit = recommendation
-        .filter(|r| r.step_id == step.id)
-        .and_then(|r| r.movement.as_ref());
-    let (direction, at) = if let Some(explicit) = explicit {
-        if now < explicit.captured_at_ms
-            || now - explicit.captured_at_ms >= screen::FRESH_MS
-            || !screen::matches_movement(store, &explicit.ticket, &explicit.frame_signature)?
-        {
-            return Ok(None);
-        }
-        (explicit.direction, explicit.captured_at_ms)
-    } else if supports_action(guide, &step.id, spatial) {
-        let Some(direction) = movement(&step.instructions) else {
-            return Ok(None);
-        };
-        let at = spatial["observation"]["tracker"]["observed_at_ms"]
-            .as_u64()
-            .unwrap_or_default();
-        if at == 0 || now < at || now - at >= screen::FRESH_MS {
-            return Ok(None);
-        }
-        (direction, at)
-    } else {
-        return Ok(None);
-    };
-    Ok(Some(DirectionCue {
-        direction,
-        step_id: step.id.clone(),
-        label: step.title.clone(),
-        instruction: step.instructions.clone(),
-        valid_until_ms: at.saturating_add(screen::FRESH_MS),
-    }))
 }
 
 // Walkthrough ordering is not proof that the player is still behind a gate.
@@ -388,7 +336,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn explicit_movement_works_without_a_named_place_and_expires_with_the_view() -> Result<()> {
+    fn explicit_movement_renews_without_a_named_place_but_stops_on_a_changed_view() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::open(dir.path())?;
         let guide =
@@ -430,9 +378,10 @@ mod tests {
         let mut saved: Recommendation = store.get(&key(&guide))?.unwrap();
         saved.movement.as_mut().unwrap().captured_at_ms -= screen::FRESH_MS;
         store.put(&key(&guide), &saved)?;
-        assert!(
-            context()?["direction"].is_null(),
-            "expired advice cannot revive through a fallback"
+        assert_eq!(
+            context()?["direction"]["direction"],
+            "up",
+            "fresh matching captures keep the current direction beyond the original advice deadline"
         );
         publish(
             &store,

@@ -19,6 +19,7 @@ use std::{
 };
 
 pub mod advice;
+mod direction;
 pub mod placement;
 pub mod tracking;
 pub use tracking::{LocationReport, report_location};
@@ -793,35 +794,19 @@ pub fn context(
             "GameBuddy's latest suggested action. This does not mark any task complete.".into();
     }
     let cursor = advice.now.clone();
-    let direction = if screen["status"] == "live" {
-        advice::direction(
-            store,
-            guide,
-            &advice,
-            recommendation.as_ref(),
-            &spatial,
+    let direction = direction::cue(
+        store,
+        guide,
+        progress,
+        direction::View {
+            guidance: &advice,
+            recommendation: recommendation.as_ref(),
+            spatial: &spatial,
+            atlas: &atlas,
+            location: &tracker,
             now,
-        )?
-        .or_else(|| {
-            recommendation
-                .as_ref()
-                .filter(|r| r.movement.is_some())
-                .is_none()
-                .then(|| gamebuddy_core::navigation::direction::cue(&advice, &atlas, &tracker, now))
-                .flatten()
-        })
-    } else {
-        None
-    }
-    .map(|mut cue| {
-        cue.valid_until_ms = cue.valid_until_ms.min(
-            screen["captured_at_ms"]
-                .as_u64()
-                .unwrap_or_default()
-                .saturating_add(crate::screen::FRESH_MS),
-        );
-        cue
-    });
+        },
+    )?;
     let current_place = tracker
         .place_id
         .as_deref()

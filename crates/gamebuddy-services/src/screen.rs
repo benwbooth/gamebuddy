@@ -382,10 +382,40 @@ pub(crate) fn matches_latest(
     }))
 }
 
-pub(crate) fn matches_movement(store: &Store, ticket: &Ticket, signature: &[u8]) -> Result<bool> {
-    Ok(store.get::<Capture>(KEY)?.is_some_and(|c| {
-        c.enabled && c.ticket == *ticket && same_scene(&c.frame_signature, signature)
-    }))
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct MovementFrame {
+    pub ticket: Ticket,
+    pub captured_at_ms: u64,
+    pub frame_signature: Vec<u8>,
+}
+
+pub(crate) fn movement_frame(store: &Store, now: u64) -> Result<Option<MovementFrame>> {
+    Ok(store
+        .get::<Capture>(KEY)?
+        .filter(|c| {
+            c.enabled
+                && c.error.is_empty()
+                && !c.jpeg.is_empty()
+                // Capture may advance while a navigation snapshot is being
+                // assembled. A frame newer than that snapshot is still fresh.
+                && now.saturating_sub(c.captured_at_ms) < FRESH_MS
+        })
+        .map(|c| MovementFrame {
+            ticket: c.ticket,
+            captured_at_ms: c.captured_at_ms,
+            frame_signature: c.frame_signature,
+        }))
+}
+
+// Keep movement advice through idle animation and incremental camera scroll.
+// A fresh frame renews the cue; the age of the spoken advice is not its expiry.
+// After a capture gap, require the same view, not an inferred camera movement.
+pub(crate) fn movement_continues(before: &MovementFrame, after: &MovementFrame) -> bool {
+    before.ticket == after.ticket
+        && before.captured_at_ms <= after.captured_at_ms
+        && (same_scene(&before.frame_signature, &after.frame_signature)
+            || after.captured_at_ms - before.captured_at_ms < FRESH_MS
+                && same_location_scene(&before.frame_signature, &after.frame_signature))
 }
 
 // An idle animated screen can outlive the normal matching interval under GPU
