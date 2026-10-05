@@ -182,6 +182,14 @@ impl Store {
         self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,serde_json::to_string(value)?])?;
         Ok(())
     }
+    /// A background UI snapshot must not republish a previous guide's session
+    /// after the player switches guides or an editor advances its revision.
+    pub fn put_active_session<T: Serialize>(&self, guide: &Guide, value: &T) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO documents(key,body) SELECT 'session',?1 WHERE EXISTS(SELECT 1 FROM documents WHERE key='active_guide' AND body=?2) AND EXISTS(SELECT 1 FROM guides WHERE id=?3 AND json_extract(body,'$.revision')=?4) ON CONFLICT(key) DO UPDATE SET body=excluded.body",
+            params![serde_json::to_string(value)?, serde_json::to_string(&guide.id)?, guide.id, i64::try_from(guide.revision)?],
+        )? == 1)
+    }
     pub fn put_if_absent<T: Serialize>(&self, key: &str, value: &T) -> Result<bool> {
         Ok(self.connection.execute(
             "INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
@@ -265,6 +273,11 @@ impl Store {
     }
     pub fn index(&self, guide: &Guide) -> Result<Option<VisualIndex>> {
         self.get(&format!("index:{}:{}", guide.id, guide.revision))
+    }
+    pub fn reference_count(&self, guide: &Guide) -> Result<usize> {
+        Ok(self
+            .get_cached::<VisualIndex>(&format!("index:{}:{}", guide.id, guide.revision))?
+            .map_or(0, |index| index.frames.len()))
     }
     pub fn save_index(&self, index: &VisualIndex) -> Result<()> {
         self.put(
@@ -475,6 +488,27 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stale_background_snapshot_cannot_replace_the_active_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let mut guide = gamebuddy_core::import_markdown("Game", "Guide", "# Start\nGo.").unwrap();
+        store.save_guide(&guide).unwrap();
+        store.put("active_guide", &guide.id).unwrap();
+        assert!(store.put_active_session(&guide, &"current").unwrap());
+        store.put("active_guide", &"another-guide").unwrap();
+        assert!(!store.put_active_session(&guide, &"stale game").unwrap());
+        store.put("active_guide", &guide.id).unwrap();
+        let old = guide.clone();
+        guide.revision += 1;
+        store.save_guide(&guide).unwrap();
+        assert!(!store.put_active_session(&old, &"stale revision").unwrap());
+        assert_eq!(
+            store.get::<String>("session").unwrap().as_deref(),
+            Some("current")
+        );
+        assert!(store.put_active_session(&guide, &"new revision").unwrap());
+    }
     #[test]
     fn player_reports_survive_stale_capture_and_require_current_epoch() {
         let directory = tempfile::tempdir().unwrap();

@@ -107,6 +107,7 @@ ApplicationWindow {
     Buddy {
         id: buddy
         onState_jsonChanged: root.session = JSON.parse(state_json)
+        onMap_preview_ready: (id, preview) => widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
         Component.onCompleted: initialize()
         onAnswerChanged: { if (!root.realtimeEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
         onVoice_command: action => root.overlayAction(action)
@@ -211,7 +212,16 @@ ApplicationWindow {
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
     Timer {
-        interval: 1000
+        interval: 16; repeat: true; running: root.appArguments.indexOf("--ui-trace") >= 0
+        property double previous: 0
+        onTriggered: {
+            const now = Date.now()
+            if (previous && now-previous > 100) console.warn("GAMEBUDDY_UI_STALL ms="+(now-previous))
+            previous = now
+        }
+    }
+    Timer {
+        interval: 250
         repeat: true
         running: root.autoSync && (compositor.active || capture.active || replay.playbackState === MediaPlayer.PlayingState)
         onTriggered: root.grabFrame()
@@ -329,8 +339,7 @@ ApplicationWindow {
                 else if(message.startsWith("GAMEBUDDY_STEP "))buddy.select_step(message.slice(15))
                 else if(message.startsWith("GAMEBUDDY_COMPLETE ")){buddy.select_step(message.slice(19));buddy.complete_step()}
                 else if(message.startsWith("GAMEBUDDY_MAP_REQUEST ")){
-                    const id=message.slice(22), preview=buddy.map_preview(id)
-                    if(preview.length)widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
+                    buddy.map_preview(message.slice(22))
                 }
                 else if(message.startsWith("GAMEBUDDY_SOURCE_OPEN ")){
                     try { const url=JSON.parse(message.slice(22)); if(/^https?:\/\//.test(url)) Qt.openUrlExternally(url) } catch(e) {}
@@ -567,49 +576,7 @@ ApplicationWindow {
                         }
                     }
                 }
-                // Model configuration keeps credentials outside the database.
-                ScrollView {
-                    clip: true; contentWidth: availableWidth
-                    ColumnLayout {
-                        width: parent.width; spacing: 16
-                        Text { text: "Choose the minds behind the guide"; color: root.ink; font.pixelSize: 26; Layout.leftMargin: 24; Layout.topMargin: 24 }
-                        Text { text: "Reasoning and visual comparison are independent. Both default to your local Ollama model."; color: root.muted; font.pixelSize: 13; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; wrapMode: Text.WordWrap }
-                        Text { text: "Providers: codex · claude_code · ollama · open_ai_compatible · open_ai_responses · gemini"; color: "#86decb"; font.pixelSize: 12; Layout.leftMargin: 24 }
-                        RowLayout {
-                            Layout.leftMargin: 24
-                            GbButton { text: "Use Codex subscription + live voice"; onClicked: {
-                                const s=JSON.parse(buddy.settings_json);s.reasoning={kind:"codex",endpoint:"",model:"",api_key_env:""};s.speech="codex_realtime"
-                                settingsEditor.text=JSON.stringify(s,null,2);buddy.save_settings(settingsEditor.text)
-                            } }
-                            GbButton { text: "Use Claude subscription + Codex voice"; onClicked: {
-                                const s=JSON.parse(buddy.settings_json);s.reasoning={kind:"claude_code",endpoint:"",model:"sonnet",api_key_env:""};s.speech="codex_realtime"
-                                settingsEditor.text=JSON.stringify(s,null,2);buddy.save_settings(settingsEditor.text)
-                            } }
-                        }
-                        CheckBox {
-                            text:"Faster Codex voice replies";checked:JSON.parse(buddy.settings_json).fast_voice !== false;Layout.leftMargin:24
-                            palette.windowText:"#c7fff0";palette.text:"#c7fff0";palette.base:"#254c49"
-                            onClicked:{const s=JSON.parse(buddy.settings_json);s.fast_voice=checked;buddy.save_settings(JSON.stringify(s));settingsEditor.text=JSON.stringify(s,null,2)}
-                        }
-                        Text { text:"Uses Codex Fast mode when available, with higher quota use. Applies to the next voice connection.";color:root.muted;font.pixelSize:12;Layout.leftMargin:24;Layout.rightMargin:24;Layout.fillWidth:true;wrapMode:Text.WordWrap }
-                        CheckBox {
-                            text:"Lower game volume during conversations";checked:root.duckGameAudio;Layout.leftMargin:24
-                            palette.windowText:"#c7fff0";palette.text:"#c7fff0";palette.base:"#254c49"
-                            onClicked:{const s=JSON.parse(buddy.settings_json);s.duck_game_audio=checked;buddy.save_settings(JSON.stringify(s));settingsEditor.text=JSON.stringify(s,null,2)}
-                        }
-                        Text { text:gameAudio.status+" · −12 dB, with automatic restoration";color:root.muted;font.pixelSize:12;Layout.leftMargin:24;Layout.rightMargin:24;Layout.fillWidth:true;wrapMode:Text.WordWrap }
-                        TextArea {
-                            id: settingsEditor
-                            Layout.fillWidth: true; Layout.preferredHeight: 355; Layout.leftMargin: 24; Layout.rightMargin: 24
-                            text: JSON.stringify(JSON.parse(buddy.settings_json), null, 2)
-                            color: root.ink; font.family: "monospace"; font.pixelSize: 13; selectByMouse: true; wrapMode: TextEdit.Wrap
-                            background: Rectangle { color: "#172332"; radius: 10; border.color: "#344355" }
-                        }
-                        GbButton { text: "Save model configuration"; accent: true; enabled: !buddy.busy; Layout.leftMargin: 24; onClicked: buddy.save_settings(settingsEditor.text) }
-
-                        Text { text: "api_key_env is the name of an environment variable, such as OPENAI_API_KEY. Keep the key itself outside this file. Cloud models receive the text and frames submitted to them."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24 }
-                    }
-                }
+                ModelSettings { backend: buddy; audioStatus: gameAudio.status }
             }
         }
         Rectangle {

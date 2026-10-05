@@ -104,6 +104,7 @@ fn main() -> Result<()> {
         prompts::REASONER,
         tools,
         std::env::var_os("GAMEBUDDY_PROBE_FAST").is_some(),
+        &std::env::var("GAMEBUDDY_PROBE_EFFORT").unwrap_or_default(),
         deadline,
     )?;
     let started = Instant::now();

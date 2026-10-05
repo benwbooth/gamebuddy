@@ -71,6 +71,15 @@ pub mod ffi {
         #[qinvokable]
         fn save_settings(self: Pin<&mut Buddy>, json: QString);
         #[qinvokable]
+        fn provider_request(
+            self: Pin<&mut Buddy>,
+            id: QString,
+            config: QString,
+            operation: QString,
+        );
+        #[qsignal]
+        fn provider_result(self: Pin<&mut Buddy>, id: QString, result: QString);
+        #[qinvokable]
         fn capture_path(self: &Buddy) -> QString;
         #[qinvokable]
         fn source_url(self: &Buddy) -> QString;
@@ -91,7 +100,9 @@ pub mod ffi {
         #[qinvokable]
         fn realtime_transcript(self: Pin<&mut Buddy>, text: QString);
         #[qinvokable]
-        fn map_preview(self: &Buddy, id: QString) -> QString;
+        fn map_preview(self: Pin<&mut Buddy>, id: QString);
+        #[qsignal]
+        fn map_preview_ready(self: Pin<&mut Buddy>, id: QString, preview: QString);
         #[qinvokable]
         fn guide_browser_request(self: Pin<&mut Buddy>, request: QString);
         #[qsignal]
@@ -140,6 +151,9 @@ pub struct BuddyRust {
     last_scene_at: u64,
     last_scene_image: String,
     map_inflight: bool,
+    refresh_inflight: bool,
+    refresh_generation: u64,
+    poll_inflight: bool,
 }
 impl Default for BuddyRust {
     fn default() -> Self {
@@ -169,6 +183,9 @@ impl Default for BuddyRust {
             last_scene_at: 0,
             last_scene_image: String::new(),
             map_inflight: false,
+            refresh_inflight: false,
+            refresh_generation: 0,
+            poll_inflight: false,
         }
     }
 }
@@ -198,6 +215,18 @@ enum Outcome {
     Vision(String, services::screen::Ticket),
     Voice(String, String),
     VoiceCommand(String, i32),
+}
+// Own only plain Rust data: database reads, navigation construction and JSON
+// serialization must never run on Qt's event/render thread.
+struct ViewSnapshot {
+    root: PathBuf,
+    game: String,
+    guide: Option<Guide>,
+    selected: String,
+    sync: Synchronizer,
+    estimate: SyncEstimate,
+    vision_evidence: Option<services::VisionVerdict>,
+    last_frame: Option<PathBuf>,
 }
 impl ffi::Buddy {
     pub fn launch_arguments(&self) -> QString {
@@ -285,93 +314,129 @@ impl ffi::Buddy {
             });
         });
     }
-    fn refresh(self: Pin<&mut Self>) {
-        let result = (|| -> Result<String> {
-            let data = self.rust();
-            let store = Store::open(&data.root)?;
-            let guides = store
-                .guides()?
-                .into_iter()
-                .map(|g| json!({"id":g.id,"game":g.game,"title":g.title,"steps":g.steps.len()}))
-                .collect::<Vec<_>>();
-            let count = if let Some(g) = &data.guide {
-                store.index(g)?.map(|i| i.frames.len()).unwrap_or(0)
-            } else {
-                0
-            };
-            let selected = data.guide.as_ref().and_then(|g| g.step(&data.selected));
-            let navigation = data
-                .guide
-                .as_ref()
-                .map(|g| {
-                    let mut navigation = services::navigation::context(
-                        &store,
-                        g,
-                        &data.sync.progress,
-                        &data.estimate,
-                    )?;
-                    // The full tree belongs to the reader, not every voice/MCP context.
-                    navigation["player_steps"] = json!(gamebuddy_core::player_outline(g));
-                    Ok::<_, anyhow::Error>(navigation)
-                })
-                .transpose()?
-                .unwrap_or_else(|| json!({}));
-            let current = &navigation["guidance"]["now"];
-            let widgets = data
-                .guide
-                .as_ref()
-                .map(|g| services::harness::widgets(&store, g))
-                .transpose()?
-                .unwrap_or_default();
-            let layouts = store
-                .get::<serde_json::Value>("widget-layout")?
-                .unwrap_or_else(|| json!({}));
-            let widget_visibility = store
-                .get::<serde_json::Value>(&format!(
-                    "widget-visibility:{}",
-                    data.guide
-                        .as_ref()
-                        .map(|g| g.id.as_str())
-                        .unwrap_or_default()
-                ))?
-                .unwrap_or_else(|| json!({}));
-            if let Some(guide) = &data.guide {
-                store.put("session", &json!({"guide_id":guide.id,"guide_revision":guide.revision,"game":data.game,"estimate":data.estimate,"vision":data.vision_evidence,"last_frame":data.last_frame}))?;
-            }
-            let frame_url = data
-                .last_frame
-                .as_ref()
-                .and_then(|p| url::Url::from_file_path(p).ok())
-                .map(|u| u.to_string());
-            let preparation = data
-                .guide
-                .as_ref()
-                .map(|g| store.get::<serde_json::Value>(&format!("preparation:{}", g.id)))
-                .transpose()?
-                .flatten();
-            let book_url = data
-                .guide
-                .as_ref()
-                .and_then(|g| {
-                    store
-                        .get::<String>(&format!("book:{}", g.id))
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|p| url::Url::from_file_path(p).ok())
-                .map(|u| u.to_string());
-            Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
-        })();
-        match result {
-            Ok(state) => {
-                // Refresh the OSD without turning every new instruction into
-                // a spoken answer. The narrator controls unsolicited speech.
-                self.set_state_json(q(state));
-            }
-            Err(e) => self.set_message(q(format!("Could not read library: {e:#}"))),
+    fn refresh(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().refresh_generation += 1;
+        if self.rust().refresh_inflight {
+            return;
         }
+        self.as_mut().rust_mut().refresh_inflight = true;
+        let generation = self.rust().refresh_generation;
+        let data = self.rust();
+        let data = ViewSnapshot {
+            root: data.root.clone(),
+            game: data.game.clone(),
+            guide: data.guide.clone(),
+            selected: data.selected.clone(),
+            sync: data.sync.clone(),
+            estimate: data.estimate.clone(),
+            vision_evidence: data.vision_evidence.clone(),
+            last_frame: data.last_frame.clone(),
+        };
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let result = (|| -> Result<String> {
+                let store = Store::open(&data.root)?;
+                let guides = store
+                    .guides()?
+                    .into_iter()
+                    .map(|g| json!({"id":g.id,"game":g.game,"title":g.title,"steps":g.steps.len()}))
+                    .collect::<Vec<_>>();
+                let count = if let Some(g) = &data.guide {
+                    store.reference_count(g)?
+                } else {
+                    0
+                };
+                let selected = data.guide.as_ref().and_then(|g| g.step(&data.selected));
+                let navigation = data
+                    .guide
+                    .as_ref()
+                    .map(|g| {
+                        let mut navigation = services::navigation::context(
+                            &store,
+                            g,
+                            &data.sync.progress,
+                            &data.estimate,
+                        )?;
+                        // The full tree belongs to the reader, not every voice/MCP context.
+                        navigation["player_steps"] = json!(gamebuddy_core::player_outline(g));
+                        Ok::<_, anyhow::Error>(navigation)
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| json!({}));
+                let current = &navigation["guidance"]["now"];
+                let widgets = data
+                    .guide
+                    .as_ref()
+                    .map(|g| services::harness::widgets(&store, g))
+                    .transpose()?
+                    .unwrap_or_default();
+                let layouts = store
+                    .get::<serde_json::Value>("widget-layout")?
+                    .unwrap_or_else(|| json!({}));
+                let widget_visibility = store
+                    .get::<serde_json::Value>(&format!(
+                        "widget-visibility:{}",
+                        data.guide
+                            .as_ref()
+                            .map(|g| g.id.as_str())
+                            .unwrap_or_default()
+                    ))?
+                    .unwrap_or_else(|| json!({}));
+                if let Some(guide) = &data.guide {
+                    store.put_active_session(guide, &json!({"guide_id":guide.id,"guide_revision":guide.revision,"game":data.game,"estimate":data.estimate,"vision":data.vision_evidence,"last_frame":data.last_frame}))?;
+                }
+                let frame_url = data
+                    .last_frame
+                    .as_ref()
+                    .and_then(|p| url::Url::from_file_path(p).ok())
+                    .map(|u| u.to_string());
+                let preparation = data
+                    .guide
+                    .as_ref()
+                    .map(|g| store.get::<serde_json::Value>(&format!("preparation:{}", g.id)))
+                    .transpose()?
+                    .flatten();
+                let book_url = data
+                    .guide
+                    .as_ref()
+                    .and_then(|g| {
+                        store
+                            .get::<String>(&format!("book:{}", g.id))
+                            .ok()
+                            .flatten()
+                    })
+                    .and_then(|p| url::Url::from_file_path(p).ok())
+                    .map(|u| u.to_string());
+                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+            })();
+            if std::env::args().any(|a| a == "--ui-trace") {
+                eprintln!(
+                    "GAMEBUDDY_UI_SNAPSHOT worker_ms={}",
+                    started.elapsed().as_millis()
+                );
+            }
+            let _ = thread.queue(move |mut object| {
+                object.as_mut().rust_mut().refresh_inflight = false;
+                if object.rust().refresh_generation != generation {
+                    object.refresh();
+                    return;
+                }
+                match result {
+                    Ok(state) => {
+                        // Refresh the OSD without turning every new instruction into
+                        // a spoken answer. The narrator controls unsolicited speech.
+                        object.set_state_json(q(state));
+                    }
+                    Err(e) => object.set_message(q(format!("Could not read library: {e:#}"))),
+                }
+            });
+        });
     }
     fn use_guide(mut self: Pin<&mut Self>, guide: Guide) {
+        if let Ok(store) = Store::open(&self.rust().root) {
+            services::spatial::prewarm(&store, &guide);
+        }
         if self.rust().game != guide.game {
             if let Ok(store) = Store::open(&self.rust().root) {
                 let enabled = services::screen::ticket(&store, &self.rust().screen_session).is_ok();
@@ -675,9 +740,29 @@ impl ffi::Buddy {
         };
         let thread = self.qt_thread();
         self.as_mut().set_matching(true);
+        let spatial_thread = self.qt_thread();
+        let spatial_guide = guide.as_ref().map(|g| (g.id.clone(), g.revision));
+        let spatial_session = ticket.session.clone();
+        let spatial_notify = std::sync::Arc::new(move || {
+            let identity = spatial_guide.clone();
+            let session = spatial_session.clone();
+            let _ = spatial_thread.queue(move |object| {
+                if object.rust().screen_session == session
+                    && object
+                        .rust()
+                        .guide
+                        .as_ref()
+                        .map(|g| (g.id.clone(), g.revision))
+                        == identity
+                {
+                    object.refresh();
+                }
+            });
+        });
         std::thread::spawn(move || {
             let result = (|| -> Result<_> {
                 let store = Store::open(&root)?;
+                let captured_at = services::screen::now_ms();
                 let captured = (|| -> Result<PathBuf> {
                     if let Some(pid) = game_pid {
                         let path = root.join("captures").join(format!("game-{pid}.png"));
@@ -698,8 +783,9 @@ impl ffi::Buddy {
                     let _ = services::screen::capture_error(&store, &ticket, &error.to_string());
                 }
                 let path = captured?;
+                let captured_done = services::screen::now_ms();
                 // Publish the screen even before any guide or reference index exists.
-                services::screen::publish(
+                services::screen::publish_at(
                     &store,
                     &ticket,
                     &path,
@@ -708,16 +794,30 @@ impl ffi::Buddy {
                     } else {
                         "shared_frame"
                     },
+                    captured_at,
                 )?;
+                if std::env::args().any(|a| a == "--ui-trace") {
+                    eprintln!(
+                        "GAMEBUDDY_CAPTURE capture_ms={} publish_ms={}",
+                        captured_done.saturating_sub(captured_at),
+                        services::screen::now_ms().saturating_sub(captured_done)
+                    );
+                }
                 if let Some(guide) = &guide
                     && let Ok(snapshot) = services::screen::snapshot(&store)
                 {
                     services::activity::schedule(&store, guide, snapshot.clone());
-                    services::spatial::schedule(&store, guide, snapshot, sync.progress.epoch);
+                    services::spatial::schedule_notifying(
+                        &store,
+                        guide,
+                        snapshot,
+                        sync.progress.epoch,
+                        spatial_notify,
+                    );
                 }
                 let matching = if let Some(guide) = &guide {
-                    if services::spatial::context(&store, guide)?["preparation"]["status"]
-                        == "ready"
+                    if services::spatial::load_cached(&store, guide)?
+                        .is_some_and(|w| w.status == "ready")
                     {
                         None
                     } else if let Some(index) = store.index(guide)? {
@@ -1131,6 +1231,31 @@ impl ffi::Buddy {
             Err(e) => self.set_message(q(format!("Invalid settings: {e:#}"))),
         }
     }
+    pub fn provider_request(
+        self: Pin<&mut Self>,
+        id: QString,
+        config: QString,
+        operation: QString,
+    ) {
+        let thread = self.qt_thread();
+        let (id, config, operation) = (id.to_string(), config.to_string(), operation.to_string());
+        std::thread::spawn(move || {
+            let result = (|| -> Result<serde_json::Value> {
+                let config: services::ProviderConfig = serde_json::from_str(&config)?;
+                match operation.as_str() {
+                    "models" => services::provider_catalog::discover(&config),
+                    "test" => services::provider_catalog::test(config),
+                    _ => anyhow::bail!("Unknown provider operation"),
+                }
+            })()
+            .unwrap_or_else(|error| json!({"error":format!("{error:#}")}));
+            let _ = thread.queue(move |mut object| {
+                object
+                    .as_mut()
+                    .provider_result(q(id), q(result.to_string()))
+            });
+        });
+    }
     pub fn capture_path(&self) -> QString {
         let dir = self.rust().root.join("captures");
         if std::fs::create_dir_all(&dir).is_err() {
@@ -1221,65 +1346,115 @@ impl ffi::Buddy {
         }
         self.set_transcript(text);
     }
-    pub fn map_preview(&self, id: QString) -> QString {
-        let preview = self.rust().guide.as_ref().and_then(|guide| {
-            Store::open(&self.rust().root)
+    pub fn map_preview(self: Pin<&mut Self>, id: QString) {
+        let Some(guide) = self.rust().guide.clone() else {
+            return;
+        };
+        let root = self.rust().root.clone();
+        let thread = self.qt_thread();
+        let id = id.to_string();
+        std::thread::spawn(move || {
+            let preview = Store::open(root)
                 .and_then(|s| {
-                    let id = id.to_string();
                     if let Some(room) = id.strip_prefix("spatial:") {
-                        services::spatial::preview(&s, guide, room)
+                        services::spatial::preview(&s, &guide, room)
                     } else {
-                        services::navigation::cached_preview(&s, guide, &id)
+                        services::navigation::cached_preview(&s, &guide, &id)
                     }
                 })
-                .ok()
+                .ok();
+            let _ = thread.queue(move |object| {
+                if object
+                    .rust()
+                    .guide
+                    .as_ref()
+                    .is_some_and(|g| g.id == guide.id && g.revision == guide.revision)
+                    && let Some(preview) = preview
+                {
+                    object.map_preview_ready(q(id), q(preview));
+                }
+            });
         });
-        q(preview.unwrap_or_default())
     }
     pub fn poll_widgets(mut self: Pin<&mut Self>) {
-        if self.rust().root.as_os_str().is_empty() {
+        if self.rust().root.as_os_str().is_empty() || self.rust().poll_inflight {
             return;
         }
-        if let Some(guide) = &self.rust().guide
-            && let Ok(progress) = Store::open(&self.rust().root).and_then(|s| s.progress(guide))
-            && progress.epoch > self.rust().sync.progress.epoch
-        {
-            self.as_mut().rust_mut().sync = Synchronizer::new(progress);
-            self.as_mut().rust_mut().estimate = SyncEstimate::default();
-        }
-        let latest = self.rust().guide.as_ref().and_then(|g| {
-            Store::open(&self.rust().root)
-                .and_then(|s| s.guide(&g.id))
-                .ok()
-                .filter(|latest| latest.revision != g.revision)
+        self.as_mut().rust_mut().poll_inflight = true;
+        let root = self.rust().root.clone();
+        let game = self.rust().game.clone();
+        let identity = self
+            .rust()
+            .guide
+            .as_ref()
+            .map(|g| (g.id.clone(), g.revision));
+        let state = self.state_json().to_string();
+        let prepare = !std::env::args().any(|a| a == "--no-prepare");
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_> {
+                let store = Store::open(root)?;
+                let id = identity
+                    .as_ref()
+                    .map(|(id, _)| id.clone())
+                    .or(store.get::<String>("active_guide")?);
+                let guide = id
+                    .and_then(|id| store.guide(&id).ok())
+                    .filter(|g| g.game.eq_ignore_ascii_case(&game));
+                let progress = guide.as_ref().map(|g| store.progress(g)).transpose()?;
+                let mut place = None;
+                let mut atlas_pending = false;
+                if prepare && let Some(guide) = &guide {
+                    let state: serde_json::Value = serde_json::from_str(&state)?;
+                    place = state["navigation"]["location"]["place_id"]
+                        .as_str()
+                        .filter(|p| services::navigation::placement::needed(&store, guide, p))
+                        .map(str::to_owned);
+                    atlas_pending = services::navigation::atlas(&store, guide)?.status == "pending";
+                }
+                Ok((guide, progress, place, atlas_pending))
+            })();
+            let _ = thread.queue(move |mut object| {
+                object.as_mut().rust_mut().poll_inflight = false;
+                if object.rust().game != game
+                    || object
+                        .rust()
+                        .guide
+                        .as_ref()
+                        .map(|g| (g.id.clone(), g.revision))
+                        != identity
+                {
+                    return;
+                }
+                if let Ok((guide, progress, place, atlas_pending)) = result {
+                    if let Some(guide) = guide.filter(|g| {
+                        identity
+                            .as_ref()
+                            .is_none_or(|(_, revision)| *revision != g.revision)
+                    }) {
+                        object.as_mut().use_guide(guide);
+                    } else if let Some(progress) =
+                        progress.filter(|p| p.epoch > object.rust().sync.progress.epoch)
+                    {
+                        object.as_mut().rust_mut().sync = Synchronizer::new(progress);
+                        object.as_mut().rust_mut().estimate = SyncEstimate::default();
+                    }
+                    object
+                        .as_mut()
+                        .prepare_background_maps(place, atlas_pending);
+                }
+                object.refresh();
+            });
         });
-        if let Some(guide) = latest {
-            self.as_mut().use_guide(guide);
-        } else if self.rust().guide.is_none() {
-            let prepared = Store::open(&self.rust().root)
-                .ok()
-                .and_then(|s| {
-                    s.get::<String>("active_guide")
-                        .ok()
-                        .flatten()
-                        .and_then(|id| s.guide(&id).ok())
-                })
-                .filter(|g| g.game.eq_ignore_ascii_case(&self.rust().game));
-            if let Some(guide) = prepared {
-                self.as_mut().use_guide(guide);
-            }
-        }
-        self.as_mut().refresh();
+    }
+    fn prepare_background_maps(
+        mut self: Pin<&mut Self>,
+        place: Option<String>,
+        atlas_pending: bool,
+    ) {
         if !self.rust().map_inflight
-            && !std::env::args().any(|a| a == "--no-prepare")
             && let Some(guide) = self.rust().guide.clone()
-            && let Ok(state) =
-                serde_json::from_str::<serde_json::Value>(&self.state_json().to_string())
-            && let Some(place) = state["navigation"]["location"]["place_id"]
-                .as_str()
-                .map(str::to_owned)
-            && let Ok(store) = Store::open(&self.rust().root)
-            && services::navigation::placement::needed(&store, &guide, &place)
+            && let Some(place) = place
         {
             self.as_mut().rust_mut().map_inflight = true;
             let root = self.rust().root.clone();
@@ -1296,11 +1471,8 @@ impl ffi::Buddy {
         // Atlas preparation belongs to the application lifecycle, including
         // imported guides, changed goals/references, and newly supplied maps.
         if !*self.preparing()
-            && !std::env::args().any(|a| a == "--no-prepare")
+            && atlas_pending
             && let Some(guide) = self.rust().guide.clone()
-            && let Ok(atlas) =
-                Store::open(&self.rust().root).and_then(|s| services::navigation::atlas(&s, &guide))
-            && atlas.status == "pending"
         {
             self.as_mut().set_preparing(true);
             let root = self.rust().root.clone();

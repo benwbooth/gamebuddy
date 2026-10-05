@@ -241,6 +241,17 @@ fn update(store: &Store, ticket: &Ticket, change: impl Fn(&mut Capture)) -> Resu
 }
 
 pub fn publish(store: &Store, ticket: &Ticket, path: &Path, source: &str) -> Result<()> {
+    publish_at(store, ticket, path, source, now_ms())
+}
+
+/// Preserve capture time through image decoding/cropping and persistence.
+pub fn publish_at(
+    store: &Store,
+    ticket: &Ticket,
+    path: &Path,
+    source: &str,
+    at: u64,
+) -> Result<()> {
     let original = image::open(path)?;
     let (source_width, source_height) = (original.width(), original.height());
     let cropped = ticket.crop.apply(&original)?;
@@ -252,7 +263,6 @@ pub fn publish(store: &Store, ticket: &Ticket, path: &Path, source: &str) -> Res
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85).encode_image(&image)?;
     let jpeg = STANDARD.encode(bytes);
     let signature = frame_signature(&image::DynamicImage::ImageRgb8(image));
-    let at = now_ms();
     update(store, ticket, |c| {
         c.jpeg = jpeg.clone();
         c.frame_signature = signature.clone();

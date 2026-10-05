@@ -24,6 +24,18 @@ debug = 1
 [profile.dev.package.gamebuddy-core]
 opt-level = 3
 
+# XComposite converts millions of game pixels on every capture. Keep that
+# conversion optimized in the development build used by the launcher too.
+[profile.dev.package.gamebuddy-overlay]
+opt-level = 3
+
+# JPEG publication and Qt snapshot serialization run continuously during play.
+# Optimize their generic image/serde code at the call sites, not only in deps.
+[profile.dev.package.gamebuddy-services]
+opt-level = 2
+[profile.dev.package.gamebuddy-app]
+opt-level = 2
+
 # Live ultrawide capture decodes/resizes several million pixels per frame.
 [profile.dev.package.image]
 opt-level = 3

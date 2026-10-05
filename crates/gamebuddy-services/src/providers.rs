@@ -24,6 +24,9 @@ pub struct ProviderConfig {
     pub model: String,
     /// Only the environment variable name is persisted, never the credential.
     pub api_key_env: String,
+    /// Empty preserves the original fast defaults; "auto" uses the model default.
+    #[serde(default)]
+    pub reasoning_effort: String,
 }
 impl Default for ProviderConfig {
     fn default() -> Self {
@@ -32,6 +35,7 @@ impl Default for ProviderConfig {
             endpoint: "http://127.0.0.1:11434".into(),
             model: "qwen3.5:4b".into(),
             api_key_env: String::new(),
+            reasoning_effort: String::new(),
         }
     }
 }
@@ -73,6 +77,45 @@ pub enum SpeechBackend {
 
 impl ProviderConfig {
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            matches!(
+                self.reasoning_effort.as_str(),
+                "" | "auto"
+                    | "off"
+                    | "on"
+                    | "none"
+                    | "minimal"
+                    | "low"
+                    | "medium"
+                    | "high"
+                    | "xhigh"
+                    | "max"
+                    | "ultra"
+            ),
+            "Unknown thinking level"
+        );
+        if !matches!(self.reasoning_effort.as_str(), "" | "auto") {
+            let supported = match self.kind {
+                ProviderKind::Ollama => matches!(
+                    self.reasoning_effort.as_str(),
+                    "off" | "on" | "low" | "medium" | "high" | "max"
+                ),
+                ProviderKind::ClaudeCode => matches!(
+                    self.reasoning_effort.as_str(),
+                    "low" | "medium" | "high" | "xhigh" | "max"
+                ),
+                ProviderKind::Codex
+                | ProviderKind::OpenAiResponses
+                | ProviderKind::OpenAiCompatible => {
+                    !matches!(self.reasoning_effort.as_str(), "on" | "off")
+                }
+                ProviderKind::Gemini => false,
+            };
+            ensure!(
+                supported,
+                "This connector does not support that thinking setting"
+            );
+        }
         if matches!(self.kind, ProviderKind::Codex | ProviderKind::ClaudeCode) {
             ensure!(
                 self.api_key_env.is_empty(),
@@ -125,6 +168,9 @@ pub trait ReasoningProvider {
 pub struct HttpProvider {
     pub config: ProviderConfig,
     client: Client,
+    // A coaching answer can make several tool rounds. Keep its transport alive
+    // across those rounds while retaining a fresh, isolated thread per request.
+    codex: std::sync::Mutex<Option<crate::subscription::CodexClient>>,
 }
 impl HttpProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
@@ -135,6 +181,7 @@ impl HttpProvider {
                 .timeout(Duration::from_secs(180))
                 .connect_timeout(Duration::from_secs(15))
                 .build()?,
+            codex: std::sync::Mutex::new(None),
         })
     }
     fn key(&self) -> Result<Option<String>> {
@@ -163,10 +210,30 @@ impl HttpProvider {
     fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
         match self.config.kind {
             ProviderKind::Codex => {
-                return crate::subscription::codex_complete(&self.config.model, r);
+                let mut client = self
+                    .codex
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Codex connection lock failed"))?;
+                if client.is_none() {
+                    *client = Some(crate::subscription::CodexClient::start()?);
+                }
+                let result = crate::subscription::codex_complete(
+                    client.as_mut().unwrap(),
+                    &self.config.model,
+                    &self.config.reasoning_effort,
+                    r,
+                );
+                if result.is_err() {
+                    *client = None;
+                }
+                return result;
             }
             ProviderKind::ClaudeCode => {
-                return crate::subscription::claude_complete(&self.config.model, r);
+                return crate::subscription::claude_complete(
+                    &self.config.model,
+                    &self.config.reasoning_effort,
+                    r,
+                );
             }
             _ => {}
         }
@@ -174,7 +241,13 @@ impl HttpProvider {
         let (url, body) = match self.config.kind {
             ProviderKind::Codex | ProviderKind::ClaudeCode => unreachable!(),
             ProviderKind::Ollama => (format!("{base}/api/chat"), {
-                let mut body = json!({"model":self.config.model,"stream":false,"think":false,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":16384,"num_predict":4096}});
+                let think = match self.config.reasoning_effort.as_str() {
+                    "" | "off" => json!(false),
+                    "on" => json!(true),
+                    "auto" => Value::Null,
+                    level => json!(level),
+                };
+                let mut body = json!({"model":self.config.model,"stream":false,"think":think,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":16384,"num_predict":4096}});
                 if r.json {
                     body["format"] = schema.unwrap_or(json!("json"));
                 }
@@ -216,6 +289,18 @@ impl HttpProvider {
                 (url.to_string(), body)
             }
         };
+        let mut body = body;
+        if !matches!(self.config.reasoning_effort.as_str(), "" | "auto") {
+            match self.config.kind {
+                ProviderKind::OpenAiResponses => {
+                    body["reasoning"] = json!({"effort": self.config.reasoning_effort})
+                }
+                ProviderKind::OpenAiCompatible => {
+                    body["reasoning_effort"] = json!(self.config.reasoning_effort)
+                }
+                _ => {}
+            }
+        }
         let mut request = self.client.post(url).json(&body);
         if let Some(key) = self.key()? {
             request = if self.config.kind == ProviderKind::Gemini {
@@ -349,7 +434,7 @@ pub fn compile_text(
     Ok(guide)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisionVerdict {
     pub step_id: Option<String>,
     pub visible_evidence: Vec<String>,
@@ -571,5 +656,87 @@ mod tests {
             "answer"
         );
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn thinking_choices_reach_each_http_provider() {
+        for (kind, effort, path, expected) in [
+            (ProviderKind::Ollama, "on", "/api/chat", json!(true)),
+            (ProviderKind::Ollama, "high", "/api/chat", json!("high")),
+            (ProviderKind::Ollama, "auto", "/api/chat", Value::Null),
+            (
+                ProviderKind::OpenAiResponses,
+                "low",
+                "/responses",
+                json!("low"),
+            ),
+            (
+                ProviderKind::OpenAiCompatible,
+                "high",
+                "/chat/completions",
+                json!("high"),
+            ),
+        ] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let address = server.server_addr().to_string();
+            let handle = std::thread::spawn(move || {
+                let mut request = server.recv().unwrap();
+                assert_eq!(request.url(), path);
+                let mut text = String::new();
+                request.as_reader().read_to_string(&mut text).unwrap();
+                let body: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(body["model"], "chosen-model");
+                let (actual, response) = match path {
+                    "/api/chat" => (&body["think"], json!({"message":{"content":"OK"}})),
+                    "/responses" => (
+                        &body["reasoning"]["effort"],
+                        json!({"output":[{"content":[{"type":"output_text","text":"OK"}]}]}),
+                    ),
+                    _ => (
+                        &body["reasoning_effort"],
+                        json!({"choices":[{"message":{"content":"OK"}}]}),
+                    ),
+                };
+                assert_eq!(*actual, expected);
+                request
+                    .respond(tiny_http::Response::from_string(response.to_string()))
+                    .unwrap();
+            });
+            let provider = HttpProvider::new(ProviderConfig {
+                kind,
+                endpoint: format!("http://{address}"),
+                model: "chosen-model".into(),
+                reasoning_effort: effort.into(),
+                api_key_env: String::new(),
+            })
+            .unwrap();
+            assert_eq!(
+                provider
+                    .complete(ModelRequest {
+                        system: String::new(),
+                        prompt: "test".into(),
+                        images: vec![],
+                        json: false
+                    })
+                    .unwrap(),
+                "OK"
+            );
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn older_settings_keep_fast_defaults_and_new_choices_persist() {
+        let mut settings: Settings = serde_json::from_value(json!({
+            "reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},
+            "vision":{"kind":"ollama","endpoint":"http://localhost:11434","model":"qwen","api_key_env":""}
+        })).unwrap();
+        assert!(settings.reasoning.reasoning_effort.is_empty());
+        settings.reasoning.reasoning_effort = "high".into();
+        let roundtrip: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(roundtrip.reasoning.reasoning_effort, "high");
+        settings.vision.reasoning_effort = "ultra".into();
+        assert!(settings.vision.validate().is_err());
     }
 }

@@ -1308,8 +1308,24 @@ pub fn evaluate(store: &Store, guide: &Guide, path: &Path) -> Result<Value> {
 /// Per-game inference runs independently of capture/voice; slow model startup
 /// must never stop fresh screenshots reaching the conversational provider.
 pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch: u64) {
+    schedule_notifying(store, guide, snapshot, epoch, std::sync::Arc::new(|| {}));
+}
+
+/// Notify the UI after a completed observation instead of waiting for its poll.
+pub fn schedule_notifying(
+    store: &Store,
+    guide: &Guide,
+    snapshot: screen::Snapshot,
+    epoch: u64,
+    notify: std::sync::Arc<dyn Fn() + Send + Sync>,
+) {
     use std::sync::{Mutex, OnceLock};
-    type Pending = (Guide, screen::Snapshot, u64);
+    type Pending = (
+        Guide,
+        screen::Snapshot,
+        u64,
+        std::sync::Arc<dyn Fn() + Send + Sync>,
+    );
     static QUEUE: OnceLock<Mutex<std::collections::HashMap<String, Option<Pending>>>> =
         OnceLock::new();
     let key = format!("{}:{}", store.root.display(), guide.id);
@@ -1320,7 +1336,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
     let running = pending.contains_key(&key);
     // Keep the newest frame while inference is busy, rather than discarding
     // every capture during model startup or atlas registration.
-    pending.insert(key.clone(), Some((guide.clone(), snapshot, epoch)));
+    pending.insert(key.clone(), Some((guide.clone(), snapshot, epoch, notify)));
     if running {
         return;
     }
@@ -1349,7 +1365,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
                     }
                     job
                 };
-                let Some((guide, mut snapshot, epoch)) = job else {
+                let Some((guide, mut snapshot, epoch, notify)) = job else {
                     break;
                 };
                 if let Ok(fresh) = screen::snapshot(&store)
@@ -1375,6 +1391,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
                     store.put(&format!("world-error:{}", guide.id), &error.to_string())?;
                 }
                 store.put(&format!("world-message:{}", guide.id), &"")?;
+                notify();
             }
             Ok(())
         };
@@ -1385,6 +1402,25 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot, epoch:
             if let Ok(mut pending) = queue.lock() {
                 pending.remove(&key);
             }
+        }
+    });
+}
+
+/// Start loading the persistent matcher while the game and UI are opening.
+pub fn prewarm(store: &Store, guide: &Guide) {
+    let (root, guide) = (store.root.clone(), guide.clone());
+    std::thread::spawn(move || {
+        let result = (|| -> Result<()> {
+            let store = Store::open(&root)?;
+            if let Some(world) = load_cached(&store, &guide)? {
+                Engine::for_world(&store, &world, "live")?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result
+            && let Ok(store) = Store::open(&root)
+        {
+            let _ = store.put(&format!("world-error:{}", guide.id), &error.to_string());
         }
     });
 }
@@ -1502,6 +1538,8 @@ pub fn observe(
         store.put_if_absent(&tracker_key, &tracker)?
     };
     ensure!(saved, "Newer spatial observation exists");
+    result["timing"]["capture_to_observation_ms"] =
+        json!(screen::now_ms().saturating_sub(snapshot.captured_at_ms));
     store.put(&format!("world-observation:{}", guide.id), &result)?;
     store.put(&format!("world-error:{}", guide.id), &String::new())?;
     ground_observation(

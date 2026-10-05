@@ -242,6 +242,11 @@ impl ffi::RealtimeVoice {
                     &instructions,
                     tools,
                     settings.fast_voice,
+                    if settings.reasoning.kind == gamebuddy_services::ProviderKind::Codex {
+                        &settings.reasoning.reasoning_effort
+                    } else {
+                        ""
+                    },
                     deadline,
                 )?;
                 let mut memory = conversation::RealtimeMemory::new(&store, &game, &thread);

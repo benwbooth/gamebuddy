@@ -18,18 +18,31 @@ fn main() -> anyhow::Result<()> {
         endpoint: String::new(),
         model: std::env::var("GAMEBUDDY_PROBE_MODEL").unwrap_or_default(),
         api_key_env: String::new(),
+        reasoning_effort: std::env::var("GAMEBUDDY_PROBE_EFFORT").unwrap_or_default(),
     })?;
-    let started = std::time::Instant::now();
-    let answer = provider.complete(ModelRequest {
+    let request = ModelRequest {
         system: "You are a game guide. Return JSON only. Use no tools.".into(),
         prompt:
             "Return {\"ready\":true,\"observation\":\"one sentence about the image, or no image\"}."
                 .into(),
         images,
         json: true,
-    })?;
-    let value: serde_json::Value = gamebuddy_services::parse_json(&answer)?;
-    anyhow::ensure!(value["ready"] == true, "Unexpected provider response");
-    println!("{} ({:.1}s)", value, started.elapsed().as_secs_f32());
+    };
+    let rounds: usize = std::env::var("GAMEBUDDY_PROBE_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    for round in 0..rounds.clamp(1, 8) {
+        let started = std::time::Instant::now();
+        let answer = provider.complete(request.clone())?;
+        let value: serde_json::Value = gamebuddy_services::parse_json(&answer)?;
+        anyhow::ensure!(value["ready"] == true, "Unexpected provider response");
+        println!(
+            "round={} {} ({:.2}s)",
+            round + 1,
+            value,
+            started.elapsed().as_secs_f32()
+        );
+    }
     Ok(())
 }

@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod media;
+pub mod provider_catalog;
 pub mod providers;
 pub mod screen;
 pub mod speech;

@@ -5,6 +5,8 @@ fn main() {
         "qml/Main.qml",
         "qml/GbButton.qml",
         "qml/GbField.qml",
+        "qml/ModelSettings.qml",
+        "qml/ProviderCard.qml",
         "qml/Companion.qml",
         "qml/RealtimePanel.qml",
         "qml/VoiceCaptions.qml",

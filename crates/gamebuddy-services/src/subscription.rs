@@ -26,6 +26,7 @@ pub struct CodexClient {
     output: Receiver<Result<Value>>,
     next_id: u64,
     _directory: tempfile::TempDir,
+    pub resolved_model: String,
 }
 impl CodexClient {
     pub fn start() -> Result<Self> {
@@ -76,6 +77,7 @@ impl CodexClient {
             output: rx,
             next_id: 1,
             _directory: directory,
+            resolved_model: String::new(),
         };
         let deadline = Instant::now() + Duration::from_secs(20);
         client.request("initialize", json!({"clientInfo":{"name":"gamebuddy","title":"GameBuddy","version":"0.1.0"},"capabilities":{"experimentalApi":true}}), deadline)?;
@@ -152,7 +154,7 @@ impl CodexClient {
         tools: Value,
         deadline: Instant,
     ) -> Result<String> {
-        self.thread_with_tools_at_tier(model, instructions, tools, None, deadline)
+        self.thread_with_options(model, instructions, tools, None, "", deadline)
     }
     pub fn voice_thread(
         &mut self,
@@ -160,6 +162,7 @@ impl CodexClient {
         instructions: &str,
         tools: Value,
         fast: bool,
+        effort: &str,
         deadline: Instant,
     ) -> Result<String> {
         let priority = fast
@@ -184,25 +187,31 @@ impl CodexClient {
                         })
                 })
                 .unwrap_or(false);
-        self.thread_with_tools_at_tier(
+        self.thread_with_options(
             model,
             instructions,
             tools,
             // An explicit opt-out must also override a globally configured
             // Codex Fast tier, rather than silently inheriting it.
             Some(if priority { "priority" } else { "default" }),
+            effort,
             deadline,
         )
     }
-    fn thread_with_tools_at_tier(
+    pub fn thread_with_options(
         &mut self,
         model: &str,
         instructions: &str,
         tools: Value,
         tier: Option<&str>,
+        effort: &str,
         deadline: Instant,
     ) -> Result<String> {
-        let mut params = json!({"ephemeral":true,"cwd":self._directory.path(),"environments":[],"approvalPolicy":"never","sandbox":"read-only","baseInstructions":instructions,"config":{"model_reasoning_effort":"low"}});
+        let mut params = json!({"ephemeral":true,"cwd":self._directory.path(),"environments":[],"approvalPolicy":"never","sandbox":"read-only","baseInstructions":instructions});
+        if effort != "auto" {
+            params["config"] =
+                json!({"model_reasoning_effort":if effort.is_empty() { "low" } else { effort }});
+        }
         if let Some(tier) = tier {
             params["serviceTier"] = json!(tier)
         }
@@ -211,6 +220,7 @@ impl CodexClient {
             params["model"] = json!(model);
         }
         let value = self.request("thread/start", params, deadline)?;
+        self.resolved_model = value["model"].as_str().unwrap_or_default().into();
         if std::env::args().any(|a| a == "--voice-trace") {
             eprintln!(
                 "GAMEBUDDY_CODEX_THREAD model={} effort={} service_tier={}",
@@ -226,21 +236,25 @@ impl CodexClient {
     }
 }
 
-pub fn codex_complete(model: &str, r: ModelRequest) -> Result<String> {
+pub fn codex_complete(
+    client: &mut CodexClient,
+    model: &str,
+    effort: &str,
+    r: ModelRequest,
+) -> Result<String> {
     let deadline = Instant::now() + Duration::from_secs(180);
-    let mut client = CodexClient::start()?;
-    let thread = client.thread(model, &r.system, deadline)?;
+    let thread = client.thread_with_options(model, &r.system, json!([]), None, effort, deadline)?;
     let mut input = vec![json!({"type":"text","text":r.prompt})];
     input.extend(
         r.images
             .into_iter()
             .map(|data| json!({"type":"image","url":format!("data:image/jpeg;base64,{data}")})),
     );
-    client.request(
-        "turn/start",
-        json!({"threadId":thread,"input":input,"effort":"low","environments":[]}),
-        deadline,
-    )?;
+    let mut params = json!({"threadId":thread,"input":input,"environments":[]});
+    if effort != "auto" {
+        params["effort"] = json!(if effort.is_empty() { "low" } else { effort });
+    }
+    client.request("turn/start", params, deadline)?;
     let mut answer = String::new();
     loop {
         let event = client.receive(deadline)?;
@@ -270,7 +284,7 @@ pub fn codex_complete(model: &str, r: ModelRequest) -> Result<String> {
     }
 }
 
-pub fn claude_complete(model: &str, r: ModelRequest) -> Result<String> {
+pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<String> {
     let directory = tempfile::tempdir()?;
     let login = Command::new("claude")
         .args(["--safe-mode", "auth", "status"])
@@ -312,6 +326,9 @@ pub fn claude_complete(model: &str, r: ModelRequest) -> Result<String> {
         .stderr(Stdio::null());
     if !model.is_empty() {
         command.args(["--model", model]);
+    }
+    if !matches!(effort, "" | "auto") {
+        command.args(["--effort", effort]);
     }
     let mut process = Process(
         command
