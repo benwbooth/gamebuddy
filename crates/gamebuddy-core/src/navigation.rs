@@ -4,6 +4,7 @@ use crate::{Guide, Progress, Step, SyncEstimate};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+pub mod direction;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct MapAsset {

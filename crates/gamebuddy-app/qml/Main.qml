@@ -40,6 +40,7 @@ ApplicationWindow {
         let items=[]
         if(session.guide)items.push({id:"walkthrough-outline",title:"Walkthrough"})
         if(session.guide)items.push({id:"guide-library",title:"Guide library · pictures, maps & sources",defaultVisible:false})
+        if(session.guide)items.push({id:"navigation-arrow",title:"Navigation arrow"})
         if(session.navigation?.guidance || session.current)items.push({id:"current-step",title:"Next action"})
         if(session.navigation?.map)items.push({id:"location-map",title:"Location map"})
         return items.concat(session.widgets || [])
@@ -282,7 +283,21 @@ ApplicationWindow {
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | (root.cropOpen || root.editOverlay || companion.expanded || compositor.active ? 0 : Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         Component.onCompleted: { if (compositor.active) compositor.attach(osd) }
         Item { id: overlayScene; anchors.fill: parent }
+        NavigationArrow {
+            parent: overlayScene
+            z: 24
+            enabled: root.widgetsEnabled && !root.cropOpen && !root.overlayOptions && (root.session.widget_visibility?.["navigation-arrow"] ?? true)
+            cue: root.session.navigation?.direction || null
+            trace: root.appArguments.indexOf("--navigation-trace") >= 0
+            occupiedRects: {
+                let boxes=widgetView.visible ? JSON.parse(root.widgetRegions) : []
+                if (companion.embedded) boxes.push([companion.x,companion.y,companion.width,companion.height])
+                if (liveCaptions.visible) boxes.push([liveCaptions.x,liveCaptions.y,liveCaptions.width,liveCaptions.height])
+                return boxes
+            }
+        }
         VoiceCaptions {
+            id: liveCaptions
             parent: overlayScene
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom

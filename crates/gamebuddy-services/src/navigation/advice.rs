@@ -11,6 +11,9 @@ pub struct NextAction {
     pub expected_revision: u64,
     pub epoch: u64,
     pub step_id: String,
+    /// One immediate action. For supported screen-relative movement, start with
+    /// "Walk right", "Climb up", etc. This drives the OSD arrow only with fresh
+    /// matching place evidence. Never guess a direction or add it to non-movement.
     pub instructions: String,
 }
 #[derive(Serialize, Deserialize)]
@@ -100,6 +103,77 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direction_tracks_shared_advice_and_hides_without_live_capture() {
+        use gamebuddy_core::{Atlas, Place, PlaceBinding};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Leave town\nWalk right to the gate.",
+        )
+        .unwrap();
+        store.save_guide(&guide).unwrap();
+        let atlas = Atlas {
+            guide_id: guide.id.clone(),
+            guide_revision: guide.revision,
+            places: vec![Place {
+                id: "town".into(),
+                label: "Town".into(),
+                map_id: None,
+                landmarks: "Gate".into(),
+            }],
+            bindings: vec![PlaceBinding {
+                step_id: "step-1".into(),
+                place_id: "town".into(),
+                evidence: "Route starts at the gate".into(),
+            }],
+            ..Default::default()
+        };
+        super::super::save(&store, &guide, &atlas).unwrap();
+        let ticket = screen::start(&store, "Game", true).unwrap();
+        let frame = dir.path().join("frame.png");
+        image::RgbImage::new(32, 32).save(&frame).unwrap();
+        screen::publish(&store, &ticket, &frame, "test").unwrap();
+        let mut location = PlaceTracker::for_session(ticket.session.clone());
+        location.report("town", "step-1", 0, screen::now_ms(), "I am at the gate");
+        store
+            .put(&super::super::tracker_key(&guide), &location)
+            .unwrap();
+        let progress = store.progress(&guide).unwrap();
+        let before =
+            super::super::context(&store, &guide, &progress, &SyncEstimate::default()).unwrap();
+        assert_eq!(before["direction"]["direction"], "right");
+        let result = publish(
+            &store,
+            &guide,
+            NextAction {
+                expected_revision: guide.revision,
+                epoch: progress.epoch,
+                step_id: "step-1".into(),
+                instructions: "Walk left to the other door.".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(result["navigation"]["direction"]["direction"], "left");
+        assert_eq!(
+            result["navigation"]["direction"]["step_id"],
+            result["navigation"]["guidance"]["now"]["id"]
+        );
+        assert_eq!(
+            serde_json::to_value(store.progress(&guide).unwrap()).unwrap(),
+            serde_json::to_value(&progress).unwrap()
+        );
+        screen::set_enabled(&store, &ticket.session, "Game", false).unwrap();
+        let paused =
+            super::super::context(&store, &guide, &progress, &SyncEstimate::default()).unwrap();
+        assert!(paused["direction"].is_null());
+        screen::start(&store, "Game", true).unwrap();
+        let replaced =
+            super::super::context(&store, &guide, &progress, &SyncEstimate::default()).unwrap();
+        assert!(replaced["direction"].is_null());
+    }
     #[test]
     fn advice_rejects_stale_edits_and_unconfirmed_prerequisites() {
         let dir = tempfile::tempdir().unwrap();

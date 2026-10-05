@@ -18,7 +18,7 @@ pub fn prepare(store: &Store) -> Result<()> {
     let mut guide = gamebuddy_core::import_markdown(
         "Faxanadu",
         "Navigation fixture",
-        "# Church\nTalk to the guru.\n# Shop\nBuy the key.\n# Forest\nEnter the forest.",
+        "# Church\nWalk right to the guru.\n# Shop\nBuy the key.\n# Forest\nEnter the forest.",
     )?;
     let mut video = guide.sources[0].clone();
     video.id = "fixture-video".into();
@@ -187,6 +187,12 @@ pub fn run(
         Ok(v["place"] == "church" && v["map"] == "church" && v["marker"] == true)
     })?;
     wait(|| Ok(latest(&log, "GAMEBUDDY_OUTLINE ")["current"] == "step-1"))?;
+    wait(|| {
+        let arrow = latest(&log, "GAMEBUDDY_NAVIGATION_ARROW ");
+        Ok(arrow["visible"] == true
+            && arrow["direction"] == "right"
+            && arrow["step_id"] == "step-1")
+    })?;
     thread::sleep(Duration::from_secs(1));
     screenshot("navigation-church.png")?;
     hover(&latest(&log, "GAMEBUDDY_MAP_VIEW ")["credit"])?;
@@ -202,6 +208,7 @@ pub fn run(
     wait(|| Ok(latest(&log, "GAMEBUDDY_PICKER ")["label"] == "Location map"))?;
     report("forest", "step-3")?;
     wait(|| Ok(latest(&log, "GAMEBUDDY_OUTLINE ")["current"] == "step-3"))?;
+    wait(|| Ok(latest(&log, "GAMEBUDDY_NAVIGATION_ARROW ")["visible"] == false))?;
     thread::sleep(Duration::from_secs(3));
     screenshot("navigation-menu-survives-update.png")?;
     let menu = latest(&log, "GAMEBUDDY_PICKER ");

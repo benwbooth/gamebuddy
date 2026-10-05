@@ -6,7 +6,7 @@ use gamebuddy_core::{PlaceTracker, Progress, guidance_from};
 pub(super) fn navigation(value: &Value) -> Value {
     json!({
         "location":value["location"], "cursor":value["cursor"],
-        "guidance":value["guidance"], "recommendation":value["recommendation"],
+        "guidance":value["guidance"], "direction":value["direction"], "recommendation":value["recommendation"],
         "map":{
             "status":value["map"]["status"], "current_place":value["map"]["current_place"],
             "target_place":value["map"]["target_place"], "precision":value["map"]["precision"]

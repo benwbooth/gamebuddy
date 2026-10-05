@@ -689,10 +689,8 @@ pub fn context(
         .as_ref()
         .map(|(t, _)| t.clone())
         .unwrap_or_default();
-    let session = crate::screen::status(store)?["session_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    let screen = crate::screen::status(store)?;
+    let session = screen["session_id"].as_str().unwrap_or_default().to_owned();
     if tracker.session_id != session {
         tracker = PlaceTracker::for_session(session.clone());
     }
@@ -790,6 +788,18 @@ pub fn context(
             "GameBuddy's latest suggested action. This does not mark any task complete.".into();
     }
     let cursor = advice.now.clone();
+    let direction = (screen["status"] == "live")
+        .then(|| gamebuddy_core::navigation::direction::cue(&advice, &atlas, &tracker, now))
+        .flatten()
+        .map(|mut cue| {
+            cue.valid_until_ms = cue.valid_until_ms.min(
+                screen["captured_at_ms"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .saturating_add(crate::screen::FRESH_MS),
+            );
+            cue
+        });
     let current_place = tracker
         .place_id
         .as_deref()
@@ -856,7 +866,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

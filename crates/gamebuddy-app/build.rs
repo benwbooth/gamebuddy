@@ -8,6 +8,7 @@ fn main() {
         "qml/Companion.qml",
         "qml/RealtimePanel.qml",
         "qml/VoiceCaptions.qml",
+        "qml/NavigationArrow.qml",
         "qml/CropEditor.qml",
     ]))
     .file("src/controller.rs")

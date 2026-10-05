@@ -1335,7 +1335,8 @@ impl ffi::Buddy {
                     "current-step",
                     "walkthrough-outline",
                     "location-map",
-                    "guide-library"
+                    "guide-library",
+                    "navigation-arrow"
                 ]
                 .contains(&id.as_str())
                     || services::harness::widgets(&store, guide)?
