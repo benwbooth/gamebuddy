@@ -27,9 +27,26 @@ struct Tile {
 struct Index {
     #[serde(default)]
     complete: bool,
+    #[serde(default)]
+    tiling_revision: u32,
     encoder: String,
     tiles: Vec<Tile>,
     maps: Vec<gamebuddy_core::MapAsset>,
+}
+
+const TILING_REVISION: u32 = 1;
+
+fn tile_heights(height: u32) -> Vec<u32> {
+    let mut heights = vec![];
+    let mut next = 192;
+    while next < height {
+        heights.push(next);
+        next = next.saturating_mul(2);
+    }
+    if height > 0 {
+        heights.push(height);
+    }
+    heights
 }
 
 pub fn prepare(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Result<usize> {
@@ -72,7 +89,7 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
     let cached = store.get::<Index>(&key)?;
     let reusable = cached
         .as_ref()
-        .is_some_and(|i| i.complete && i.maps == maps);
+        .is_some_and(|i| i.complete && i.tiling_revision == TILING_REVISION && i.maps == maps);
     let mut engine = Engine::learned(
         store,
         Dimension::TwoD,
@@ -82,6 +99,7 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
         .filter(|i| i.encoder == engine.encoder && i.maps == maps)
         .unwrap_or(Index {
             complete: false,
+            tiling_revision: TILING_REVISION,
             encoder: engine.encoder.clone(),
             tiles: vec![],
             maps: maps.clone(),
@@ -91,12 +109,13 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
         tile.features.points.clear();
         tile.features.histogram.clear();
     }
-    if index.complete {
+    if index.complete && index.tiling_revision == TILING_REVISION {
         if compacted {
             store.put(&key, &index)?;
         }
         return Ok(index.tiles.len());
     }
+    index.complete = false;
     let mut seen: HashSet<_> = index
         .tiles
         .iter()
@@ -111,8 +130,10 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
             &json!({"status":"building","current_map":map.title,"tiles":index.tiles.len()}),
         )?;
         let image = image::open(navigation::cached_map_path(store, &map))?;
-        for wanted_height in [192, 384, 768] {
-            let h = wanted_height.min(image.height());
+        // Source maps can be enlarged several times beyond native game pixels.
+        // Cover their full height so the query can see a whole camera viewport,
+        // rather than only matching tiles zoomed into a fraction of one room.
+        for h in tile_heights(image.height()) {
             let w = (h * 4 / 3).min(image.width());
             let mut xs: Vec<_> = (0..=image.width() - w)
                 .step_by((w / 2).max(1) as usize)
@@ -163,6 +184,7 @@ fn prepare_inner(store: &Store, guide: &Guide, notify: &dyn Fn(String)) -> Resul
         }
     }
     index.complete = true;
+    index.tiling_revision = TILING_REVISION;
     store.put(&key, &index)?;
     Ok(index.tiles.len())
 }
@@ -463,6 +485,19 @@ pub(crate) fn display_area(store: &Store, guide: &Guide, epoch: u64) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn enlarged_maps_include_viewport_scales_beyond_768_pixels() {
+        assert_eq!(tile_heights(1600), vec![192, 384, 768, 1536, 1600]);
+        assert_eq!(tile_heights(367), vec![192, 367]);
+        assert_eq!(tile_heights(768), vec![192, 384, 768]);
+        assert_eq!(tile_heights(100), vec![100]);
+        assert!(tile_heights(0).is_empty());
+        let old: Index = serde_json::from_value(json!({
+            "complete":true,"encoder":"existing","tiles":[],"maps":[]
+        }))
+        .unwrap();
+        assert_ne!(old.tiling_revision, TILING_REVISION);
+    }
     fn stabilize(
         store: &Store,
         guide: &Guide,

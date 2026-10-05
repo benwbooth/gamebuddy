@@ -1,9 +1,9 @@
 //! Screen-relative movement from the current action, never a compass bearing
 //! inferred from atlas artwork or an unverified straight-line path.
 use super::{Atlas, Guidance, PlaceTracker};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenDirection {
     Left,

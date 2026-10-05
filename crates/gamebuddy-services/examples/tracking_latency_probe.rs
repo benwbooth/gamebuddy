@@ -57,6 +57,18 @@ fn main() -> Result<()> {
             };
             println!("{value}");
             results.push(value);
+            // Keep the actual widget input while its capture is still fresh,
+            // so rendering can be checked against the measured registration.
+            let navigation = navigation::context(
+                &store,
+                &guide,
+                &store.progress(&guide)?,
+                &Default::default(),
+            )?;
+            std::fs::write(
+                output.join("navigation.json"),
+                serde_json::to_vec_pretty(&navigation)?,
+            )?;
         }
     }
     std::fs::write(

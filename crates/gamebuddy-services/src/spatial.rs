@@ -1659,6 +1659,7 @@ mod tests {
             epoch: 0,
             step_id: "step-2".into(),
             instructions: "Enter the shop beside you.".into(),
+            screen_direction: None,
         };
         let result = publish(&store, &guide, action())?;
         assert_eq!(result["navigation"]["guidance"]["now"]["id"], "step-2");
@@ -1668,6 +1669,14 @@ mod tests {
         );
         assert!(store.progress(&guide)?.completed.is_empty());
         assert!(store.progress(&guide)?.reported_completed.is_empty());
+        let mut movement = action();
+        movement.instructions = "Walk right to the shop.".into();
+        let result = publish(&store, &guide, movement)?;
+        assert!(result["navigation"]["location"]["place_id"].is_null());
+        assert_eq!(
+            result["navigation"]["direction"]["direction"], "right",
+            "a source-matched street does not require resolving one shop as the current place"
+        );
         // No source match means the ordinary prerequisite check still applies.
         observation["tracker"]["status"] = json!("lost");
         store.put(&format!("world-observation:{}", guide.id), &observation)?;

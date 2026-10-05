@@ -380,6 +380,12 @@ pub(crate) fn matches_latest(
     }))
 }
 
+pub(crate) fn matches_movement(store: &Store, ticket: &Ticket, signature: &[u8]) -> Result<bool> {
+    Ok(store.get::<Capture>(KEY)?.is_some_and(|c| {
+        c.enabled && c.ticket == *ticket && same_scene(&c.frame_signature, signature)
+    }))
+}
+
 // An idle animated screen can outlive the normal matching interval under GPU
 // load. Keep its recent registration only while the background remains nearly
 // identical. Larger camera movement still gets the short translation window;

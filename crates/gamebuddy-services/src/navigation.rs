@@ -788,18 +788,35 @@ pub fn context(
             "GameBuddy's latest suggested action. This does not mark any task complete.".into();
     }
     let cursor = advice.now.clone();
-    let direction = (screen["status"] == "live")
-        .then(|| gamebuddy_core::navigation::direction::cue(&advice, &atlas, &tracker, now))
-        .flatten()
-        .map(|mut cue| {
-            cue.valid_until_ms = cue.valid_until_ms.min(
-                screen["captured_at_ms"]
-                    .as_u64()
-                    .unwrap_or_default()
-                    .saturating_add(crate::screen::FRESH_MS),
-            );
-            cue
-        });
+    let direction = if screen["status"] == "live" {
+        advice::direction(
+            store,
+            guide,
+            &advice,
+            recommendation.as_ref(),
+            &spatial,
+            now,
+        )?
+        .or_else(|| {
+            recommendation
+                .as_ref()
+                .filter(|r| r.movement.is_some())
+                .is_none()
+                .then(|| gamebuddy_core::navigation::direction::cue(&advice, &atlas, &tracker, now))
+                .flatten()
+        })
+    } else {
+        None
+    }
+    .map(|mut cue| {
+        cue.valid_until_ms = cue.valid_until_ms.min(
+            screen["captured_at_ms"]
+                .as_u64()
+                .unwrap_or_default()
+                .saturating_add(crate::screen::FRESH_MS),
+        );
+        cue
+    });
     let current_place = tracker
         .place_id
         .as_deref()
@@ -883,7 +900,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation,"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

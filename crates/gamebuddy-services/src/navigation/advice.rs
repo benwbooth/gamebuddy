@@ -1,6 +1,7 @@
 //! One persisted recommendation shared by conversation, the outline and Now card.
 use crate::{Store, screen};
 use anyhow::{Result, ensure};
+use gamebuddy_core::navigation::direction::{DirectionCue, ScreenDirection, movement};
 use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate, guidance_from};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -11,10 +12,15 @@ pub struct NextAction {
     pub expected_revision: u64,
     pub epoch: u64,
     pub step_id: String,
-    /// One immediate action. For supported screen-relative movement, start with
-    /// "Walk right", "Climb up", etc. This drives the OSD arrow only with fresh
-    /// matching place evidence. Never guess a direction or add it to non-movement.
+    /// One immediate action. For movement, include the same supported direction
+    /// in screen_direction. Never guess a direction or add it to non-movement.
     pub instructions: String,
+    /// Immediate screen-relative movement supported by the latest screenshot
+    /// and source route, even when instructions use natural wording such as
+    /// "Enter the door beside you". Use null for dialogue, purchases, uncertain
+    /// routes or a direction inferred only from map orientation.
+    #[serde(default)]
+    pub screen_direction: Option<ScreenDirection>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Recommendation {
@@ -26,6 +32,78 @@ pub struct Recommendation {
     pub instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location_evidence: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement: Option<ObservedMovement>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ObservedMovement {
+    pub direction: ScreenDirection,
+    pub ticket: screen::Ticket,
+    pub captured_at_ms: u64,
+    pub frame_signature: Vec<u8>,
+}
+
+pub(crate) fn public(recommendation: &Recommendation) -> Value {
+    let mut value = json!(recommendation);
+    if let Some(movement) = value["movement"].as_object_mut() {
+        // Capture signatures are local freshness checks, not useful model input.
+        movement.remove("frame_signature");
+        movement.remove("ticket");
+    }
+    value
+}
+
+// Screen-relative advice does not require resolving one semantic place among
+// several shops/doors sharing the same street. Bind explicit directions to the
+// actual view and expire them on a scene, capture or session change.
+pub(crate) fn direction(
+    store: &Store,
+    guide: &Guide,
+    guidance: &gamebuddy_core::Guidance,
+    recommendation: Option<&Recommendation>,
+    spatial: &Value,
+    now: u64,
+) -> Result<Option<DirectionCue>> {
+    let Some(step) = guidance
+        .now
+        .as_ref()
+        .filter(|_| ["ready", "unlocated"].contains(&guidance.status.as_str()))
+    else {
+        return Ok(None);
+    };
+    let explicit = recommendation
+        .filter(|r| r.step_id == step.id)
+        .and_then(|r| r.movement.as_ref());
+    let (direction, at) = if let Some(explicit) = explicit {
+        if now < explicit.captured_at_ms
+            || now - explicit.captured_at_ms >= screen::FRESH_MS
+            || !screen::matches_movement(store, &explicit.ticket, &explicit.frame_signature)?
+        {
+            return Ok(None);
+        }
+        (explicit.direction, explicit.captured_at_ms)
+    } else if supports_action(guide, &step.id, spatial) {
+        let Some(direction) = movement(&step.instructions) else {
+            return Ok(None);
+        };
+        let at = spatial["observation"]["tracker"]["observed_at_ms"]
+            .as_u64()
+            .unwrap_or_default();
+        if at == 0 || now < at || now - at >= screen::FRESH_MS {
+            return Ok(None);
+        }
+        (direction, at)
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(DirectionCue {
+        direction,
+        step_id: step.id.clone(),
+        label: step.title.clone(),
+        instruction: step.instructions.clone(),
+        valid_until_ms: at.saturating_add(screen::FRESH_MS),
+    }))
 }
 
 // Walkthrough ordering is not proof that the player is still behind a gate.
@@ -132,6 +210,28 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         serde_json::to_string(&guidance.requirements)?,
         progress.epoch
     );
+    let movement = action
+        .screen_direction
+        .map(|direction| -> Result<_> {
+            use base64::Engine;
+            let frame = screen::snapshot(store)?;
+            let image = image::load_from_memory(
+                &base64::engine::general_purpose::STANDARD.decode(&frame.jpeg)?,
+            )?;
+            if let Some(parsed) = movement(&action.instructions) {
+                ensure!(
+                    parsed == direction,
+                    "Screen direction contradicts the movement instruction"
+                );
+            }
+            Ok(ObservedMovement {
+                direction,
+                ticket: frame.ticket,
+                captured_at_ms: frame.captured_at_ms,
+                frame_signature: screen::frame_signature(&image),
+            })
+        })
+        .transpose()?;
     let session = screen::status(store)?["session_id"]
         .as_str()
         .unwrap_or_default()
@@ -143,6 +243,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         updated_at_ms: screen::now_ms(),
         step_id: action.step_id,
         instructions: action.instructions.trim().into(),
+        movement,
         location_evidence: location_supported.then(|| {
             json!({
                 "kind":"current_source_match_not_completion",
@@ -154,13 +255,89 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     };
     store.put_for_progress(guide, progress.epoch, &key(guide), &recommendation)?;
     Ok(
-        json!({"recommendation":recommendation,"navigation":super::context(store, guide, &progress, &SyncEstimate::default())?,"completion_changed":false}),
+        json!({"recommendation":public(&recommendation),"navigation":super::context(store, guide, &progress, &SyncEstimate::default())?,"completion_changed":false}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_movement_works_without_a_named_place_and_expires_with_the_view() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Route", "# Visit church\nEnter the door.")?;
+        store.save_guide(&guide)?;
+        let ticket = screen::start(&store, "Game", true)?;
+        let path = dir.path().join("screen.png");
+        image::RgbImage::from_pixel(96, 72, image::Rgb([30, 160, 40])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "test")?;
+        let action = |instructions: &str, screen_direction| NextAction {
+            expected_revision: guide.revision,
+            epoch: 0,
+            step_id: "step-1".into(),
+            instructions: instructions.into(),
+            screen_direction,
+        };
+        assert!(
+            publish(
+                &store,
+                &guide,
+                action("Walk right to the door.", Some(ScreenDirection::Left))
+            )
+            .is_err()
+        );
+        let result = publish(
+            &store,
+            &guide,
+            action("Enter the door beside you.", Some(ScreenDirection::Up)),
+        )?;
+        assert!(result["navigation"]["location"]["place_id"].is_null());
+        assert_eq!(result["navigation"]["direction"]["direction"], "up");
+        assert!(
+            result["recommendation"]["movement"]
+                .get("frame_signature")
+                .is_none()
+        );
+        let progress = store.progress(&guide)?;
+        let context = || super::super::context(&store, &guide, &progress, &SyncEstimate::default());
+        let mut saved: Recommendation = store.get(&key(&guide))?.unwrap();
+        saved.movement.as_mut().unwrap().captured_at_ms -= screen::FRESH_MS;
+        store.put(&key(&guide), &saved)?;
+        assert!(
+            context()?["direction"].is_null(),
+            "expired advice cannot revive through a fallback"
+        );
+        publish(
+            &store,
+            &guide,
+            action("Walk right to the door.", Some(ScreenDirection::Right)),
+        )?;
+        image::RgbImage::from_pixel(96, 72, image::Rgb([180, 20, 10])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "changed_scene")?;
+        assert!(context()?["direction"].is_null());
+        publish(
+            &store,
+            &guide,
+            action("Enter the door beside you.", Some(ScreenDirection::Up)),
+        )?;
+        screen::set_enabled(&store, &ticket.session, "Game", false)?;
+        assert!(context()?["direction"].is_null());
+        assert!(
+            publish(
+                &store,
+                &guide,
+                action("Enter the door beside you.", Some(ScreenDirection::Up))
+            )
+            .is_err()
+        );
+        screen::start(&store, "Game", true)?;
+        assert!(context()?["direction"].is_null());
+        assert!(progress.completed.is_empty());
+        assert!(progress.reported_completed.is_empty());
+        Ok(())
+    }
     #[test]
     fn direction_tracks_shared_advice_and_hides_without_live_capture() {
         use gamebuddy_core::{Atlas, Place, PlaceBinding};
@@ -211,6 +388,7 @@ mod tests {
                 epoch: progress.epoch,
                 step_id: "step-1".into(),
                 instructions: "Walk left to the other door.".into(),
+                screen_direction: None,
             },
         )
         .unwrap();
@@ -249,6 +427,7 @@ mod tests {
             epoch,
             step_id: step.into(),
             instructions: "Take the next action.".into(),
+            screen_direction: None,
         };
         assert!(publish(&store, &guide, action(guide.revision, 0, "step-2")).is_err());
         assert!(publish(&store, &guide, action(guide.revision + 1, 0, "step-1")).is_err());
@@ -284,6 +463,7 @@ mod tests {
             epoch: progress.epoch,
             step_id: "step-2".into(),
             instructions: "Enter the castle and speak to the king.".into(),
+            screen_direction: None,
         };
         let result = publish(&store, &guide, action).unwrap();
         assert_eq!(result["navigation"]["guidance"]["now"]["id"], "step-2");
