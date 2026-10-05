@@ -990,6 +990,16 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
     });
     if let Some(value) = observation.as_mut().and_then(Value::as_object_mut) {
         value.remove("capture_signature");
+        // A held transform keeps the last successful timestamp, even if the
+        // worker stops producing results after the missed frame.
+        if let Some(marker) = value.get_mut("map_registration")
+            && marker["tracking_status"] == "held"
+            && marker["observed_at_ms"]
+                .as_u64()
+                .is_none_or(|at| screen::now_ms().saturating_sub(at) > 3_000)
+        {
+            *marker = Value::Null;
+        }
     }
     let map_preparation: Option<Value> = store.get(&format!("world-map-status:{}", guide.id))?;
     let error: Option<String> = store.get(&format!("world-error:{}", guide.id))?;
@@ -1358,6 +1368,28 @@ pub fn observe(
     if world.status != "ready" {
         return Ok(json!({"status":world.status}));
     }
+    ensure!(
+        screen::ticket(store, &snapshot.ticket.session)? == snapshot.ticket
+            && screen::now_ms().saturating_sub(snapshot.captured_at_ms) < 15_000,
+        "Discard stale spatial capture"
+    );
+    if let Some(previous) = store.get::<Value>(&format!("world-observation:{}", guide.id))?
+        && previous["guide_revision"] == guide.revision
+        && previous["source_signature"] == world.source_signature
+        && serde_json::from_value::<Profile>(previous["profile"].clone())
+            .ok()
+            .as_ref()
+            == Some(&world.profile)
+        && previous["tracker"]["session"] == snapshot.ticket.session
+        && previous["tracker"]["capture_epoch"] == snapshot.ticket.epoch
+        && previous["tracker"]["epoch"] == progress.epoch
+        && let Some(at) = previous["tracker"]["observed_at_ms"].as_u64()
+    {
+        ensure!(at <= snapshot.captured_at_ms, "Older spatial capture");
+        if at == snapshot.captured_at_ms {
+            return Ok(previous);
+        }
+    }
     let tracker_key = format!("world-tracker:{}", guide.id);
     let prior = store.get_versioned::<Tracker>(&tracker_key)?;
     let mut tracker = prior.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
@@ -1421,6 +1453,7 @@ pub fn observe(
         guide,
         snapshot,
         progress.epoch,
+        &signature,
         candidate
     )?);
     let saved = if let Some((_, version)) = prior {
@@ -1481,7 +1514,9 @@ pub(crate) fn grounded_location(
             grounded.ground_place(
                 &places[0].id,
                 epoch,
-                at,
+                result["map_registration"]["observed_at_ms"]
+                    .as_u64()
+                    .unwrap_or(at),
                 result["map_registration"]["evidence"]
                     .as_str()
                     .unwrap_or("Geometric atlas match"),
@@ -1551,6 +1586,17 @@ mod tests {
             context(&store, &guide)?["observation"]["map_registration"]["map_id"],
             "previous-room"
         );
+        let key = format!("world-observation:{}", guide.id);
+        let mut held = store.get::<Value>(&key)?.unwrap();
+        held["map_registration"]["tracking_status"] = json!("held");
+        held["map_registration"]["observed_at_ms"] = json!(screen::now_ms() - 1_000);
+        store.put(&key, &held)?;
+        assert!(context(&store, &guide)?["observation"]["map_registration"].is_object());
+        // The current capture stays fresh: expiration belongs to the last
+        // successful geometry, not the newer failed capture's timestamp.
+        held["map_registration"]["observed_at_ms"] = json!(screen::now_ms() - 3_001);
+        store.put(&key, &held)?;
+        assert!(context(&store, &guide)?["observation"]["map_registration"].is_null());
         image::RgbImage::from_pixel(96, 72, image::Rgb([20, 20, 200])).save(&path)?;
         screen::publish(&store, &ticket, &path, "test")?;
         assert!(context(&store, &guide)?["observation"].is_null());
@@ -1689,6 +1735,19 @@ mod tests {
             lost["location"]["place_id"].is_null(),
             "A finished non-match must not resurrect the old named location"
         );
+        observation["map_registration"] = result["map_registration"].clone();
+        observation["map_registration"]["tracking_status"] = json!("held");
+        let confirmed_at = snapshot.captured_at_ms - 1_000;
+        observation["map_registration"]["observed_at_ms"] = json!(confirmed_at);
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        let held = crate::navigation::context(
+            &store,
+            &guide,
+            &store.progress(&guide)?,
+            &Default::default(),
+        )?;
+        assert_eq!(held["location"]["place_id"], "street");
+        assert_eq!(held["location"]["located_at_ms"], confirmed_at);
         atlas.places.push(gamebuddy_core::Place {
             id: "other".into(),
             label: "Other street".into(),
@@ -1832,9 +1891,20 @@ mod tests {
         // The earlier image/export assertions can take longer than the live
         // frame-lag budget. Resume capture before testing normal cadence.
         screen::publish(&store, &ticket, Path::new(&path), "recorded_test_frame")?;
-        observe(&store, &guide, &screen::snapshot(&store)?, 0)?;
+        let snapshot = screen::snapshot(&store)?;
+        let first = observe(&store, &guide, &snapshot, 0)?;
+        ensure!(first["map_registration"].is_object(), "Warm map missing");
+        let observation_key = format!("world-observation:{}", guide.id);
+        let before = store.get_versioned::<Value>(&observation_key)?;
+        let duplicate = observe(&store, &guide, &snapshot, 0)?;
+        ensure!(
+            duplicate["map_registration"].is_object()
+                && store.get_versioned::<Value>(&observation_key)? == before,
+            "Duplicate capture changed its confirmed observation"
+        );
         let expected_map = spatial["observation"]["map_registration"]["map_id"].clone();
         let mut samples = 0;
+        let mut updates = vec![];
         for shift in [-24_i64, 0, 24, 48, 24, 0] {
             let mut shifted = image::RgbImage::new(original.width(), original.height());
             image::imageops::overlay(&mut shifted, &original, shift, 0);
@@ -1865,6 +1935,17 @@ mod tests {
                         && context.images.len() == 2,
                     "Map and companion lost their shared location evidence"
                 );
+                let navigation = crate::navigation::context(
+                    &store,
+                    &guide,
+                    &store.progress(&guide)?,
+                    &Default::default(),
+                )?;
+                ensure!(
+                    navigation["map"]["geometric_marker"]["map_id"] == expected_map,
+                    "Native widget state lost the camera area"
+                );
+                updates.push(navigation);
                 samples += 1;
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -1872,6 +1953,12 @@ mod tests {
         eprintln!(
             "Scroll continuity: {samples}/{samples} refreshes retained shared map, named place and native map image"
         );
+        if let Ok(path) = std::env::var("GAMEBUDDY_TEST_SPATIAL_OUTPUT") {
+            std::fs::write(
+                format!("{path}.updates.json"),
+                serde_json::to_vec(&updates)?,
+            )?;
+        }
         screen::set_crop(
             &store,
             &ticket,

@@ -300,6 +300,27 @@ struct MapTrack {
     at: u64,
     pending: Option<Value>,
     votes: u8,
+    #[serde(default)]
+    confirmed: Option<Confirmed>,
+    #[serde(default)]
+    profile: Option<crate::spatial::Profile>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct Confirmed {
+    marker: Value,
+    at: u64,
+    signature: Vec<u8>,
+}
+impl Confirmed {
+    fn unchanged(&self, at: u64, signature: &[u8]) -> bool {
+        at.saturating_sub(self.at) <= 3_000 && crate::screen::same_scene(&self.signature, signature)
+    }
+    fn output(&self, at: u64) -> Value {
+        let mut marker = self.marker.clone();
+        marker["observed_at_ms"] = json!(self.at);
+        marker["tracking_status"] = json!(if at == self.at { "matched" } else { "held" });
+        marker
+    }
 }
 fn nearby(a: &Value, b: &Value) -> bool {
     if a["map_id"] != b["map_id"] {
@@ -331,27 +352,52 @@ pub(crate) fn stabilize(
     guide: &Guide,
     snapshot: &crate::screen::Snapshot,
     epoch: u64,
+    signature: &[u8],
     marker: Option<Value>,
 ) -> Result<Option<Value>> {
     let key = format!("map-track:{}", guide.id);
+    let profile = crate::spatial::profile(store, guide)?;
     let prior = store.get_versioned::<MapTrack>(&key)?;
     let previous = prior.as_ref().map(|(p, _)| p).filter(|p| {
-        p.ticket == snapshot.ticket && p.revision == guide.revision && p.epoch == epoch
+        p.ticket == snapshot.ticket
+            && p.revision == guide.revision
+            && p.epoch == epoch
+            && p.profile.as_ref() == Some(&profile)
     });
-    if previous.is_some_and(|p| p.at >= snapshot.captured_at_ms) {
-        return Ok(None);
+    let at = snapshot.captured_at_ms;
+    ensure!(previous.is_none_or(|p| p.at <= at), "Older map observation");
+    if let Some(previous) = previous.filter(|p| p.at == at) {
+        // Duplicate work is not another vote, nor a failed observation.
+        return Ok(previous.confirmed.as_ref().map(|c| c.output(at)));
     }
+    let unchanged = previous
+        .and_then(|p| p.confirmed.as_ref())
+        .filter(|c| c.unchanged(at, signature));
     let votes = if let (Some(previous), Some(marker)) = (previous, marker.as_ref()) {
-        if snapshot.captured_at_ms.saturating_sub(previous.at) <= 6_000
+        if at.saturating_sub(previous.at) <= 6_000
             && previous.pending.as_ref().is_some_and(|p| nearby(p, marker))
         {
             previous.votes.saturating_add(1)
+        } else if unchanged.is_some_and(|c| nearby(&c.marker, marker)) {
+            2
         } else {
             1
         }
     } else {
         u8::from(marker.is_some())
     };
+    let confirmed = match marker.as_ref() {
+        Some(marker) if votes >= 2 => Some(Confirmed {
+            marker: marker.clone(),
+            at,
+            signature: signature.to_vec(),
+        }),
+        // Bridge a short failed registration only on unchanged pixels. Never
+        // renew its timestamp, hold a contradictory match or survive a reset.
+        None => unchanged.cloned(),
+        _ => None,
+    };
+    let output = confirmed.as_ref().map(|c| c.output(at));
     let next = MapTrack {
         ticket: snapshot.ticket.clone(),
         revision: guide.revision,
@@ -359,6 +405,8 @@ pub(crate) fn stabilize(
         at: snapshot.captured_at_ms,
         pending: marker.clone(),
         votes,
+        confirmed,
+        profile: Some(profile),
     };
     let saved = if let Some((_, version)) = prior {
         store.replace_version(&key, &version, &next)?
@@ -366,12 +414,21 @@ pub(crate) fn stabilize(
         store.put_if_absent(&key, &next)?
     };
     ensure!(saved, "Newer map observation exists");
-    Ok(marker.filter(|_| votes >= 2))
+    Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn stabilize(
+        store: &Store,
+        guide: &Guide,
+        frame: &crate::screen::Snapshot,
+        epoch: u64,
+        marker: Option<Value>,
+    ) -> Result<Option<Value>> {
+        super::stabilize(store, guide, frame, epoch, &[100; 24 * 18 * 3], marker)
+    }
     #[test]
     fn projection_rejects_edge_clamping_but_allows_small_camera_overscan() {
         assert!(valid_projection(
@@ -417,6 +474,12 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker(0.12))
+                .unwrap()
+                .is_some(),
+            "Reprocessing a confirmed capture must not erase its marker"
+        );
         frame.captured_at_ms = 7000;
         assert!(
             stabilize(&store, &guide, &frame, 0, marker(0.85))
@@ -447,5 +510,75 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[test]
+    fn brief_misses_hold_only_unchanged_confirmed_pixels_without_refreshing_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let guide = gamebuddy_core::import_markdown("Game", "Guide", "# A").unwrap();
+        let mut frame = crate::screen::Snapshot {
+            ticket: crate::screen::start(&store, "Game", true).unwrap(),
+            captured_at_ms: 1_000,
+            jpeg: String::new(),
+            metadata: json!({}),
+        };
+        let marker =
+            Some(json!({"map_id":"map","region":{"x":0.1,"y":0.1,"width":0.2,"height":0.3}}));
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker.clone())
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 2_000;
+        let confirmed = stabilize(&store, &guide, &frame, 0, marker.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(confirmed["tracking_status"], "matched");
+        for at in [3_000, 4_000, 5_000] {
+            frame.captured_at_ms = at;
+            let held = stabilize(&store, &guide, &frame, 0, None).unwrap().unwrap();
+            assert_eq!(held["observed_at_ms"], 2_000);
+            assert_eq!(held["tracking_status"], "held");
+        }
+        frame.captured_at_ms = 5_001;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, None)
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 6_000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker.clone())
+                .unwrap()
+                .is_none()
+        );
+        frame.captured_at_ms = 7_000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, marker.clone())
+                .unwrap()
+                .is_some()
+        );
+        frame.captured_at_ms = 8_000;
+        assert!(
+            stabilize(&store, &guide, &frame, 0, None)
+                .unwrap()
+                .is_some()
+        );
+        frame.captured_at_ms = 9_000;
+        assert_eq!(
+            stabilize(&store, &guide, &frame, 0, marker)
+                .unwrap()
+                .unwrap()["tracking_status"],
+            "matched"
+        );
+        frame.captured_at_ms = 10_000;
+        assert!(
+            super::stabilize(&store, &guide, &frame, 0, &[0; 24 * 18 * 3], None)
+                .unwrap()
+                .is_none(),
+            "Changed room pixels must revoke the old area immediately"
+        );
+        frame.captured_at_ms = 8_000;
+        assert!(stabilize(&store, &guide, &frame, 0, None).is_err());
     }
 }

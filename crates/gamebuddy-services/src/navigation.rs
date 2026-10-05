@@ -733,11 +733,11 @@ pub fn context(
     if let Some(grounded) = grounded
         && grounded.session_id == tracker.session_id
         && grounded.epoch == progress.epoch
-        && spatial["observation"]["tracker"]["observed_at_ms"].as_u64()
-            == Some(grounded.located_at_ms)
         && now.saturating_sub(grounded.located_at_ms) < 15_000
         && (tracker.status != "reported" || grounded.located_at_ms > tracker.located_at_ms)
     {
+        // Grounding comes directly from the accepted observation. A held map
+        // uses its earlier confirmation time, not the failed capture's time.
         // Fresh geometric evidence outranks coarse RGB/video-time guesses.
         // Retain a task cursor within the same room, but never manufacture one
         // just because the atlas has identified a street or dungeon.

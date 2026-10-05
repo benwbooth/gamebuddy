@@ -1,7 +1,7 @@
 // Opt-in integration test against a private Qt WebEngine debug port and the
 // guide_library_fixture database. Never point this at a user's live session.
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -106,6 +106,7 @@ try {
   await evaluate('testRender(testState);mapObserverTest.disconnect()');
   assert(await evaluate(`stableImage.parentElement.style.width!=='' && !stableImage.parentElement.style.width.includes('NaN')`),'Hidden refresh corrupted the map zoom');
   // Optional production state obtained by the isolated saved-frame pipeline test.
+  const fixtureState=await evaluate('testState');
   if(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT){
     const replay=JSON.parse(readFileSync(process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT,'utf8'));
     const preview=replay.map_preview;delete replay.map_preview;
@@ -128,9 +129,33 @@ try {
     assert(await evaluate(`document.querySelector('[aria-label="Location map"]').textContent.includes(${JSON.stringify(alternative.label)})`),'Separate location map selection failed');
     await evaluate(`document.querySelector('.map-toolbar button[aria-pressed]').click();gamebuddy.mapPreview(${JSON.stringify(replay.navigation.map.selected_map_id)},${JSON.stringify(preview)})`);
     await until(()=>evaluate(`(()=>{const marker=document.querySelector('.map-marker'),viewport=document.querySelector('.map-viewport');if(!marker||marker.hidden)return false;const m=marker.getBoundingClientRect(),v=viewport.getBoundingClientRect();return m.x+m.width/2>v.x&&m.x+m.width/2<v.right&&m.y+m.height/2>v.y&&m.y+m.height/2<v.bottom})()`),'Follow player did not scroll the highlighted area into view');
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:5});
+    await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    await until(()=>evaluate(`document.querySelector('.provenance').hidden`),'Source tooltip covered the highlight');
+    const updatesPath=process.env.GAMEBUDDY_TEST_SPATIAL_OUTPUT+'.updates.json';
+    const updates=existsSync(updatesPath)?JSON.parse(readFileSync(updatesPath,'utf8')).map(({map,location})=>({map,location})):[];
+    const continuity=await evaluate(`new Promise((resolve,reject)=>{
+      const updates=${JSON.stringify(updates)};
+      const widget=document.querySelector('[data-widget-id="location-map"]'),marker=widget.querySelector('.map-marker'),image=widget.querySelector('.map-stage img');
+      let ticks=0,frames=0,hidden=0,offscreen=0,replaced=0,occluded=0,done=false;
+      function inspect(){if(done)return;frames++;const m=marker.getBoundingClientRect(),v=widget.querySelector('.map-viewport').getBoundingClientRect();
+        if(marker.hidden||!m.width||!m.height||!image.naturalWidth)hidden++;
+        if(m.right<=v.x||m.x>=v.right||m.bottom<=v.y||m.y>=v.bottom)offscreen++;
+        const front=document.elementFromPoint(m.x+m.width/2,m.y+m.height/2);if(front!==marker&&!marker.contains(front))occluded++;
+        if(marker!==document.querySelector('.map-marker'))replaced++;
+        requestAnimationFrame(inspect)}
+      requestAnimationFrame(inspect);
+      const timeout=setTimeout(()=>{clearInterval(timer);done=true;reject(Error('Camera-area audit timed out'))},20000);
+      const timer=setInterval(()=>{try{if(ticks<updates.length)Object.assign(testState.navigation,updates[ticks]);else{testState.navigation.map.spatial.message=ticks%2?'':'Starting visual tracking…';if(ticks%4===3)testState.navigation.map.geometric_marker.region.x+=.00001}testRender(testState);
+        if(++ticks===updates.length+40){clearInterval(timer);clearTimeout(timeout);done=true;resolve({ticks,frames,hidden,offscreen,replaced,occluded})}}catch(error){clearInterval(timer);clearTimeout(timeout);done=true;reject(error)}},100)
+    })`);
+    assert(continuity.frames>40&&continuity.hidden===0&&continuity.offscreen===0&&continuity.replaced===0&&continuity.occluded===0,'Camera highlight flickered in Qt: '+JSON.stringify(continuity));
+    console.log('PASS Qt camera-area visibility:',continuity);
     await screenshot('faxanadu-player-navigation');
     await evaluate(`testState.progress.completed=[testState.guide.steps.find(s=>s.id===testState.navigation.guidance.now.id).parent_id];testState.widget_visibility={'guide-library':true,'walkthrough-outline':false,'location-map':false,'current-step':false};testRender(testState)`);
     assert(await evaluate(`document.querySelector('.reader-detail input[type=checkbox]').checked`),'Flattening source sections lost inherited completion');
+    await evaluate(`window.testState=${JSON.stringify(fixtureState)};testRender(testState)`);
   }
   await widgetInputs({call,evaluate,until});
   assert.deepEqual(errors,[],'JavaScript runtime errors');

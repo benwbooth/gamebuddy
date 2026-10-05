@@ -265,7 +265,7 @@ pub(crate) fn frame_signature(image: &image::DynamicImage) -> Vec<u8> {
         .to_rgb8()
         .into_raw()
 }
-fn same_scene(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same_scene(a: &[u8], b: &[u8]) -> bool {
     !a.is_empty()
         && a.len() == b.len()
         && a.iter()
