@@ -73,6 +73,8 @@ assert(muted(),'backend completion alone does not authorize audio');
 assert(!activity.some(e=>e.type==='caption'&&e.value.includes('walking')),'unapproved speech has no captions');
 voice.queueSpeech('Use a J key at the door.');tick(1000);
 assert(muted(),'completed answer waits while the old generated turn is still active');
+for(let i=0;i<15;i++){render([.25,.5]);tick(1000)}
+assert(!activity.some(e=>e.type==='cue-timeout'),'an actively draining answer must not expire after six seconds');
 wire({type:'turn.done',turn:{id:'wrong-advice',role:'assistant'}});
 render([.25,.5]);tick(400);
 assert(muted(),'drain the old RTP tail before approving the new words');
@@ -115,6 +117,20 @@ const retries=activity.filter(e=>e.type==='cue-retry').length;
 tick(6200);assert.equal(activity.filter(e=>e.type==='cue-retry').length,retries+1);
 tick(6200);assert.equal(activity.filter(e=>e.type==='cue-retry').length,retries+1,'retry an unstarted cue only once');
 assert(muted(),'an unstarted cue expires');
+// Even a created assistant turn can fail to produce playable audio. Its
+// existence must not disable the bounded text fallback or retry its tools.
+voice.approveSpeech();
+wire({type:'turn.created',turn:{id:'silent-approved',role:'assistant'}});
+const failedBefore=activity.filter(e=>e.type==='cue-timeout').length;
+tick(12200);
+assert.equal(activity.filter(e=>e.type==='cue-timeout').length,failedBefore+1);
+assert(muted(),'a turn with no audio returns to listening');
+// Missing completion from an older unapproved turn cannot strand the next
+// completed backend answer behind it forever.
+voice.queueSpeech('The key opens the gate.');tick(6200);
+assert.equal(activity.filter(e=>e.type==='cue-timeout').length,failedBefore+2);
+assert.equal(activity.filter(e=>e.type==='reply-pending').at(-1).value,false);
+wire({type:'turn.done',turn:{id:'silent-approved',role:'assistant'}});
 // Native transcript completion must not flush subtitles before buffered audio.
 voice.approveSpeech();
 wire({type:'turn.created',turn:{id:'buffered',role:'assistant'}});
@@ -131,6 +147,11 @@ wire({type:'output_transcript.added',start_ms:90000,end_ms:90200,item:{text:'The
 assert.equal(activity.filter(e=>e.type==='caption').at(-1).value,'The key opens the gate.','muted replies still provide approved text');
 wire({type:'turn.done',turn:{id:'text-only',role:'assistant'}});output.level=0;tick(600);
 assert.equal(activity.filter(e=>e.type==='reply-pending').at(-1).value,false,'muted text replies do not wait for deliberately discarded audio');
+voice.setBackendBusy(true);voice.queueSpeech('An old pending reply');voice.requestFailed('Please try again.');tick(1000);
+assert.equal(activity.filter(e=>e.type==='request-error').at(-1).value,'Please try again.','error text follows the caption reset');
+assert.equal(activity.filter(e=>e.type==='reply-pending').at(-1).value,false,'backend failure releases waiting');
+assert(!current.track.stopped,'a failed request keeps the microphone available');
+assert(muted(),'a failed request cannot release stale audio');
 await voice.setMicrophone(false,'Test mic');
 assert(current.track.stopped,'muting closes capture while voice output remains connected');
 voice.stop();

@@ -37,6 +37,9 @@ WebEngineView {
     function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
     function speakApproved(text) {
         if(!text.length || !connected)return
+        // Show the completed answer immediately in the companion. Captions
+        // have their own playback clock and must still wait for audible words.
+        panel.answer(text)
         pendingCue=text
         runJavaScript("gamebuddyVoice.queueSpeech("+JSON.stringify(text)+")")
     }
@@ -93,7 +96,7 @@ WebEngineView {
             screen:{status:value.screen?.status,captured_at_ms:value.screen?.captured_at_ms,
                 scene_captured_at_ms:scene?.captured_at_ms,scene_fresh:scene?.fresh===true,
                 summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
-            instruction:"Background reference only. Do not answer gameplay questions from cached advice or this summary. Delegate the complete current request and any location correction to the reasoning backend, then wait for its answer. Never speak the player's side of a conversation."})
+            instruction:"Background reference only. Do not answer gameplay questions from cached advice or this summary. The application forwards the complete request and location correction to the reasoning backend; remain silent until it supplies the answer. Never speak the player's side of a conversation."})
     }
     function updateContext() {
         if(!connected)return
@@ -150,6 +153,11 @@ WebEngineView {
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "")
+            else if(event.method==="gamebuddy/reply-error"){
+                panel.answer(p.text || "Request failed; please try again.")
+                panel.backendBusy=false;panel.waitingForReply=false
+                panel.runJavaScript("gamebuddyVoice.requestFailed("+JSON.stringify(p.text || "Request failed; please try again.")+")")
+            }
             else if(event.method==="thread/realtime/transcript/done") {
                 if(p.role==="user")panel.transcript(p.text)
             }
@@ -196,7 +204,6 @@ WebEngineView {
         else if(event.type==="caption"){
             captionText=event.value;captionStreaming=captionText.length>0
             if(trace)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" playback=true")
-            panel.answer(captionText)
         }
         else if(event.type==="output-active"){
             if(event.value)pendingCue=""
@@ -205,7 +212,11 @@ WebEngineView {
         }
         else if(event.type==="reply-pending"){waitingForReply=event.value;if(!waitingForReply)captionStreaming=false}
         else if(event.type==="cue-retry" && pendingCue.length)transport.speak(pendingCue)
-        else if(event.type==="cue-timeout"){pendingCue="";status="Voice cue unavailable · you can still speak"}
+        else if(event.type==="request-error"){captionText=event.value;captionStreaming=false}
+        else if(event.type==="cue-timeout"){
+            if(pendingCue.length){captionText="Text reply · "+pendingCue;captionStreaming=false}
+            pendingCue="";status="Audio unavailable · text reply shown · you can still speak"
+        }
         else if(event.type==="playback-allowed" || event.type==="reply-permit"){if(trace)console.warn("GAMEBUDDY_VOICE_GATE "+event.type+" "+event.value)}
         else if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
         else if(event.type==="error")fail(event.value)

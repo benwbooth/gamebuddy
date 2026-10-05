@@ -372,9 +372,46 @@ pub(crate) fn matches_latest(
         c.enabled
             && c.ticket.session == session
             && c.ticket.epoch == epoch
-            && c.captured_at_ms.saturating_sub(at) <= 3_000
-            && same_location_scene(&c.frame_signature, signature)
+            && location_continuity(
+                &c.frame_signature,
+                signature,
+                c.captured_at_ms.saturating_sub(at),
+            )
     }))
+}
+
+// An idle animated screen can outlive the normal matching interval under GPU
+// load. Keep its recent registration only while the background remains nearly
+// identical. Larger camera movement still gets the short translation window;
+// the absolute freshness bound applies even to identical pixels.
+fn location_continuity(latest: &[u8], observed: &[u8], lag: u64) -> bool {
+    lag <= FRESH_MS
+        && (lag <= 3_000 && same_location_scene(latest, observed)
+            || !latest.is_empty()
+                && latest.len() == observed.len()
+                && latest
+                    .iter()
+                    .zip(observed)
+                    .map(|(a, b)| a.abs_diff(*b) as u64)
+                    .sum::<u64>()
+                    < latest.len() as u64 * 4)
+}
+
+#[test]
+fn unchanged_background_survives_a_slow_match_but_not_expiry_or_a_room_change() {
+    let before: Vec<_> = (0..24 * 18 * 3)
+        .map(|i| ((i / 3 * 37) % 200) as u8)
+        .collect();
+    let mut animation = before.clone();
+    // A moving sprite changes a small part of the picture.
+    animation[300..318].fill(255);
+    assert!(location_continuity(&animation, &before, 5_000));
+    assert!(!location_continuity(&animation, &before, FRESH_MS + 1));
+    assert!(!location_continuity(&vec![240; before.len()], &before, 500));
+    // An approximately matching/translated camera view is not stationary.
+    let moved: Vec<_> = before.iter().map(|p| p.saturating_add(8)).collect();
+    assert!(location_continuity(&moved, &before, 2_000));
+    assert!(!location_continuity(&moved, &before, 5_000));
 }
 
 fn metadata(c: &Capture, now: u64) -> Value {

@@ -763,20 +763,10 @@ pub fn context(
             tracker = store.get(&tracker_key)?.unwrap_or_default();
         }
     }
-    if spatial["observation"]["tracker"]["status"] == "tracked" && tracker.status != "reported" {
-        let candidates = spatial["observation"]["step_ids"].as_array();
-        if let Some(step) = candidates
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .find(|id| {
-                guide.step(id).is_some_and(|s| guide.step_enabled(s))
-                    && !gamebuddy_core::step_complete(guide, progress, id)
-            })
-        {
-            tracker.reference_step_id = Some(step.into());
-        }
-    }
+    // A matched walkthrough frame identifies scenery, not the player's task.
+    // Different moments in one room can depict travel, combat or returning
+    // later. Keep their step IDs as reference evidence in `spatial`; only the
+    // saved plan, player reports and explicit advice select the objective.
     let recommendation = advice::current(store, guide, progress, &session)?;
     let mut advice = guidance_from(
         guide,

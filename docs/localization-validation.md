@@ -85,3 +85,12 @@ GAMEBUDDY_TEST_SPATIAL_FRAME=/path/to/independent/cropped-frame.jpg \
 ```
 
 A replay has `capture_origin` and `frames`; each frame includes `path`, `at_ms`, `session`, `epoch`, `expected_room` (null means no accepted place is expected), and optional `event`. Exact indexed reference-file hashes are rejected. This catches a basic leakage mistake, not every possible source-video transformation; independent capture provenance still matters. ROMs, model weights, source videos and private captured frames are not included in the repository.
+
+
+## Live animated CRT timing and objective stability (2026-10-04)
+
+The next report reproduced a distinction missed by the earlier saved-frame replays: the map image could stay visible while its named location alternated between estimated and uncertain. A private headless Gamescope session ran the actual RetroArch/FCEUmm game with the animated CRT shader, using a temporary copy of the player's save and a separately calibrated crop. In a 60-second UI sample, 30 of 94 refreshes rejected the current localization while retaining only the dashed pending outline. The matching worker could fall behind the fixed three-second capture-lag veto despite nearly identical scenery.
+
+Recent localization now survives that lag only when the latest 24×18 signature has less than four intensity levels of mean absolute change. Larger movement retains the existing three-second translated-scene check; the fifteen-second absolute freshness limit and session/crop/progress invalidation remain. The identical private emulator run retained current map registration and the named place for all 93 refreshes over 54.4 seconds after initial lock. The seven preceding refreshes were startup acquisition, not accepted localization. This is one stationary animated-game test, not full-game or scene-transition certification. The existing changed-scene, scroll and expiration regressions remain active. Evidence: `/tmp/gamebuddy-flap-live/samples4.json`, `samples5.json`, `runtime4.log` and `runtime5.log`.
+
+A separate regression reproduced alternating goals from competing walkthrough timestamps in the same room. Navigation no longer overrides the task with a per-frame reference's first unfinished step. Those IDs remain source context; explicit advice, player reports and saved plan state select the objective. The regression alternates reference-step IDs while requiring the displayed task to remain fixed. The live CRT run also retained one objective across all 100 recorded updates.

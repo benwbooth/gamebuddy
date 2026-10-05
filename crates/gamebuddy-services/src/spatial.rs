@@ -1722,6 +1722,20 @@ mod tests {
         assert_eq!(nav["map"]["geometric_marker"]["map_id"], "town");
         assert_eq!(nav["location"]["place_id"], "street");
         assert_eq!(nav["location"]["located_at_ms"], snapshot.captured_at_ms);
+        // Repeated scenery can match different moments in the walkthrough.
+        // Their tasks remain reference material, never the player's objective.
+        for step in ["step-1", "step-2", "step-1", "step-2"] {
+            observation["tracker"]["status"] = json!("tracked");
+            observation["step_ids"] = json!([step]);
+            store.put(&format!("world-observation:{}", guide.id), &observation)?;
+            let nav = crate::navigation::context(
+                &store,
+                &guide,
+                &store.progress(&guide)?,
+                &Default::default(),
+            )?;
+            assert_eq!(nav["guidance"]["now"]["id"], "step-1");
+        }
         observation["map_registration"] = Value::Null;
         observation["tracker"]["status"] = json!("lost");
         store.put(&format!("world-observation:{}", guide.id), &observation)?;

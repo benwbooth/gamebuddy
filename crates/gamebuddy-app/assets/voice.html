@@ -6,10 +6,10 @@
   const receiver=document.getElementById('receiver');
   let outputMuted=false,replyUntil=0,lastReplyAudio=0,assistantDoneAt=0,awaitingAnswer=false;
   let backendBusy=false,playerSpeaking=false,localSpeech=false,confirmedInputUntil=0,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
-  let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,lastIncomingAudio=0;
+  let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,queuedSpeechAt=0,lastIncomingAudio=0;
   let captionParts=[],captionText='',captionFirstMs=null,captionAudioStart=null,captionPending=[],captionGeneration=0;
   function resetCaptions(){captionParts=[];captionText='';captionFirstMs=null;captionAudioStart=null;captionPending=[];captionGeneration++;emit('caption','')}
-  function queueSpeech(text){queuedSpeech=text;emit('reply-pending',true)}
+  function queueSpeech(text){queuedSpeech=text;queuedSpeechAt=Date.now();emit('reply-pending',true)}
   function approveSpeech(){approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
   function captionsAt(sample,playbackTime){
     if(captionFirstMs===null||captionAudioStart===null)return;
@@ -50,6 +50,7 @@
     if(!active&&replyUntil)replyUntil=Date.now()+90000;
     updatePlayback();
   }
+  function requestFailed(text){backendBusy=false;queuedSpeech=null;approved=false;replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;outputMeter?.clear();resetCaptions();emit('reply-pending',false);updatePlayback();if(text)emit('request-error',text)}
   function setBackendBusy(active){
     // A handoff may acknowledge the question, pause for tools, then answer.
     // Backend work cannot grant itself permission to start speaking.
@@ -80,14 +81,14 @@
       // Old recognition cannot validate residual echo from this new reply.
       confirmedInputUntil=0;
       if(replaceQueuedTurn){outputMeter?.clear();replaceQueuedTurn=false}
-      assistantTurns.add(v.turn.id);assistantDoneAt=0;cueWaitingAt=0;
+      assistantTurns.add(v.turn.id);assistantDoneAt=0;
     }
     // Audio/text can start before turn.created. A prior backchannel's done
     // event must not close playback in that interval.
     if(v.type==='output_transcript.added'&&approved&&replyUntil){
       assistantDoneAt=0;awaitingAnswer=false;replyUntil=Date.now()+90000;
       if(typeof v.item?.text==='string'&&Number.isFinite(v.start_ms)){
-        if(outputMuted){captionText+=v.item.text;emit('caption',captionText)}
+        if(outputMuted){cueWaitingAt=0;captionText+=v.item.text;emit('caption',captionText)}
         else {if(captionFirstMs===null)captionFirstMs=v.start_ms;captionParts.push({start:v.start_ms,text:v.item.text})}
       }
     }
@@ -118,6 +119,11 @@
     if(queuedSpeech!==null&&!playerSpeaking&&!assistantTurns.size&&now-lastIncomingAudio>=500){
       const text=queuedSpeech;queuedSpeech=null;approveSpeech();emit('speech-ready',text);
     }
+    if(queuedSpeech!==null&&!playerSpeaking&&(now-lastIncomingAudio>=6000&&now-queuedSpeechAt>=6000||now-queuedSpeechAt>=90000)){
+      // A missing native turn.done must not hold the completed answer and the
+      // listening UI indefinitely. The companion already has its text.
+      queuedSpeech=null;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);
+    }
     while(captionPending.length&&captionPending[0].at<=(audioContext?.currentTime||0)){
       const part=captionPending.shift();if(part.generation===captionGeneration&&approved&&!outputMuted)emit('caption',part.text);
     }
@@ -128,7 +134,7 @@
     // a player request or tool action, or replace an answer already in flight.
     if(cueWaitingAt&&!backendBusy&&!playerSpeaking){
       if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true)}
-      else if(now-cueWaitingAt>=6000&&!cueRetried){cueRetried=true;emit('cue-retry',true)}
+      else if(now-cueWaitingAt>=6000&&!cueRetried&&!assistantTurns.size){cueRetried=true;emit('cue-retry',true)}
     }
     if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&(lastReplyAudio||outputMuted)&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
     const allowed=updatePlayback();
@@ -194,7 +200,7 @@
       if(!stale()){inputMeter=meter(stream);emit('capture',true)}
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
-  window.gamebuddyVoice={stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
+  window.gamebuddyVoice={requestFailed,stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {

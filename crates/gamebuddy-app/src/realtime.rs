@@ -262,7 +262,9 @@ impl ffi::RealtimeVoice {
                 client.request_with_notifications("thread/realtime/start", json!({"threadId":thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":gamebuddy_services::voice::prompts::SPEAKER,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
                 let mut sequence = 1000;
                 let mut context_requests = std::collections::HashSet::new();
-                let mut interrupt_requests = std::collections::HashSet::new();
+                let mut start_requests = std::collections::HashMap::new();
+                let mut reasoning_since: Option<Instant> = None;
+                let mut interrupt_requests = std::collections::HashMap::new();
                 let mut context_turn = None;
                 let mut reasoning_turn = None;
                 let mut reasoning_input = None;
@@ -270,9 +272,7 @@ impl ffi::RealtimeVoice {
                 let mut final_answer = String::new();
                 let mut supplied_frame = None;
                 let mut last_frame_check = Instant::now();
-                let mut delivered_utterance = None;
-                let mut fallback_requested = None;
-                let mut unhandled_speech = false;
+                let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
@@ -301,13 +301,8 @@ impl ffi::RealtimeVoice {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                     while let Some(event) = client.poll()? {
-                        if event["method"] == "thread/realtime/transcript/done"
-                            && event["params"]["role"] == "assistant"
-                        {
-                            unhandled_speech = true;
-                        }
                         if event["method"] == "turn/started" {
-                            unhandled_speech = false;
+                            reasoning_since = Some(Instant::now());
                             context_turn = Some(event["params"]["turn"]["id"].clone());
                             reasoning_turn = context_turn.clone();
                             reasoning_input = None;
@@ -331,22 +326,22 @@ impl ffi::RealtimeVoice {
                             if event["params"]["turn"]["status"] == "completed"
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                                 && reasoning_input == Some(utterance)
-                                && delivered_utterance != Some(utterance)
-                                && current_input.quiet(Instant::now())
                                 && !final_answer.is_empty()
                             {
-                                // Native automatic forwarding can stream an obsolete
-                                // intermediate answer. Deliver one completed answer,
-                                // after all tool actions and player corrections.
+                                delivery.complete(utterance, &supplied_request, &final_answer);
+                            } else if reasoning_input == Some(utterance)
+                                && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
+                            {
+                                delivery.abandon(utterance);
                                 emit(
-                                    json!({"method":"gamebuddy/speech","params":{"text":final_answer}}),
+                                    json!({"method":"gamebuddy/reply-error","params":{"text":"I couldn't finish that request. You can still speak to me; please try again."}}),
                                 );
-                                delivered_utterance = Some(utterance);
                             }
                             drop(current_input);
                             if reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"]) {
                                 reasoning_turn = None;
                                 reasoning_input = None;
+                                reasoning_since = None;
                             }
                             if context_turn.as_ref() == Some(&event["params"]["turn"]["id"]) {
                                 context_turn = None
@@ -361,10 +356,32 @@ impl ffi::RealtimeVoice {
                             pending_tools
                                 .retain(|(tool, _)| tool["params"]["turnId"] != *completed);
                         }
-                        if event["id"]
+                        if let Some(request_utterance) = event["id"]
                             .as_u64()
-                            .is_some_and(|id| interrupt_requests.remove(&id))
+                            .and_then(|id| start_requests.remove(&id))
                         {
+                            // Native delegation can win the same start race.
+                            // Its active turn will be steered with the request.
+                            if event.get("error").is_some() && reasoning_turn.is_none() {
+                                delivery.abandon(request_utterance);
+                                reasoning_since = None;
+                                emit(
+                                    json!({"method":"gamebuddy/reply-error","params":{"text":"The request could not start. You can still speak to me; please try again."}}),
+                                );
+                            }
+                            continue;
+                        }
+                        if let Some(turn_id) = event["id"]
+                            .as_u64()
+                            .and_then(|id| interrupt_requests.remove(&id))
+                        {
+                            if reasoning_turn.as_ref() == Some(&turn_id)
+                                && reasoning_input.is_none()
+                            {
+                                reasoning_turn = None;
+                                context_turn = None;
+                                reasoning_since = None;
+                            }
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(
                                     "GAMEBUDDY_VOICE_BACKEND_INTERRUPT success={}",
@@ -412,6 +429,27 @@ impl ffi::RealtimeVoice {
                         let now = Instant::now();
                         (input.quiet(now), input.text(now), input.utterance())
                     };
+                    // A failed or missing completion must not strand subsequent
+                    // requests. This bounds reasoning only, never speech playback.
+                    if reasoning_since
+                        .is_some_and(|since| since.elapsed() >= Duration::from_secs(60))
+                    {
+                        if let Some(turn_id) = reasoning_turn.take() {
+                            sequence += 1;
+                            interrupt_requests.insert(sequence, turn_id.clone());
+                            client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
+                        }
+                        context_turn = None;
+                        reasoning_input = None;
+                        reasoning_since = None;
+                        delivery.abandon(utterance);
+                        emit(
+                            json!({"method":"gamebuddy/reply-error","params":{"text":"That request took too long. You can still speak to me; please try again."}}),
+                        );
+                    }
+                    if let Some(answer) = delivery.take_reply(utterance, &request, quiet) {
+                        emit(json!({"method":"gamebuddy/speech","params":{"text":answer}}));
+                    }
                     // A late handoff must not deliver the previous answer over
                     // a new question. Cancel as input begins, before its new
                     // delegation needs the backend; pauses inside one request
@@ -420,35 +458,27 @@ impl ffi::RealtimeVoice {
                         && let Some(turn_id) = &reasoning_turn
                     {
                         sequence += 1;
-                        interrupt_requests.insert(sequence);
+                        interrupt_requests.insert(sequence, turn_id.clone());
                         client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
                         reasoning_input = None;
                         context_turn = None;
                     }
                     if quiet {
-                        // Some conversational requests are answered by the live
-                        // model without delegation. Its unapproved audio remains
-                        // muted; route that completed request through the backend
-                        // once so repetition/story requests still receive a reply.
-                        if unhandled_speech
-                            && reasoning_turn.is_none()
-                            && delivered_utterance != Some(utterance)
-                            && fallback_requested != Some(utterance)
-                            && !request.trim().is_empty()
-                            && !matches!(
-                                request
-                                    .trim()
-                                    .trim_end_matches(['.', '!', '?'])
-                                    .to_lowercase()
-                                    .as_str(),
-                                "stop" | "stop talking" | "stop speaking" | "be quiet"
-                            )
-                        {
+                        // Dispatch every recognized local utterance even when
+                        // the live model neither delegates nor answers. Waiting
+                        // for an assistant transcript creates a deadlock when
+                        // the speaker correctly stays silent for backend approval.
+                        if delivery.dispatch(utterance, &request, reasoning_since.is_some()) {
                             sequence += 1;
-                            context_requests.insert(sequence);
+                            start_requests.insert(sequence, utterance);
+                            reasoning_since = Some(Instant::now());
+                            if std::env::args().any(|a| a == "--voice-trace") {
+                                eprintln!(
+                                    "GAMEBUDDY_VOICE_DISPATCH utterance={utterance} text_bytes={}",
+                                    request.len()
+                                );
+                            }
                             client.send(json!({"id":sequence,"method":"turn/start","params":{"threadId":thread,"input":[{"type":"text","text":format!("Complete live player request: {request}")}],"environments":[]}}))?;
-                            fallback_requested = Some(utterance);
-                            unhandled_speech = false;
                         }
                         // Refresh native visual evidence while a long reasoning
                         // turn is in flight. A new camera view supersedes its old
@@ -497,6 +527,7 @@ impl ffi::RealtimeVoice {
                             };
                             sequence += 1;
                             reasoning_input = Some(utterance);
+                            delivery.started(utterance);
                             context_requests.insert(sequence);
                             let label = format!(
                                 "The complete live player request is: {request}. This supersedes any earlier partial delegation. Resolve their location correction before repeating previous advice. Carry out every requested action. If a newer image accompanies this update, the view changed while you were thinking: reassess obstacles, enemies and the immediate interaction before giving directions."
