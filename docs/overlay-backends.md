@@ -24,6 +24,10 @@ A private Unix datagram socket accepts `toggle`, `toggle-visibility`, `show`, `h
 gamebuddy --overlay-action toggle /path/to/session/control.sock
 ```
 
+Widgets use native browser scrolling, including horizontal and diagonal trackpad movement and Shift+wheel for wide content. Location maps, library maps, enlarged walkthrough pictures and image widgets support pinch or Ctrl+scroll to zoom around the pointer, plus drag-to-pan. Focus an image to use `+`/`-` for zoom and `0` to fit. Widget headers still move the widget; dragging an image moves its contents. Manual map input pauses automatic following until **Follow player** is pressed. Location markers continue updating while you browse, and ordinary content refreshes preserve both scroll axes. Videos retain their embedded player's controls.
+
+Pinch changes only the image, keeping overlay widget sizes and input regions stable. Qt converts supported native trackpad pinches into Chromium's wheel-pinch path ([Qt gesture conversion](https://github.com/qt/qtwebengine/blob/6.10/src/core/web_event_factory.cpp)); two-contact touch gestures use pointer events. Hardware/driver and host-compositor delivery still determine which gestures reach Qt, especially through the private Gamescope/Xwayland session. Ctrl+scroll and the visible zoom controls are available when native pinch is not delivered.
+
 Physical gamepad bindings are **not installed yet**. GameBuddy should own a configurable button/held chord and its device listener. Lunchpail supplies launch context and emulator configuration/arguments; it does not intercept keypresses. Preventing a chord from also reaching the game requires input routing in GameBuddy's compositor adapter; a device listener alone does not consume game input. Guide-button ownership, debounce, disconnects, and navigation inside the UI need controller-specific tests. Keyboard visibility/focus and the socket command path have runtime coverage.
 
 ### Wayland versus Xwayland

@@ -5,6 +5,7 @@ import {readFileSync,writeFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {imageInputs,widgetInputs} from './test-widget-gestures.mjs';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
 assert(new URL(endpoint).hostname==='127.0.0.1','Only a private local test port is supported');
@@ -43,9 +44,11 @@ try {
   await button('My goals');assert(await evaluate(`document.querySelector('.reader-content').textContent.includes('Buy the key') || document.querySelector('.reader-content').textContent.includes('Shop')`));
   await button('All pictures');await until(()=>evaluate(`document.querySelectorAll('.reader-gallery img').length===8 && [...document.querySelectorAll('.reader-gallery img')].every(n=>n.complete&&n.naturalWidth>0)`),'First picture page missing');
   await button('Next pictures');await until(()=>evaluate(`document.querySelectorAll('.reader-gallery img').length===4 && [...document.querySelectorAll('.reader-gallery img')].every(n=>n.complete&&n.naturalWidth>0)`),'Second picture page missing');
-  await click('.reader-gallery img');assert(await evaluate(`!!document.querySelector('.reader-lightbox img')`));await button('Close picture');
+  await click('.reader-gallery img');assert(await evaluate(`!!document.querySelector('.reader-lightbox img')`));
+  await imageInputs({call,evaluate,until},'.reader-lightbox .picture-viewport');await screenshot('picture-gestures');await button('Close picture');
   await button('All maps');await until(()=>evaluate(`document.querySelector('[data-reader-map]')?.src.startsWith('data:image/jpeg') && document.querySelector('[data-reader-map]').naturalWidth>0`),'Cached map bridge failed');
   assert(await evaluate(`document.querySelector('.reader-content').textContent.includes('Generated fixture author')`));await screenshot('reader-map');
+  await imageInputs({call,evaluate,until},'.reader-map-view');await screenshot('map-gestures');
   await button('Sources');assert(await evaluate(`document.querySelector('.reader-content').textContent.includes('Reader integration fixture')`));
   await button('How it was built');assert(await evaluate(`document.querySelector('.reader-content').textContent.includes('Fixture source review')`));await screenshot('reader-history');
   await button('Current step');assert.equal(progress().current_step,position);await screenshot('reader-outline');
@@ -129,6 +132,7 @@ try {
     await evaluate(`testState.progress.completed=[testState.guide.steps.find(s=>s.id===testState.navigation.guidance.now.id).parent_id];testState.widget_visibility={'guide-library':true,'walkthrough-outline':false,'location-map':false,'current-step':false};testRender(testState)`);
     assert(await evaluate(`document.querySelector('.reader-detail input[type=checkbox]').checked`),'Flattening source sections lost inherited completion');
   }
+  await widgetInputs({call,evaluate,until});
   assert.deepEqual(errors,[],'JavaScript runtime errors');
   console.log('PASS: Qt reader persistence, sources and widget controls; pinned next action; stable map/image across live updates, moving marker, open controls and stale location; optional captured-frame map and follow-player.');
 } finally {socket.close();db.close()}

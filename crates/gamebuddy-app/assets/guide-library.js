@@ -4,6 +4,7 @@ const library = (() => {
   let mounted=null, state=null, manifest=null, scope='', sequence=0, requests=new Map();
   let tab='outline', selected=null, query='', onlyBookmarks=false, page=0, mapId=null, locationId=null, zoom=1;
   let opened=new Set(), images=new Map(), error='', editing=false, snapshotKey='', renderBody=null, resetDetails=false;
+  let mapPan=null;
   const button=(label,action)=>{const b=text('button',label);b.type='button';b.addEventListener('click',action);return b};
   const emit=(action,extra={})=>{
     if(!state?.guide)return;
@@ -45,7 +46,7 @@ const library = (() => {
     const cached=images.get(frame.id);if(!cached?.data||!mounted)return;
     mounted.querySelector('.reader-lightbox')?.remove();
     const box=text('div','','reader-lightbox'),img=document.createElement('img');box.setAttribute('role','dialog');box.setAttribute('aria-label','Walkthrough picture');
-    const close=button('Close picture',()=>{box.remove();regions()});box.append(close);img.src=cached.data;img.alt='Walkthrough at '+time(frame.at_ms);box.append(img);
+    const close=button('Close picture',()=>{box.remove();regions()});box.append(close);img.src=cached.data;img.alt='Walkthrough at '+time(frame.at_ms);pictureViewer(box,img);
     sources(box,[{title:state.guide.sources.find(s=>s.id===frame.source_id)?.title,detail:'Source screenshot at '+time(frame.at_ms),url:urlFor(state.guide.sources.find(s=>s.id===frame.source_id)?.url,frame.at_ms)}]);
     box.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();box.remove()}});mounted.append(box);close.focus();regions();
   }
@@ -68,11 +69,14 @@ const library = (() => {
   }
   function mapCard(parent,map,location){
     const card=text('div','','reader-card');card.append(text('h3',location?.label||map.title));if(location?.current)card.append(text('div','You are here · '+(state.navigation?.location?.status==='reported'?'reported location':'estimated location'),'location'));sources(card,mapEvidence(map));
-    const controls=text('div','','reader-actions');controls.append(button('−',()=>{zoom=Math.max(1,zoom/1.5);renderBody()}),button('+',()=>{zoom=Math.min(8,zoom*1.5);renderBody()}),button('Fit map',()=>{zoom=1;renderBody()}));card.append(controls);
+    const controls=text('div','','reader-actions');card.append(controls);
     const view=text('div','','reader-map-view'),img=document.createElement('img');img.alt=map.title;img.dataset.readerMap=map.id;img.style.width='100%';const stage=text('div','','map-stage');stage.style.width=(zoom*100)+'%';
     const safe=urlFor(map.url);if(safe)img.src=safe;
     img.addEventListener('error',()=>{if(img.src.startsWith('data:'))return;img.hidden=true;view.append(text('div','Map preview unavailable. Open the original map image above.','reader-error'))});stage.append(img);view.append(stage);card.append(view);parent.append(card);
-    const marker=state.navigation?.map?.geometric_marker||state.navigation?.map?.marker;if(marker?.map_id===map.id){const r=marker.region,highlight=text('div','','map-marker');Object.assign(highlight.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});highlight.append(text('span',marker.precision==='camera_footprint'?'You are here · camera area':'You are here · approximate area','below'));evidence(highlight,'Location evidence',locationEvidence);stage.append(highlight)}
+    const gestures=imageGestures(view,stage,{getZoom:()=>zoom,setZoom:value=>{zoom=value;stage.style.width=zoom*100+'%'}});
+    controls.append(button('−',()=>gestures.zoomTo(zoom/1.5)),button('+',()=>gestures.zoomTo(zoom*1.5)),button('Fit map',gestures.fit));
+    if(mapPan?.id===map.id){const saved=mapPan;img.addEventListener('load',()=>{view.scrollLeft=saved.x;view.scrollTop=saved.y},{once:true})}
+    updateMapMarker(stage,map.id);
     // Cached original pixels stay local; this callback also handles offline maps.
     queueMicrotask(()=>console.info('GAMEBUDDY_MAP_REQUEST '+map.id));
     const atlas=manifest?.atlas||state.navigation?.map||{};
@@ -81,6 +85,11 @@ const library = (() => {
       const association=(atlas.map_links||[]).find(l=>l.place_id===place.id);if(association)box.append(text('div',association.evidence,'reader-status'));
       for(const binding of (atlas.bindings||[]).filter(b=>b.place_id===place.id)){stepLink(box,binding.step_id);box.append(text('div',binding.evidence,'reader-status'))}card.append(box);
     }
+  }
+  function updateMapMarker(stage,id){
+    stage.querySelector('.map-marker')?.remove();
+    const marker=state.navigation?.map?.geometric_marker||state.navigation?.map?.marker;if(marker?.map_id!==id)return;
+    const r=marker.region,highlight=text('div','','map-marker');Object.assign(highlight.style,{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'});highlight.append(text('span',marker.precision==='camera_footprint'?'You are here · camera area':'You are here · approximate area','below'));evidence(highlight,'Location evidence',locationEvidence);stage.append(highlight);
   }
   function detail(parent,step){
     parent.append(text('h2',step.title));
@@ -142,8 +151,9 @@ const library = (() => {
     body.append(tools,tabs,status,notice,content);
     renderBody=()=>{
       if(!mounted?.isConnected && mounted!==body)return;
-      if(body.querySelector('.picker.open')){body.dataset.readerDeferred='true';return}delete body.dataset.readerDeferred;
-      const treeScroll=content.querySelector('.reader-tree')?.scrollTop||0,detailScroll=resetDetails?0:content.querySelector('.reader-detail')?.scrollTop||0,scroll=content.scrollTop;resetDetails=false;
+      if(body.querySelector('.picker.open,.panning')){body.dataset.readerDeferred='true';return}delete body.dataset.readerDeferred;
+      const mapView=content.querySelector('.reader-map-view');if(mapView)mapPan={id:mapView.querySelector('img').dataset.readerMap,x:mapView.scrollLeft,y:mapView.scrollTop};
+      const treeScroll=content.querySelector('.reader-tree')?.scrollTop||0,treeLeft=content.querySelector('.reader-tree')?.scrollLeft||0,detailScroll=resetDetails?0:content.querySelector('.reader-detail')?.scrollTop||0,detailLeft=resetDetails?0:content.querySelector('.reader-detail')?.scrollLeft||0,scroll=content.scrollTop,left=content.scrollLeft;resetDetails=false;
       content.replaceChildren();notice.textContent=error;if(error)notice.append(button('Reload library',()=>{error='';emit('snapshot')}));star.setAttribute('aria-pressed',String(onlyBookmarks));for(const [id,b] of tabButtons)b.setAttribute('aria-pressed',String(tab===id));
       status.textContent=(state.preparation?.message||'')+' · '+steps().length+' nodes · '+(manifest?.frames?.length||0)+' pictures · '+(manifest?.atlas?.maps?.length||0)+' maps'+(editing?' · Saving…':'')+(manifest?'':' · Loading library…');
       if(tab==='outline')outline(content);
@@ -169,19 +179,20 @@ const library = (() => {
         content.append(text('h3','Coverage & evidence gaps'));for(const note of state.guide.coverage_notes||[])content.append(text('p',note,'reader-card'));
         content.append(text('h3','Revision history'));for(const revision of manifest?.history||[])content.append(text('div','Revision '+revision.revision+' · '+revision.summary,'reader-card'));
       }
-      const tree=content.querySelector('.reader-tree'),detail=content.querySelector('.reader-detail');if(tree)tree.scrollTop=treeScroll;if(detail)detail.scrollTop=detailScroll;content.scrollTop=scroll;
+      const tree=content.querySelector('.reader-tree'),detail=content.querySelector('.reader-detail');if(tree){tree.scrollTop=treeScroll;tree.scrollLeft=treeLeft}if(detail){detail.scrollTop=detailScroll;detail.scrollLeft=detailLeft}content.scrollTop=scroll;content.scrollLeft=left;
       if(tipOwner&&!tipOwner.isConnected)hideTip();
     };
     let signature='';
     const refresh=next=>{
       state=next;const key=state.guide.id+':'+state.guide.revision;
-      if(scope!==state.guide.id){body.querySelector('.reader-lightbox')?.remove();scope=state.guide.id;manifest=null;selected=null;opened=new Set();images.clear();requests.clear();snapshotKey='';editing=false;error='';query='';search.value='';onlyBookmarks=false;page=0;mapId=null;locationId=null}
+      if(scope!==state.guide.id){body.querySelector('.reader-lightbox')?.remove();scope=state.guide.id;manifest=null;selected=null;opened=new Set();images.clear();requests.clear();snapshotKey='';editing=false;error='';query='';search.value='';onlyBookmarks=false;page=0;mapId=null;locationId=null;mapPan=null;zoom=1}
       if(selected&&!stepById(selected))selected=null;
       if(!selected){selected=current()||steps()[0]?.id;let s=stepById(selected);while(s?.parent_id){opened.add(s.parent_id);s=stepById(s.parent_id)}}
       const wanted=key+':'+(state.reference_count||0)+':'+(state.navigation?.map?.reviewed_steps||0)+':'+(state.navigation?.map?.status||'');
       if(wanted!==snapshotKey){snapshotKey=wanted;emit('snapshot')}
-      const nextSignature=JSON.stringify([key,state.progress,current(),state.preparation,state.navigation?.map?.status,state.navigation?.map?.current_place,state.navigation?.map?.geometric_marker]);
+      const nextSignature=JSON.stringify([key,state.progress,current(),state.preparation,state.navigation?.map?.status,state.navigation?.map?.current_place]);
       if(signature!==nextSignature||body.dataset.readerDeferred){signature=nextSignature;renderBody()}
+      const mapImage=body.querySelector('[data-reader-map]');if(mapImage)updateMapMarker(mapImage.parentElement,mapImage.dataset.readerMap);
     };
     refresh(initial);renderBody();return refresh;
   }

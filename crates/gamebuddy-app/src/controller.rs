@@ -1150,10 +1150,15 @@ impl ffi::Buddy {
         }
     }
     pub fn widget_html(&self) -> QString {
-        q(include_str!("../assets/widgets.html").replace(
-            "/* GUIDE_LIBRARY_SCRIPT */",
-            include_str!("../assets/guide-library.js"),
-        ))
+        q(include_str!("../assets/widgets.html")
+            .replace(
+                "/* WIDGET_GESTURES_SCRIPT */",
+                include_str!("../assets/widget-gestures.js"),
+            )
+            .replace(
+                "/* GUIDE_LIBRARY_SCRIPT */",
+                include_str!("../assets/guide-library.js"),
+            ))
     }
     pub fn voice_path(&self) -> QString {
         let directory = self.rust().root.join("voice");
