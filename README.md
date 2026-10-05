@@ -69,6 +69,7 @@ scripts/test-gamescope
 scripts/test-resolution
 scripts/test-voice
 scripts/test-realtime
+GAMEBUDDY_TEST_LOCATION=1 scripts/test-realtime
 node scripts/test-voice-lifecycle.mjs
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input scripts/qml-tests
 ```

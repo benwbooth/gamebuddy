@@ -460,6 +460,49 @@ fn realtime(
     thread::sleep(Duration::from_secs(3)); // allow the OSD's regular store poll
     screenshot("realtime-widget.png")?;
     quiet()?;
+    if std::env::var_os("GAMEBUDDY_TEST_LOCATION").is_some() {
+        let id: String = store.get("active_guide")?.context("guide")?;
+        let guide = store.guide(&id)?;
+        let old = store.progress(&guide)?;
+        gamebuddy_services::harness::call_tool(
+            &store,
+            "set_next_action",
+            serde_json::json!({
+                "expected_revision":guide.revision,"epoch":old.epoch,"step_id":"step-2",
+                "instructions":"Walk left toward the restoration vendors."
+            }),
+        )?;
+        thread::sleep(Duration::from_secs(3));
+        play_player(&std::env::var("GAMEBUDDY_TEST_LOCATION_WAV")?)?;
+        wait(
+            "arrival correction changes both location and next action",
+            || {
+                let nav = gamebuddy_services::navigation::context(
+                    &store,
+                    &guide,
+                    &store.progress(&guide)?,
+                    &Default::default(),
+                )?;
+                Ok(nav["location"]["place_id"] == "vendors"
+                    && nav["location"]["status"] == "reported"
+                    && nav["recommendation"]["step_id"] == "step-3"
+                    && !nav["recommendation"]["instructions"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .starts_with("walk left"))
+            },
+        )?;
+        ensure!(
+            store.progress(&guide)?.completed == old.completed,
+            "Location report manufactured verified completion"
+        );
+        screenshot("realtime-location-correction.png")?;
+        quiet()?;
+        println!(
+            "GAMEBUDDY_LOCATION_VOICE_TEST_PASS explicit arrival replaces old walk-left advice and updates shared location"
+        );
+    }
     if std::env::var_os("GAMEBUDDY_TEST_CAPTIONS").is_some() {
         let before = std::fs::read_to_string(&log)?.len();
         play_player(&std::env::var("GAMEBUDDY_TEST_ONSET_WAV")?)?;

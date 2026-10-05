@@ -25,10 +25,41 @@ fn main() -> anyhow::Result<()> {
         let guide = gamebuddy_core::import_markdown(
             "Faxanadu",
             "Overlay test",
-            "# Overlay fixture\nTest display only.\n## Current action\nThis is a test scene, not a real game walkthrough.\n## Next action\nInspect the collapsible outline.",
+            if std::env::var_os("GAMEBUDDY_TEST_LOCATION").is_some() {
+                "# Overlay fixture\nTest display only, not a real game walkthrough.\n## Reach restoration vendors\nWalk left along the street to the restoration vendors.\n## Talk to the vendor\nAt the restoration vendors, speak to the attendant in front of you. Do not continue walking left after arriving."
+            } else {
+                "# Overlay fixture\nTest display only.\n## Current action\nThis is a test scene, not a real game walkthrough.\n## Next action\nInspect the collapsible outline."
+            },
         )?;
         store.save_guide(&guide)?;
         store.put("active_guide", &guide.id)?;
+        if std::env::var_os("GAMEBUDDY_TEST_LOCATION").is_some() {
+            let atlas = gamebuddy_core::Atlas {
+                guide_id: guide.id.clone(),
+                guide_revision: guide.revision,
+                status: "ready".into(),
+                places: [("street", "Street"), ("vendors", "Restoration vendors")]
+                    .into_iter()
+                    .map(|(id, label)| gamebuddy_core::Place {
+                        id: id.into(),
+                        label: label.into(),
+                        map_id: None,
+                        landmarks: label.into(),
+                    })
+                    .collect(),
+                bindings: [("step-2", "street"), ("step-3", "vendors")]
+                    .into_iter()
+                    .map(|(step, place)| gamebuddy_core::PlaceBinding {
+                        step_id: step.into(),
+                        place_id: place.into(),
+                        evidence: "Explicit voice fixture route".into(),
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            atlas.validate(&guide)?;
+            store.put(&format!("atlas:{}", guide.id), &atlas)?;
+        }
         store.save_progress(
             &guide,
             &gamebuddy_core::Progress {

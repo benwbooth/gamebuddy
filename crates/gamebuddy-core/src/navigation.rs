@@ -210,7 +210,12 @@ impl PlaceTracker {
     }
     /// Atlas geometry can identify a room without identifying a task there.
     pub fn ground_place(&mut self, place: &str, epoch: u64, at: u64, evidence: &str) {
-        self.ground(place, "", epoch, at, evidence);
+        self.report_place(place, epoch, at, evidence);
+        self.status = "estimated".into();
+        self.detail = evidence.into();
+    }
+    pub fn report_place(&mut self, place: &str, epoch: u64, at: u64, report: &str) {
+        self.report(place, "", epoch, at, report);
         self.reference_step_id = None;
         self.room_entry_step = None;
     }
@@ -603,6 +608,11 @@ pub fn guidance_from(
         "A prerequisite is still unconfirmed. Complete or confirm it before the target task."
     } else if goal.is_some() {
         "Following your selected goal and its prerequisites."
+    } else if location.status == "reported"
+        && location.reference_step_id.is_none()
+        && recommendation.is_none()
+    {
+        "Your location is reported. The saved plan is shown for reference; your arrival does not select a task or authorize repeating its old travel instruction."
     } else if location.status == "reported" {
         "Suggested from the location you reported and unfinished walkthrough tasks."
     } else if location.place_id.is_some()
@@ -661,7 +671,8 @@ pub fn guidance_from(
         status: if location.place_id.is_none() {
             "unlocated"
         } else if location.reference_step_id.is_none()
-            && progress.current_step.is_none()
+            && (progress.current_step.is_none() || location.status == "reported")
+            && recommendation.is_none()
             && goal.is_none()
         {
             "plan"

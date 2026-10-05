@@ -711,7 +711,17 @@ pub fn context(
         progress.epoch,
         now,
     );
-    if geometric_ready && spatial["observation"].is_null() {
+    let grounded = crate::spatial::grounded_location(
+        store,
+        guide,
+        &spatial["observation"],
+        &session,
+        progress.epoch,
+        spatial["observation"]["tracker"]["observed_at_ms"]
+            .as_u64()
+            .unwrap_or_default(),
+    )?;
+    if geometric_ready && grounded.is_none() {
         tracker.invalidate_visual();
     }
     if !geometric_ready
@@ -720,10 +730,7 @@ pub fn context(
     {
         tracker.adopt_visual(&scene, now);
     }
-    if (spatial["observation"]["tracker"]["status"] == "tracked"
-        || spatial["observation"]["map_registration"].is_object())
-        && let Some(grounded) =
-            store.get::<PlaceTracker>(&format!("world-place-tracker:{}", guide.id))?
+    if let Some(grounded) = grounded
         && grounded.session_id == tracker.session_id
         && grounded.epoch == progress.epoch
         && spatial["observation"]["tracker"]["observed_at_ms"].as_u64()

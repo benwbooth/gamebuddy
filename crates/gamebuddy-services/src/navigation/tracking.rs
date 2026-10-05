@@ -1,7 +1,7 @@
 //! Shared location updates from conversation and continuous visual evidence.
 use super::{atlas, context, tracker_key};
 use crate::{Store, screen};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use gamebuddy_core::{Guide, PlaceTracker, SyncEstimate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct LocationReport {
     pub place_id: String,
-    /// Use a specific task when the player states what they are doing.
+    /// Only supply a task when the player states it and the atlas binds it to
+    /// this place. Omit for an arrival/place report; that never guesses a task.
     pub step_id: Option<String>,
     pub player_report: String,
     pub expected_revision: u64,
@@ -36,50 +37,34 @@ pub fn report_location(store: &Store, guide: &Guide, report: LocationReport) -> 
             .place_for_step(guide, id)
             .is_some_and(|p| p.id == report.place_id)
     };
-    let step = if let Some(id) = report.step_id.as_deref() {
+    if let Some(id) = report.step_id.as_deref() {
         ensure!(
             valid(id),
-            "Task is not bound to the reported place; read the atlas and outline"
+            "Task is not bound to the reported place. Omit step_id to record the place alone, or choose a task explicitly bound to this place in get_atlas."
         );
-        id
-    } else if let Some(id) = progress.current_step.as_deref().filter(|id| valid(id)) {
-        id
-    } else {
-        // Repeated visits can have different tasks. Prefer the closest unfinished
-        // bound task to the current cursor; the agent may supply a more specific ID.
-        let current = guide
-            .steps
-            .iter()
-            .position(|s| Some(&s.id) == progress.current_step.as_ref())
-            .unwrap_or(0);
-        &guide
-            .steps
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| valid(&s.id))
-            .min_by_key(|(i, s)| {
-                (
-                    gamebuddy_core::step_complete(guide, &progress, &s.id),
-                    i.abs_diff(current),
-                )
-            })
-            .context("No enabled task is bound to this place")?
-            .1
-            .id
-    };
+    }
     let mut tracker = PlaceTracker::for_session(
         screen::status(store)?["session_id"]
             .as_str()
             .unwrap_or_default()
             .into(),
     );
-    tracker.report(
-        &report.place_id,
-        step,
-        progress.epoch,
-        screen::now_ms(),
-        &report.player_report,
-    );
+    if let Some(step) = report.step_id.as_deref() {
+        tracker.report(
+            &report.place_id,
+            step,
+            progress.epoch,
+            screen::now_ms(),
+            &report.player_report,
+        );
+    } else {
+        tracker.report_place(
+            &report.place_id,
+            progress.epoch,
+            screen::now_ms(),
+            &report.player_report,
+        );
+    }
     let progress = store.report_location(guide, report.epoch, tracker, &report.player_report)?;
     Ok(json!({"progress":progress,"evidence_kind":"player_report",
         "navigation":context(store, guide, &progress, &SyncEstimate::default())?}))
@@ -231,6 +216,32 @@ mod tests {
             "report_location",
             json!({"place_id":place,"step_id":step,"player_report":format!("I am at the {place}"),"expected_revision":guide.revision,"epoch":epoch}),
         )
+    }
+    #[test]
+    fn arrival_report_replaces_old_advice_without_guessing_an_earlier_task() {
+        let (_dir, store, guide) = fixture();
+        screen::start(&store, &guide.game, true).unwrap();
+        let progress = Progress {
+            current_step: Some("step-3".into()),
+            ..Default::default()
+        };
+        store.save_progress(&guide, &progress, "fixture").unwrap();
+        call_tool(&store, "set_next_action", json!({"expected_revision":guide.revision,"epoch":0,"step_id":"step-1","instructions":"Walk left to the church."})).unwrap();
+        let result = call_tool(&store,"report_location",json!({"expected_revision":guide.revision,"epoch":0,"place_id":"church","player_report":"I am already at the church."})).unwrap();
+        assert_eq!(result["navigation"]["location"]["place_id"], "church");
+        assert_eq!(result["navigation"]["location"]["status"], "reported");
+        assert!(result["navigation"]["location"]["reference_step_id"].is_null());
+        assert!(result["navigation"]["recommendation"].is_null());
+        assert_eq!(result["navigation"]["guidance"]["status"], "plan");
+        assert!(result["navigation"]["direction"].is_null());
+        assert_eq!(result["progress"]["current_step"], "step-3");
+        assert!(
+            store
+                .progress(&guide)
+                .unwrap()
+                .reported_completed
+                .is_empty()
+        );
     }
     #[test]
     fn player_location_drives_map_and_cursor_survives_uncertainty_and_completion() {

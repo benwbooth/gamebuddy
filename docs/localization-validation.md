@@ -46,6 +46,14 @@ The saved CRT screenshot was independently aligned to the real VGMaps Eolis imag
 
 No actual 3D game session, full-game Faxanadu replay, death recovery sequence, native Windows/macOS runtime, metric 3D reconstruction or autonomous objective completion has passed acceptance testing in this change.
 
+## October 4: map continuity and arrival corrections
+
+The saved vendor-area session exposed two inconsistent reads: the atlas marker used the newest observation while its named-place tracker could still belong to the previous capture, and a scrolling screen could invalidate a match before asynchronous registration finished. Navigation now derives the place directly from the map's accepted observation. A bounded translation check tolerates small camera scrolls during the existing three-second frame-lag budget; completed non-matches, capture changes and expired observations still invalidate visual location.
+
+The companion receives the matched scenery's source actions and place IDs alongside the native map image. Saved advice is labelled as previous advice, and the live speaker no longer receives that instruction as background context. Final transcript corrections reach an already-running reasoning turn. A place-only player report invalidates previous advice without selecting an older task associated with the same street or claiming task completion.
+
+The captured CRT vendor screen matched Eolis with 301 map inliers. Thirty sampled refreshes while translating that saved image retained the same map, named place and native map image in the agent context. The translations are a continuity regression, not new independent gameplay or a full-game accuracy measurement. The isolated Gamescope/WebRTC voice fixture also heard an arrival correction, recorded the new location, replaced the old walk-left action and audibly acknowledged that the player was already at the vendors. Enable that regression with `GAMEBUDDY_TEST_LOCATION=1 scripts/test-realtime`.
+
 ## Reproduce with your own game files
 
 ```sh

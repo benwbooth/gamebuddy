@@ -67,7 +67,8 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     ensure!(
         progress.epoch == action.epoch
             && !gamebuddy_core::step_complete(guide, &progress, &action.step_id),
-        "Progress changed or task already complete; read get_game_context"
+        "Progress changed or task already complete. Current progress epoch is {}; read get_game_context before retrying.",
+        progress.epoch
     );
     let guidance = guidance_from(
         guide,
@@ -80,7 +81,9 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
             .now
             .as_ref()
             .is_some_and(|s| s.id == action.step_id),
-        "This action has unconfirmed prerequisites; resolve them or edit the plan first"
+        "This action has unconfirmed prerequisites: {}. Record them only if the player's report explicitly establishes them; otherwise ask about the missing prerequisite. Current progress epoch is {}.",
+        serde_json::to_string(&guidance.requirements)?,
+        progress.epoch
     );
     let session = screen::status(store)?["session_id"]
         .as_str()

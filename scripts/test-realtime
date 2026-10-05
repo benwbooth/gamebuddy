@@ -42,6 +42,10 @@ JS
 player=$!
 for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_LOCATION:-}" ]]; then
+  export GAMEBUDDY_TEST_LOCATION_WAV="$runtime_dir/location.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_LOCATION_WAV" 'I already walked there. I am at the restoration vendors now. Stop telling me to walk left toward them. What should I do here?'
+fi
 if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
   export GAMEBUDDY_TEST_ONSET_WAV="$runtime_dir/onset.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ONSET_WAV" 'Please say this exact sentence once: Purple elephants dance in the sunshine, and blue rivers wind through quiet valleys beneath the morning sun.'

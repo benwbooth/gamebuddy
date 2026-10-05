@@ -45,6 +45,54 @@ fn main() -> Result<()> {
             )?;
         }
     }
+    if std::env::var_os("GAMEBUDDY_PROBE_RESTORE_ADVICE").is_some() {
+        let id: String = store
+            .get("active_guide")?
+            .context("Active guide required")?;
+        let key = format!("next-action:{id}");
+        let mut advice = store
+            .get::<serde_json::Value>(&key)?
+            .context("Saved advice required")?;
+        advice["session"] = json!(ticket.as_ref().context("Replay ticket required")?.session);
+        store.put(&key, &advice)?;
+    }
+    // Keep the recorded screen and matcher live while the real backend thinks,
+    // as the application does. Never manufacture newer observation timestamps.
+    let _replay_guard = if let Some((ticket, frame)) = ticket.as_ref().zip(replay.as_ref()) {
+        let alive = std::sync::Arc::new(());
+        let weak = std::sync::Arc::downgrade(&alive);
+        let root = store.root.clone();
+        let ticket = ticket.clone();
+        let frame = frame.clone();
+        std::thread::spawn(move || {
+            let run = || -> Result<()> {
+                let store = Store::open(root)?;
+                let id: String = store
+                    .get("active_guide")?
+                    .context("Active guide required")?;
+                while weak.upgrade().is_some() {
+                    screen::publish(&store, &ticket, &frame, "recorded_test_frame")?;
+                    if std::env::var_os("GAMEBUDDY_PROBE_TRACK").is_some() {
+                        let guide = store.guide(&id)?;
+                        gamebuddy_services::spatial::schedule(
+                            &store,
+                            &guide,
+                            screen::snapshot(&store)?,
+                            store.progress(&guide)?.epoch,
+                        );
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                Ok(())
+            };
+            if let Err(error) = run() {
+                eprintln!("Replay stopped: {error}");
+            }
+        });
+        Some(alive)
+    } else {
+        None
+    };
     let mut client = CodexClient::start()?;
     let mut tools = harness::tool_definitions();
     for tool in tools.as_array_mut().unwrap() {
@@ -94,6 +142,7 @@ fn main() -> Result<()> {
                 screen::publish(&store, ticket, image, "recorded_test_frame")?;
             }
             let name = event["params"]["tool"].as_str().context("Tool name")?;
+            println!("request={name} arguments={}", event["params"]["arguments"]);
             let output =
                 harness::call_tool_with_images(&store, name, event["params"]["arguments"].clone());
             let success = output.is_ok();

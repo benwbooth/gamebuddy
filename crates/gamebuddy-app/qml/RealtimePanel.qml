@@ -89,16 +89,15 @@ WebEngineView {
         }
     }
     function voiceContext() {
-        const value=JSON.parse(context()),scene=value.screen?.scene,step=value.guidance?.now
+        const value=JSON.parse(context()),scene=value.screen?.scene
         // Keep the voice model's background context small and readable. Dense
         // geometry, map coordinates and diagnostics belong in its tools/OSD.
         return JSON.stringify({game:value.game,location_status:value.location_status,
             current_place:value.current_place?.label,
-            suggested_action:step?{id:step.id,title:step.title,instructions:(step.instructions||'').slice(0,800)}:null,
             screen:{status:value.screen?.status,captured_at_ms:value.screen?.captured_at_ms,
                 scene_captured_at_ms:scene?.captured_at_ms,scene_fresh:scene?.fresh===true,
                 summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
-            instruction:"Background reference only. Do not read this aloud or reply to it. Listen to the live player. Use get_game_context and get_game_screen for current details; never speak the player's side of a conversation."})
+            instruction:"Background reference only. Do not answer gameplay questions from cached advice or this summary. Delegate the complete current request and any location correction to the reasoning backend, then wait for its answer. Never speak the player's side of a conversation."})
     }
     function updateContext() {
         if(!connected)return

@@ -12,6 +12,7 @@ pub struct PlayerInput {
     last_change: Option<Instant>,
     started: Option<Instant>,
     chunks: VecDeque<(Instant, String)>,
+    partial_start: Option<Instant>,
 }
 impl PlayerInput {
     pub fn activity(&mut self, speaking: bool, now: Instant) {
@@ -35,7 +36,11 @@ impl PlayerInput {
         self.utterance
     }
     pub fn append(&mut self, text: &str, now: Instant) {
-        self.chunks.push_back((now, text.to_owned()));
+        self.partial_start.get_or_insert(now);
+        self.push(text.to_owned(), now);
+    }
+    fn push(&mut self, text: String, now: Instant) {
+        self.chunks.push_back((now, text));
         while self.chunks.len() > 256
             || self.chunks.front().is_some_and(|(at, _)| {
                 now.saturating_duration_since(*at) > Duration::from_secs(120)
@@ -43,6 +48,23 @@ impl PlayerInput {
         {
             self.chunks.pop_front();
         }
+    }
+    /// Final transcripts can correct or replace streamed words, and can arrive
+    /// after the backend has already received an early delegation.
+    pub fn finish(&mut self, text: &str, now: Instant) {
+        if let Some(start) = self.partial_start.take() {
+            self.chunks.retain(|(at, _)| *at < start);
+        }
+        let separator = if self
+            .chunks
+            .back()
+            .is_some_and(|(at, _)| self.started.is_none_or(|start| *at >= start))
+        {
+            " "
+        } else {
+            ""
+        };
+        self.push(format!("{separator}{text}"), now);
     }
     pub fn quiet(&self, now: Instant) -> bool {
         !self.speaking
@@ -79,6 +101,32 @@ impl PlayerInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_transcript_replaces_partial_delegation_without_losing_correction() {
+        let mut input = PlayerInput::default();
+        let now = Instant::now();
+        input.activity(true, now);
+        input.append("Where do I", now);
+        input.activity(false, now + Duration::from_secs(1));
+        assert_eq!(input.text(now + Duration::from_secs(2)), "Where do I");
+        input.finish(
+            "I already did that. I'm at the restoration vendors.",
+            now + Duration::from_secs(3),
+        );
+        assert_eq!(
+            input.text(now + Duration::from_secs(3)),
+            "I already did that. I'm at the restoration vendors."
+        );
+        input.append("Where", now + Duration::from_millis(3100));
+        input.finish("Where else do I go?", now + Duration::from_secs(4));
+        assert_eq!(
+            input.text(now + Duration::from_secs(4)),
+            "I already did that. I'm at the restoration vendors. Where else do I go?"
+        );
+        input.activity(true, now + Duration::from_secs(6));
+        input.finish("What next?", now + Duration::from_secs(7));
+        assert_eq!(input.text(now + Duration::from_secs(8)), "What next?");
+    }
     #[test]
     fn a_followup_clause_is_kept_until_the_request_finishes() {
         let mut input = PlayerInput::default();

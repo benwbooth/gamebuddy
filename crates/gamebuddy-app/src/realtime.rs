@@ -225,6 +225,14 @@ impl ffi::RealtimeVoice {
                             Instant::now(),
                         );
                     }
+                    if event["method"] == "thread/realtime/transcript/done"
+                        && event["params"]["role"] == "user"
+                    {
+                        input.lock().unwrap().finish(
+                            event["params"]["text"].as_str().unwrap_or_default(),
+                            Instant::now(),
+                        );
+                    }
                     if matches!(
                         event["method"].as_str(),
                         Some("turn/started" | "turn/completed")
@@ -248,6 +256,7 @@ impl ffi::RealtimeVoice {
                 let mut context_turn = None;
                 let mut reasoning_turn = None;
                 let mut reasoning_input = None;
+                let mut supplied_request = String::new();
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
@@ -277,6 +286,7 @@ impl ffi::RealtimeVoice {
                             context_turn = Some(event["params"]["turn"]["id"].clone());
                             reasoning_turn = context_turn.clone();
                             reasoning_input = None;
+                            supplied_request.clear();
                         }
                         if event["method"] == "turn/completed" {
                             if reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"]) {
@@ -366,27 +376,51 @@ impl ffi::RealtimeVoice {
                         // the next reasoning step, avoiding a context-fetch round
                         // trip. Rejected steers leave normal tools available.
                         if !request.is_empty()
-                            && let Some(turn_id) = context_turn.take()
-                            && let Ok(context) = gamebuddy_services::harness::call_tool_with_images(
-                                &store,
-                                "get_game_context",
-                                json!({}),
-                            )
-                            && context.value["game"]
-                                .as_str()
-                                .is_some_and(|g| g.eq_ignore_ascii_case(&game))
+                            && request != supplied_request
+                            && let Some(turn_id) = context_turn.as_ref()
                         {
+                            if !supplied_request.is_empty() {
+                                for (event, reject) in &mut pending_tools {
+                                    let name = event["params"]["tool"].as_str().unwrap_or_default();
+                                    if !name.starts_with("get_")
+                                        && !matches!(name, "search_guide" | "read_reference")
+                                    {
+                                        *reject = true;
+                                    }
+                                }
+                            }
+                            let evidence = if supplied_request.is_empty() {
+                                gamebuddy_services::harness::call_tool_with_images(
+                                    &store,
+                                    "get_game_context",
+                                    json!({}),
+                                )
+                                .ok()
+                                .filter(|c| {
+                                    c.value["game"]
+                                        .as_str()
+                                        .is_some_and(|g| g.eq_ignore_ascii_case(&game))
+                                })
+                            } else {
+                                None
+                            };
                             sequence += 1;
                             reasoning_input = Some(utterance);
                             context_requests.insert(sequence);
+                            let label = format!(
+                                "The complete live player request is: {request}. This supersedes any earlier partial delegation. Resolve their location correction before repeating previous advice. Carry out every requested action."
+                            );
+                            let turn_input = evidence.as_ref().map(|context| context.codex_input(&format!("CURRENT_GAME_CONTEXT for this request. {label} Inspect these images; refresh if the screen changes.")))
+                                .unwrap_or_else(|| vec![json!({"type":"text","text":label})]);
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(
                                     "GAMEBUDDY_VOICE_CONTEXT images={} text_bytes={}",
-                                    context.images.len(),
-                                    context.value.to_string().len()
+                                    evidence.as_ref().map_or(0, |c| c.images.len()),
+                                    request.len()
                                 );
                             }
-                            client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":context.codex_input(&format!("CURRENT_GAME_CONTEXT for the active player request. This is automatic evidence, not a new request. The complete live player request is: {request}. Inspect the attached current screenshot and carry out every requested action. Do not fetch the same image/context again."))}}))?;
+                            client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
+                            supplied_request = request.clone();
                         }
                         if let Some((event, reject)) = pending_tools.pop_front() {
                             answer_tool(&mut client, &store, &game, &event, &request, reject)?;

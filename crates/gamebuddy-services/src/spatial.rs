@@ -1451,6 +1451,22 @@ fn ground_observation(
     epoch: u64,
     at: u64,
 ) -> Result<()> {
+    if let Some(grounded) = grounded_location(store, guide, result, session, epoch, at)? {
+        store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
+    }
+    Ok(())
+}
+
+/// Derive the named place from the exact observation used by the map. Reading
+/// a separately published tracker can mix two captures during every refresh.
+pub(crate) fn grounded_location(
+    store: &Store,
+    guide: &Guide,
+    result: &Value,
+    session: &str,
+    epoch: u64,
+    at: u64,
+) -> Result<Option<gamebuddy_core::PlaceTracker>> {
     let atlas = crate::navigation::atlas(store, guide)?;
     let mut grounded = gamebuddy_core::PlaceTracker::for_session(session.into());
     // A registered atlas image can name a place even when walkthrough clips
@@ -1470,12 +1486,11 @@ fn ground_observation(
                     .as_str()
                     .unwrap_or("Geometric atlas match"),
             );
-            store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
-            return Ok(());
+            return Ok(Some(grounded));
         }
     }
     if result["tracker"]["status"] != "tracked" {
-        return Ok(());
+        return Ok(None);
     }
     let places: std::collections::HashSet<_> = result["step_ids"]
         .as_array()
@@ -1499,10 +1514,10 @@ fn ground_observation(
                 result["reference"]["source_id"], result["reference"]["at_ms"]
             );
             grounded.ground(places.iter().next().unwrap(), step, epoch, at, &evidence);
-            store.put(&format!("world-place-tracker:{}", guide.id), &grounded)?;
+            return Ok(Some(grounded));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1629,6 +1644,51 @@ mod tests {
         assert_eq!(grounded.place_id.as_deref(), Some("street"));
         assert!(grounded.reference_step_id.is_none());
         assert!(store.progress(&guide)?.completed.is_empty());
+        // The UI must derive its label from the same capture as its marker,
+        // even while the separately stored diagnostic tracker is still old.
+        let ticket = screen::start(&store, &guide.game, true)?;
+        let path = directory.path().join("capture.png");
+        image::RgbImage::from_pixel(96, 72, image::Rgb([200, 20, 20])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "test")?;
+        let snapshot = screen::snapshot(&store)?;
+        let decoded = image::load_from_memory(&base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &snapshot.jpeg,
+        )?)?;
+        let mut observation = result.clone();
+        observation["guide_revision"] = json!(guide.revision);
+        observation["source_signature"] = json!(source_signature(&guide));
+        observation["profile"] = json!(Profile::default());
+        observation["capture_signature"] = json!(screen::frame_signature(&decoded));
+        observation["tracker"] = json!({"status":"candidate","session":ticket.session,
+            "capture_epoch":ticket.epoch,"epoch":0,"observed_at_ms":snapshot.captured_at_ms});
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        store.put(
+            &format!("world-status:{}", guide.id),
+            &json!({"status":"ready"}),
+        )?;
+        let nav = crate::navigation::context(
+            &store,
+            &guide,
+            &store.progress(&guide)?,
+            &Default::default(),
+        )?;
+        assert_eq!(nav["map"]["geometric_marker"]["map_id"], "town");
+        assert_eq!(nav["location"]["place_id"], "street");
+        assert_eq!(nav["location"]["located_at_ms"], snapshot.captured_at_ms);
+        observation["map_registration"] = Value::Null;
+        observation["tracker"]["status"] = json!("lost");
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        let lost = crate::navigation::context(
+            &store,
+            &guide,
+            &store.progress(&guide)?,
+            &Default::default(),
+        )?;
+        assert!(
+            lost["location"]["place_id"].is_null(),
+            "A finished non-match must not resurrect the old named location"
+        );
         atlas.places.push(gamebuddy_core::Place {
             id: "other".into(),
             label: "Other street".into(),
@@ -1764,6 +1824,53 @@ mod tests {
         ensure!(
             output.images.len() == 2,
             "Agent did not receive reference and map pixels"
+        );
+        // Reproduce refreshes between capture and async registration. Translate
+        // the saved gameplay pixels to model small camera scrolls; this tests
+        // continuity, not independent recognition accuracy on new gameplay.
+        let original = image::open(&path)?.to_rgb8();
+        // The earlier image/export assertions can take longer than the live
+        // frame-lag budget. Resume capture before testing normal cadence.
+        screen::publish(&store, &ticket, Path::new(&path), "recorded_test_frame")?;
+        observe(&store, &guide, &screen::snapshot(&store)?, 0)?;
+        let expected_map = spatial["observation"]["map_registration"]["map_id"].clone();
+        let mut samples = 0;
+        for shift in [-24_i64, 0, 24, 48, 24, 0] {
+            let mut shifted = image::RgbImage::new(original.width(), original.height());
+            image::imageops::overlay(&mut shifted, &original, shift, 0);
+            let path = directory.path().join("scroll.png");
+            shifted.save(&path)?;
+            screen::publish(&store, &ticket, &path, "synthetic_scroll_of_recorded_frame")?;
+            schedule(&store, &guide, screen::snapshot(&store)?, 0);
+            for _ in 0..5 {
+                let context =
+                    crate::harness::call_tool_with_images(&store, "get_game_context", json!({}))?;
+                ensure!(
+                    context.value["navigation"]["map"]["geometric_marker"]["map_id"]
+                        == expected_map,
+                    "Location disappeared between capture and match: shift={shift} sample={samples} capture={} observation={} timing={} raw_map={}",
+                    screen::status(&store)?["captured_at_ms"],
+                    store
+                        .get::<Value>(&format!("world-observation:{}", guide.id))?
+                        .unwrap_or_default()["tracker"]["observed_at_ms"],
+                    store
+                        .get::<Value>(&format!("world-observation:{}", guide.id))?
+                        .unwrap_or_default()["timing"],
+                    store
+                        .get::<Value>(&format!("world-observation:{}", guide.id))?
+                        .unwrap_or_default()["map_registration"]["map_id"]
+                );
+                ensure!(
+                    context.value["navigation"]["location"]["place_id"].is_string()
+                        && context.images.len() == 2,
+                    "Map and companion lost their shared location evidence"
+                );
+                samples += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        eprintln!(
+            "Scroll continuity: {samples}/{samples} refreshes retained shared map, named place and native map image"
         );
         screen::set_crop(
             &store,

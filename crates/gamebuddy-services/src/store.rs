@@ -436,7 +436,9 @@ impl Store {
             progress.epoch == epoch,
             "Game progress changed; read the current context"
         );
-        progress.current_step = tracker.reference_step_id.clone();
+        if tracker.reference_step_id.is_some() {
+            progress.current_step = tracker.reference_step_id.clone();
+        }
         progress.epoch += 1;
         tracker.epoch = progress.epoch;
         self.put(

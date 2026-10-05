@@ -4,9 +4,14 @@ use super::*;
 use gamebuddy_core::{PlaceTracker, Progress, guidance_from};
 
 pub(super) fn navigation(value: &Value) -> Value {
+    let mut recommendation = value["recommendation"].clone();
+    if let Some(at) = recommendation["updated_at_ms"].as_u64() {
+        recommendation["age_ms"] = json!(crate::screen::now_ms().saturating_sub(at));
+        recommendation["evidence_kind"] = json!("previous_advice_not_current_location");
+    }
     json!({
         "location":value["location"], "cursor":value["cursor"],
-        "guidance":value["guidance"], "direction":value["direction"], "recommendation":value["recommendation"],
+        "guidance":value["guidance"], "direction":value["direction"], "recommendation":recommendation,
         "map":{
             "status":value["map"]["status"], "current_place":value["map"]["current_place"],
             "target_place":value["map"]["target_place"], "precision":value["map"]["precision"]
@@ -18,9 +23,37 @@ pub(super) fn navigation(value: &Value) -> Value {
         "spatial":{
             "preparation_status":value["spatial"]["preparation"]["status"],
             "tracker":value["spatial"]["observation"]["tracker"],
-            "reference":value["spatial"]["observation"]["reference"]
+            "reference":value["spatial"]["observation"]["reference"],
+            "step_ambiguity":value["spatial"]["observation"]["step_ambiguity"],
+            "related_step_ids":value["spatial"]["observation"]["related_step_ids"]
         }
     })
+}
+
+pub(super) fn location_actions(
+    store: &Store,
+    guide: &Guide,
+    progress: &Progress,
+    nav: &Value,
+) -> Result<Value> {
+    let atlas = crate::navigation::atlas(store, guide)?;
+    let ids = nav["spatial"]["observation"]["related_step_ids"].as_array();
+    let actions: Vec<_> = ids
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|id| guide.step(id))
+        .take(20)
+        .map(|step| {
+            json!({
+                "step":step,"status":action_status(guide,progress,&step.id),
+                "place":atlas.place_for_step(guide,&step.id)
+            })
+        })
+        .collect();
+    Ok(
+        json!({"actions":actions,"instruction":"These source actions share the currently matched scenery, including repeated visits. They explain the local landmarks, not which task you have completed. Resolve the next action using the player's latest report, progress, screenshot and map; never repeat previous travel advice when the player says they have arrived."}),
+    )
 }
 
 pub(super) fn action_status(guide: &Guide, progress: &Progress, id: &str) -> Value {

@@ -274,6 +274,69 @@ fn same_scene(a: &[u8], b: &[u8]) -> bool {
             .sum::<u64>()
             < a.len() as u64 * 12
 }
+
+// Camera scrolling moves the background without changing the place. Permit a
+// small translation of the signature while the geometric matcher catches up.
+// Scene descriptions still use the stricter, unshifted comparison above.
+fn same_location_scene(a: &[u8], b: &[u8]) -> bool {
+    if same_scene(a, b) {
+        return true;
+    }
+    if a.len() != 24 * 18 * 3 || b.len() != a.len() {
+        return false;
+    }
+    for dy in -2_i32..=2 {
+        for dx in -4_i32..=4 {
+            let mut error = 0_u64;
+            let mut samples = 0;
+            // Exclude the HUD and outer borders; keep at least 60% of the
+            // background and all its pixels, rather than cherry-picking matches.
+            for y in 3_i32..17 {
+                for x in 1_i32..23 {
+                    let (u, v) = (x + dx, y + dy);
+                    if !(1..23).contains(&u) || !(3..17).contains(&v) {
+                        continue;
+                    }
+                    for c in 0..3 {
+                        error += a[((y * 24 + x) * 3 + c) as usize]
+                            .abs_diff(b[((v * 24 + u) * 3 + c) as usize])
+                            as u64;
+                        samples += 1;
+                    }
+                }
+            }
+            if error < samples * 12 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+#[test]
+fn location_continuity_accepts_camera_scroll_but_rejects_a_new_scene() {
+    let signature = |shift: i32| -> Vec<u8> {
+        (0..18)
+            .flat_map(|y| {
+                (0..24).flat_map(move |x| {
+                    let x = x + shift;
+                    [
+                        (x * 67 + y * 31).rem_euclid(256) as u8,
+                        (x * 23 + y * 53).rem_euclid(256) as u8,
+                        (x * 41 + y * 17).rem_euclid(256) as u8,
+                    ]
+                })
+            })
+            .collect()
+    };
+    let before = signature(0);
+    let scrolled = signature(2);
+    assert!(!same_scene(&before, &scrolled));
+    assert!(same_location_scene(&before, &scrolled));
+    assert!(!same_location_scene(&before, &vec![0; before.len()]));
+    assert!(!same_location_scene(&[], &[]));
+}
 fn scene_matches(c: &Capture, scene: &Scene) -> bool {
     c.captured_at_ms.saturating_sub(scene.captured_at_ms) <= SCENE_FRAME_LAG_MS
         && same_scene(&c.frame_signature, &scene.frame_signature)
@@ -293,7 +356,7 @@ pub(crate) fn matches_latest(
             && c.ticket.session == session
             && c.ticket.epoch == epoch
             && c.captured_at_ms.saturating_sub(at) <= 3_000
-            && same_scene(&c.frame_signature, signature)
+            && same_location_scene(&c.frame_signature, signature)
     }))
 }
 
