@@ -263,7 +263,9 @@ pub fn publish(store: &Store, ticket: &Ticket, path: &Path, source: &str) -> Res
         c.captured_at_ms = at;
         c.source = source.into();
         c.error.clear()
-    })
+    })?;
+    crate::activity::remember(store, ticket, at, &jpeg);
+    Ok(())
 }
 
 pub fn capture_error(store: &Store, ticket: &Ticket, error: &str) -> Result<()> {

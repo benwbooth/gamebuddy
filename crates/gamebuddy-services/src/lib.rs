@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod media;
 pub mod providers;
 pub mod screen;

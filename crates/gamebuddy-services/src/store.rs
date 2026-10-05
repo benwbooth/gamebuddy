@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
+mod activity;
 mod cached;
 mod conversation;
 
@@ -305,9 +306,7 @@ impl Store {
             "Game progress changed; read the current context"
         );
         progress.reported_completed.insert(step_id.into());
-        if progress.current_step.is_none() {
-            progress.current_step = Some(step_id.into());
-        }
+        crate::navigation::advice::after_completion(self, guide, &mut progress, step_id)?;
         let tracker_key = crate::navigation::tracker_key(guide);
         if let Some(mut tracker) = self.get::<gamebuddy_core::PlaceTracker>(&tracker_key)?
             && tracker.epoch == progress.epoch

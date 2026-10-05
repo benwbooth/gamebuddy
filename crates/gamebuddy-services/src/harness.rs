@@ -274,7 +274,7 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
                 .skip(guide.coverage_notes.len().saturating_sub(6))
                 .collect();
             Ok(
-                json!({"game":guide.game,"guide_id":guide.id,"guide_revision":guide.revision,"guide_title":guide.title,"progress":progress,"current_step":navigation["guidance"]["now"],"nearby_actions":nearby_actions,"location_actions":location_actions,"navigation":navigation,"screen":crate::screen::status(store)?,"sources":guide.sources,"goals":guide.goals,"reference_preferences":guide.reference_preferences,"coverage_notes":coverage_notes,"coverage_note_count":guide.coverage_notes.len(),"widgets":widgets(store,&guide)?}),
+                json!({"game":guide.game,"guide_id":guide.id,"guide_revision":guide.revision,"guide_title":guide.title,"progress":progress,"observed_progress":store.observed_progress(&guide,&progress)?,"current_step":navigation["guidance"]["now"],"nearby_actions":nearby_actions,"location_actions":location_actions,"navigation":navigation,"screen":crate::screen::status(store)?,"sources":guide.sources,"goals":guide.goals,"reference_preferences":guide.reference_preferences,"coverage_notes":coverage_notes,"coverage_note_count":guide.coverage_notes.len(),"widgets":widgets(store,&guide)?}),
             )
         }
         "get_outline" => context::outline(store, &guide, &arguments),

@@ -766,13 +766,18 @@ pub fn context(
     // A matched walkthrough frame identifies scenery, not the player's task.
     // Different moments in one room can depict travel, combat or returning
     // later. Keep their step IDs as reference evidence in `spatial`; only the
-    // saved plan, player reports and explicit advice select the objective.
+    // saved plan, observed actions, player reports and explicit advice select
+    // the objective.
     let recommendation = advice::current(store, guide, progress, &session)?;
+    let completed_cursor = advice::completed_cursor(store, guide, progress)?;
     let mut advice = guidance_from(
         guide,
         progress,
         &tracker,
-        recommendation.as_ref().map(|r| r.step_id.as_str()),
+        recommendation
+            .as_ref()
+            .map(|r| r.step_id.as_str())
+            .or(completed_cursor.as_deref()),
     );
     if let Some(recommendation) = &recommendation {
         advice::apply_location_advice(guide, recommendation, &mut advice);

@@ -150,6 +150,53 @@ pub(crate) fn apply_location_advice(
 fn key(guide: &Guide) -> String {
     format!("next-action:{}", guide.id)
 }
+
+/// A just-completed recommendation is still the route position. Its wording
+/// must expire, but dropping its position revives an unrelated old checklist.
+pub(crate) fn completed_cursor(
+    store: &Store,
+    guide: &Guide,
+    progress: &Progress,
+) -> Result<Option<String>> {
+    Ok(store
+        .get::<Recommendation>(&key(guide))?
+        .filter(|r| {
+            r.revision == guide.revision
+                && r.epoch.saturating_add(1) == progress.epoch
+                && gamebuddy_core::step_complete(guide, progress, &r.step_id)
+        })
+        .map(|r| r.step_id))
+}
+
+pub(crate) fn after_completion(
+    store: &Store,
+    guide: &Guide,
+    progress: &mut Progress,
+    completed: &str,
+) -> Result<()> {
+    let session = screen::status(store)?["session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if let Some(mut action) = store.get::<Recommendation>(&key(guide))?.filter(|r| {
+        r.revision == guide.revision && r.epoch == progress.epoch && r.session == session
+    }) {
+        if gamebuddy_core::step_complete(guide, progress, &action.step_id) {
+            progress.current_step = Some(action.step_id);
+        } else {
+            // Reporting an earlier task does not throw away current advice.
+            action.epoch += 1;
+            store.put(&key(guide), &action)?;
+        }
+    } else if progress
+        .current_step
+        .as_deref()
+        .is_none_or(|id| gamebuddy_core::step_complete(guide, progress, id))
+    {
+        progress.current_step = Some(completed.into());
+    }
+    Ok(())
+}
 pub fn current(
     store: &Store,
     guide: &Guide,
@@ -262,6 +309,84 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reporting_a_past_task_preserves_the_current_unfinished_recommendation() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Old enemy\nJump past it.\n# Treatment\nPay for healing.",
+        )?;
+        store.save_guide(&guide)?;
+        publish(
+            &store,
+            &guide,
+            NextAction {
+                expected_revision: guide.revision,
+                epoch: 0,
+                step_id: "step-2".into(),
+                instructions: "Accept treatment.".into(),
+                screen_direction: None,
+            },
+        )?;
+        let progress = store.report_complete(&guide, 0, "step-1", "I passed that enemy earlier")?;
+        assert_eq!(progress.epoch, 1);
+        assert_eq!(
+            current(&store, &guide, &progress, "")?.unwrap().step_id,
+            "step-2"
+        );
+        assert!(!gamebuddy_core::step_complete(&guide, &progress, "step-2"));
+        Ok(())
+    }
+    #[test]
+    fn completing_current_advice_advances_from_it_instead_of_an_old_cursor() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Old enemy\nJump past it.\n# Treatment\nPay for healing.\n# Leave hospital\nReturn to the street.",
+        )?;
+        store.save_guide(&guide)?;
+        store.save_progress(
+            &guide,
+            &Progress {
+                current_step: Some("step-1".into()),
+                ..Default::default()
+            },
+            "fixture",
+        )?;
+        publish(
+            &store,
+            &guide,
+            NextAction {
+                expected_revision: guide.revision,
+                epoch: 0,
+                step_id: "step-2".into(),
+                instructions: "Accept treatment.".into(),
+                screen_direction: None,
+            },
+        )?;
+        let mut progress = store.report_complete(&guide, 0, "step-2", "I got the treatment")?;
+        let context = |progress: &Progress| {
+            super::super::context(&store, &guide, progress, &SyncEstimate::default())
+        };
+        assert_eq!(progress.current_step.as_deref(), Some("step-2"));
+        assert_eq!(context(&progress)?["guidance"]["now"]["id"], "step-3");
+        assert!(!gamebuddy_core::step_complete(&guide, &progress, "step-1"));
+        // Saved progress written by the previous app version also recovers its
+        // just-completed route anchor without resurrecting that instruction.
+        progress.current_step = Some("step-1".into());
+        store.save_progress(&guide, &progress, "old_version_fixture")?;
+        assert_eq!(context(&progress)?["guidance"]["now"]["id"], "step-3");
+        assert!(context(&progress)?["recommendation"].is_null());
+        progress.epoch += 1;
+        progress.reported_completed.clear();
+        store.save_progress(&guide, &progress, "reset_fixture")?;
+        assert!(completed_cursor(&store, &guide, &progress)?.is_none());
+        Ok(())
+    }
     #[test]
     fn explicit_movement_works_without_a_named_place_and_expires_with_the_view() -> Result<()> {
         let dir = tempfile::tempdir()?;

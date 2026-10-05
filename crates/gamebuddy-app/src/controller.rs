@@ -712,6 +712,7 @@ impl ffi::Buddy {
                 if let Some(guide) = &guide
                     && let Ok(snapshot) = services::screen::snapshot(&store)
                 {
+                    services::activity::schedule(&store, guide, snapshot.clone());
                     services::spatial::schedule(&store, guide, snapshot, sync.progress.epoch);
                 }
                 let matching = if let Some(guide) = &guide {
