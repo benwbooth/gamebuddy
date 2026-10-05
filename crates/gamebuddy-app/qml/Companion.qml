@@ -33,7 +33,7 @@ Item {
     property var widgetCatalog: []
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
-    width: expanded ? 450 : 80
+    width: expanded ? 450 : interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80
     height: expanded ? 600 : 80
 
     onExpandedChanged: {
@@ -143,6 +143,29 @@ Item {
         }
         Rectangle { visible: buddy.preparing; width: 10; height: 10; radius: 5; x: 49; y: 51; color: "#efc783"; border.color: "#132230"; border.width: 2 }
         Rectangle { visible: voice.active; width: 12; height: 12; radius: 6; x: 2; y: 49; color: voice.listening ? "#ffbdad" : "#efc783"; border.color: "#132230"; border.width: 2; Accessible.name: voice.status }
+    }
+    Rectangle {
+        id: interactionHint
+        visible: companion.embedded && !companion.expanded
+        x: orb.x + orb.width + 10
+        anchors.verticalCenter: orb.verticalCenter
+        width: interactionHintContent.implicitWidth + 24
+        height: 36; radius: 9
+        color: "#ed162c35"; border.color: "#547f91a1"
+        Row {
+            id: interactionHintContent
+            anchors.centerIn: parent; spacing: 10
+            Text { text: "Shift+Tab"; color: "#a5f2dd"; font.pixelSize: 14; font.weight: Font.DemiBold }
+            Text { text: "Interact"; color: "#e6f1f6"; font.pixelSize: 14 }
+        }
+        Accessible.role: Accessible.Button
+        Accessible.name: "Interact with GameBuddy (Shift+Tab)"
+        Accessible.onPressAction: companion.expanded = true
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: companion.expanded = true
+        }
     }
     ColumnLayout {
         visible: companion.expanded
