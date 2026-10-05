@@ -981,6 +981,22 @@ fn same_palette(a: &View, b: &View, r: &Registration) -> Result<bool> {
     Ok(errors.len() > 100 && errors[errors.len() / 2] < 12.)
 }
 
+pub fn startup_config(
+    store: &Store,
+    guide: &Guide,
+) -> Result<Option<crate::spatial_worker::WorkerConfig>> {
+    let prepared: Option<Value> = store.get(&format!("world-status:{}", guide.id))?;
+    if prepared
+        .as_ref()
+        .and_then(|p| p["encoder"].as_str())
+        .is_some_and(|s| s.starts_with("learned-v1:"))
+    {
+        store.get("spatial-worker")
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
     let calibration = profile(store, guide)?;
     let signature = source_signature(guide);
@@ -1044,8 +1060,10 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
     let map_preparation: Option<Value> = store.get(&format!("world-map-status:{}", guide.id))?;
     let error: Option<String> = store.get(&format!("world-error:{}", guide.id))?;
     let message: Option<String> = store.get(&format!("world-message:{}", guide.id))?;
+    let startup = startup_config(store, guide)?
+        .and_then(|config| crate::spatial_worker::startup(&config, "live"));
     Ok(
-        json!({"preparation":preparation,"map_preparation":map_preparation,"observation":observation,"emulator":crate::telemetry::context(store,&session,epoch)?,"error":error,"message":message,"completion_policy":"Room identity is location evidence only; completion requires an observed event or explicit player confirmation."}),
+        json!({"preparation":preparation,"map_preparation":map_preparation,"observation":observation,"startup":startup,"emulator":crate::telemetry::context(store,&session,epoch)?,"error":error,"message":message,"completion_policy":"Room identity is location evidence only; completion requires an observed event or explicit player confirmation."}),
     )
 }
 

@@ -104,6 +104,13 @@
           const asset=maps.find(m=>m.id===id);precision.textContent=map.geometric_marker?'Your visible game area is highlighted. Hover for matching evidence.':map.area_reference?'Surrounding area map · your position inside this room is not marked.':c.location_detail||'Waiting for a location report or a visual match.';if(mapChoice!==id){mapZoom=1;mapScroll={x:0,y:0}}mapChoice=id;select.set(locations.find(p=>browsedPlace?p.place_id===browsedPlace:followMap&&map.current_place?p.place_id===map.current_place.id:p.map_id===id)?.id);follow.textContent=followMap?'Following':'Follow player';follow.setAttribute('aria-pressed',String(followMap));
           const browsing=places.find(p=>p.id===browsedPlace);
           status.textContent=(map.current_place?(c.location_status==='reported'?'You reported: ':'You are here · estimated: ')+map.current_place.label:(map.geometric_marker?'You are here · '+(maps.find(m=>m.id===map.geometric_marker.map_id)?.title||'matched map area'):map.spatial?.observation?.tracker?.status==='tracked'?'Visual place matched':'Locating player'))+(browsing?' · Browsing '+browsing.label:'');
+          const startup=map.spatial?.startup;
+          if(startup?.status==='loading'){
+            status.textContent='Starting visual tracking';
+            precision.textContent=startup.message+(startup.total?' · Stage '+(startup.completed+1)+' of '+startup.total:'');
+          }else if(startup?.status==='failed'){
+            status.textContent='Visual tracking unavailable';precision.textContent=startup.message;
+          }
           const geometric=map.geometric_marker?.map_id===id ? map.geometric_marker : null;
           const updating=!geometric && map.updating_camera_area?.map_id===id ? map.updating_camera_area : null;
           const region=geometric || updating || (map.marker?.map_id===id && map.marker?.place_id===map.current_place?.id ? map.marker : null);

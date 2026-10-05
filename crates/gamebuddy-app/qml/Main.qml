@@ -172,6 +172,7 @@ ApplicationWindow {
         hostWindow: companionWindow
         embedded: compositor.active
         syncActive: root.autoSync
+        startup: JSON.parse(buddy.startup_json)
         x: compositor.active ? 36 : 0
         y: compositor.active ? 90 : 0
         z: 10
@@ -211,6 +212,7 @@ ApplicationWindow {
         onStateChanged: state => { if (root.appArguments.indexOf("--voice-trace") >= 0) console.warn("GAMEBUDDY_SPEECH_STATE " + state) }
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
+    Timer { interval: 100; repeat: true; running: true; onTriggered: buddy.poll_startup() }
     Timer {
         interval: 16; repeat: true; running: root.appArguments.indexOf("--ui-trace") >= 0
         property double previous: 0

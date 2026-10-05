@@ -12,6 +12,7 @@ pub mod ffi {
         #[qml_element]
         #[qproperty(QString, state_json)]
         #[qproperty(QString, settings_json)]
+        #[qproperty(QString, startup_json)]
         #[qproperty(QString, message)]
         #[qproperty(QString, answer)]
         #[qproperty(QString, chat_error)]
@@ -22,6 +23,8 @@ pub mod ffi {
         type Buddy = super::BuddyRust;
         #[qinvokable]
         fn initialize(self: Pin<&mut Buddy>);
+        #[qinvokable]
+        fn poll_startup(self: Pin<&mut Buddy>);
         #[qinvokable]
         fn launch_arguments(self: &Buddy) -> QString;
         #[qinvokable]
@@ -128,6 +131,8 @@ use std::{path::PathBuf, pin::Pin};
 pub struct BuddyRust {
     state_json: QString,
     settings_json: QString,
+    startup_json: QString,
+    startup_worker: Option<services::spatial_worker::WorkerConfig>,
     message: QString,
     answer: QString,
     chat_error: QString,
@@ -160,6 +165,8 @@ impl Default for BuddyRust {
         Self {
             state_json: QString::from("{}"),
             settings_json: QString::from("{}"),
+            startup_json: QString::from("null"),
+            startup_worker: None,
             message: QString::from("Ready to start"),
             answer: QString::default(),
             chat_error: QString::default(),
@@ -434,9 +441,15 @@ impl ffi::Buddy {
         });
     }
     fn use_guide(mut self: Pin<&mut Self>, guide: Guide) {
+        self.as_mut().rust_mut().startup_worker = None;
         if let Ok(store) = Store::open(&self.rust().root) {
+            self.as_mut().rust_mut().startup_worker =
+                services::spatial::startup_config(&store, &guide)
+                    .ok()
+                    .flatten();
             services::spatial::prewarm(&store, &guide);
         }
+        self.as_mut().poll_startup();
         if self.rust().game != guide.game {
             if let Ok(store) = Store::open(&self.rust().root) {
                 let enabled = services::screen::ticket(&store, &self.rust().screen_session).is_ok();
@@ -471,6 +484,21 @@ impl ffi::Buddy {
         self.as_mut().rust_mut().vision_votes = None;
         self.as_mut().rust_mut().vision_evidence = None;
         self.refresh();
+    }
+    pub fn poll_startup(mut self: Pin<&mut Self>) {
+        let status = self
+            .rust()
+            .startup_worker
+            .as_ref()
+            .and_then(|config| services::spatial_worker::startup(config, "live"));
+        let value = serde_json::to_string(&status).unwrap_or_else(|_| "null".into());
+        if self.startup_json().to_string() != value {
+            if std::env::args().any(|arg| arg == "--ui-trace") {
+                eprintln!("GAMEBUDDY_STARTUP {value}");
+            }
+            self.as_mut().set_startup_json(q(value));
+            self.refresh();
+        }
     }
     fn background<F>(mut self: Pin<&mut Self>, label: &str, job: F)
     where

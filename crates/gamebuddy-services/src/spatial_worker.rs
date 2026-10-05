@@ -6,8 +6,8 @@ use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc,
-    time::Duration,
+    sync::{Arc, Mutex, OnceLock, mpsc},
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -16,13 +16,56 @@ pub struct WorkerConfig {
     pub arguments: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Startup {
+    pub status: String,
+    pub message: String,
+    pub completed: u32,
+    pub total: u32,
+    pub started_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+impl Startup {
+    fn starting() -> Self {
+        let now = crate::screen::now_ms();
+        Self {
+            status: "loading".into(),
+            message: "Starting visual tracking…".into(),
+            completed: 0,
+            total: 0,
+            started_at_ms: now,
+            updated_at_ms: now,
+        }
+    }
+    fn finish(&mut self, error: Option<&str>) {
+        self.status = if error.is_some() { "failed" } else { "ready" }.into();
+        self.message = error
+            .unwrap_or("Tracker loaded · locating your game view…")
+            .into();
+        if error.is_none() {
+            self.completed = self.total;
+        }
+        self.updated_at_ms = crate::screen::now_ms();
+    }
+}
+#[derive(Deserialize)]
+struct StartupEvent {
+    message: String,
+    completed: u32,
+    total: u32,
+}
+
 pub struct Worker {
     child: Child,
     input: ChildStdin,
     output: mpsc::Receiver<Result<String, String>>,
+    startup: Arc<Mutex<Startup>>,
 }
 impl Worker {
     pub fn start(config: &WorkerConfig) -> Result<Self> {
+        Self::start_with_status(config, Arc::new(Mutex::new(Startup::starting())))
+    }
+    fn start_with_status(config: &WorkerConfig, startup: Arc<Mutex<Startup>>) -> Result<Self> {
         let mut child = Command::new(&config.executable)
             .args(&config.arguments)
             .stdin(Stdio::piped())
@@ -44,27 +87,55 @@ impl Worker {
             child,
             input,
             output,
+            startup,
         })
     }
     pub fn call(&mut self, request: Value) -> Result<Value> {
         serde_json::to_writer(&mut self.input, &request)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
-        let line = self
-            .output
-            .recv_timeout(Duration::from_secs(60))
-            .context("Spatial worker timed out or exited")?
-            .map_err(anyhow::Error::msg)?;
-        let reply: Value = serde_json::from_str(&line)?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let reply = loop {
+            ensure!(Instant::now() < deadline, "Spatial worker timed out");
+            let line = self
+                .output
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .context("Spatial worker timed out or exited")?
+                .map_err(anyhow::Error::msg)?;
+            let reply: Value = serde_json::from_str(&line)?;
+            if let Some(event) = reply.get("startup") {
+                let event: StartupEvent = serde_json::from_value(event.clone())?;
+                ensure!(
+                    event.total > 0 && event.total <= 32 && event.completed < event.total,
+                    "Invalid startup progress"
+                );
+                if let Ok(mut state) = self.startup.lock()
+                    && state.status == "loading"
+                {
+                    state.message = event.message;
+                    state.completed = event.completed;
+                    state.total = event.total;
+                    state.updated_at_ms = crate::screen::now_ms();
+                }
+                continue;
+            }
+            break reply;
+        };
         ensure!(
             reply.get("error").is_none(),
             "Spatial worker: {}",
             reply["error"]
         );
-        reply
+        let result = reply
             .get("result")
             .cloned()
-            .context("Spatial worker returned no result")
+            .context("Spatial worker returned no result")?;
+        if let Ok(mut state) = self.startup.lock()
+            && state.status == "loading"
+        {
+            state.finish(None);
+        }
+        Ok(result)
     }
 }
 impl Drop for Worker {
@@ -74,11 +145,43 @@ impl Drop for Worker {
     }
 }
 
+struct Slot {
+    worker: Mutex<Option<Worker>>,
+    startup: Arc<Mutex<Startup>>,
+}
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            worker: Mutex::new(None),
+            startup: Arc::new(Mutex::new(Startup::starting())),
+        }
+    }
+}
+type Pool = std::collections::HashMap<String, Arc<Slot>>;
+static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
+
+fn pool_key(config: &WorkerConfig, slot: &str) -> String {
+    format!(
+        "{slot}:{}",
+        serde_json::to_string(config).expect("Worker configuration serializes")
+    )
+}
+
+/// Read only the small status lock, never the worker lock held during inference.
+/// This process-local state cannot show a previous launch's saved completion.
+pub fn startup(config: &WorkerConfig, slot: &str) -> Option<Startup> {
+    let handle = POOL
+        .get()?
+        .lock()
+        .ok()?
+        .get(&pool_key(config, slot))?
+        .clone();
+    let value = handle.startup.lock().ok()?.clone();
+    Some(value)
+}
+
 pub fn call(config: &WorkerConfig, slot: &str, request: Value) -> Result<Value> {
-    type Slot = std::sync::Arc<std::sync::Mutex<Option<Worker>>>;
-    type Pool = std::collections::HashMap<String, Slot>;
-    static POOL: std::sync::OnceLock<std::sync::Mutex<Pool>> = std::sync::OnceLock::new();
-    let key = format!("{slot}:{}", serde_json::to_string(config)?);
+    let key = pool_key(config, slot);
     let handle = POOL
         .get_or_init(Default::default)
         .lock()
@@ -87,14 +190,135 @@ pub fn call(config: &WorkerConfig, slot: &str, request: Value) -> Result<Value> 
         .or_default()
         .clone();
     let mut worker = handle
+        .worker
         .lock()
         .map_err(|_| anyhow::anyhow!("Spatial worker lock poisoned"))?;
-    if worker.is_none() {
-        *worker = Some(Worker::start(config)?);
-    }
-    let result = worker.as_mut().unwrap().call(request);
-    if result.is_err() {
+    let result: Result<Value> = (|| {
+        if worker.is_none() {
+            let mut state = handle
+                .startup
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Startup status lock poisoned"))?;
+            // Keep a startup error readable and avoid spawning a broken worker
+            // for every captured frame. A later request can retry normally.
+            ensure!(
+                state.status != "failed"
+                    || crate::screen::now_ms().saturating_sub(state.updated_at_ms) >= 5000,
+                "{}",
+                state.message
+            );
+            *state = Startup::starting();
+            drop(state);
+            *worker = Some(Worker::start_with_status(config, handle.startup.clone())?);
+        }
+        worker.as_mut().unwrap().call(request)
+    })();
+    if let Err(error) = &result {
+        if let Ok(mut state) = handle.startup.lock()
+            && state.status == "loading"
+        {
+            state.finish(Some(&format!(
+                "Could not load visual tracking: {:#}",
+                error
+            )));
+        }
         *worker = None;
     }
     result
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn progress_is_readable_during_loading_and_preserves_rpc_replies() {
+        let directory = tempfile::tempdir().unwrap();
+        let gate = directory.path().join("continue");
+        let config = WorkerConfig {
+            executable: "sh".into(),
+            arguments: vec!["-c".into(), r#"
+                read -r request
+                printf '%s\n' '{"startup":{"message":"Loading test models","completed":1,"total":3}}'
+                while [ ! -e "$1" ]; do sleep 0.01; done
+                printf '%s\n' '{"result":{"model":"test"}}'
+                read -r request
+                printf '%s\n' '{"result":{"registered":true}}'
+            "#.into(), "worker".into(), gate.to_string_lossy().into_owned()],
+        };
+        assert!(startup(&config, "test").is_none());
+        let worker_config = config.clone();
+        let work = std::thread::spawn(move || call(&worker_config, "test", json!({"op":"info"})));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let state = loop {
+            if let Some(state) = startup(&config, "test")
+                && state.completed == 1
+            {
+                break state;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Loading progress was not observable"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(state.status, "loading");
+        assert!(!work.is_finished());
+        std::fs::write(gate, "").unwrap();
+        assert_eq!(work.join().unwrap().unwrap(), json!({"model":"test"}));
+        let ready = startup(&config, "test").unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(ready.completed, 3);
+        assert_eq!(ready.started_at_ms, state.started_at_ms);
+        assert_eq!(
+            call(&config, "test", json!({"op":"register"})).unwrap(),
+            json!({"registered":true})
+        );
+        assert_eq!(
+            startup(&config, "test").unwrap().started_at_ms,
+            ready.started_at_ms
+        );
+    }
+
+    #[test]
+    fn startup_failure_is_visible_and_never_reported_as_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = WorkerConfig {
+            executable: directory
+                .path()
+                .join("missing-worker")
+                .to_string_lossy()
+                .into_owned(),
+            arguments: vec![],
+        };
+        assert!(call(&config, "test", json!({"op":"info"})).is_err());
+        let state = startup(&config, "test").unwrap();
+        assert_eq!(state.status, "failed");
+        assert!(state.message.contains("Could not load visual tracking"));
+        assert_eq!(state.completed, 0);
+        assert!(call(&config, "test", json!({"op":"info"})).is_err());
+        assert_eq!(
+            startup(&config, "test").unwrap().started_at_ms,
+            state.started_at_ms
+        );
+    }
+
+    #[test]
+    fn workers_without_progress_events_still_load() {
+        let config = WorkerConfig {
+            executable: "sh".into(),
+            arguments: vec![
+                "-c".into(),
+                "read -r request; printf '%s\\n' '{\"result\":{\"model\":\"legacy-test\"}}'".into(),
+            ],
+        };
+        assert_eq!(
+            call(&config, "legacy-test", json!({"op":"info"})).unwrap(),
+            json!({"model":"legacy-test"})
+        );
+        let state = startup(&config, "legacy-test").unwrap();
+        assert_eq!(state.status, "ready");
+        assert_eq!(state.total, 0);
+    }
 }

@@ -8,6 +8,7 @@ fn main() {
         "qml/ModelSettings.qml",
         "qml/ProviderCard.qml",
         "qml/Companion.qml",
+        "qml/StartupStatus.qml",
         "qml/RealtimePanel.qml",
         "qml/VoiceCaptions.qml",
         "qml/NavigationArrow.qml",

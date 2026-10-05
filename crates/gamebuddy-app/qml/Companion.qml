@@ -8,6 +8,7 @@ Item {
     required property var buddy
     required property var voice
     required property var session
+    property var startup: null
     property bool expanded: false
     property bool recording: false
     property bool pendingRecording: false
@@ -33,8 +34,10 @@ Item {
     property var widgetCatalog: []
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
-    width: expanded ? 450 : interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80
-    height: expanded ? 600 : 80
+    width: expanded ? 450 : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0)
+    height: expanded ? 600 : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0)
+    onWidthChanged: if (embedded && parent && parent.width > 0 && width > 0) x = Math.max(0, Math.min(parent.width - width, x))
+    onHeightChanged: if (embedded && parent && parent.height > 0 && height > 0) y = Math.max(0, Math.min(parent.height - height, y))
 
     onExpandedChanged: {
         if(!expanded)widgetTray.close()
@@ -167,6 +170,15 @@ Item {
             onClicked: companion.expanded = true
         }
     }
+    StartupStatus {
+        id: compactStartup
+        objectName: "companionStartup"
+        progress: companion.startup
+        visible: !companion.expanded && shown
+        x: 8; y: 80
+        width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
+        MouseArea { anchors.fill: parent; onClicked: companion.expanded = true }
+    }
     ColumnLayout {
         visible: companion.expanded
         anchors { top: parent.top; left: parent.left; right: parent.right; bottom: parent.bottom; topMargin: 25; leftMargin: 24; rightMargin: 24; bottomMargin: 22 }
@@ -180,6 +192,11 @@ Item {
             }
             Item { Layout.fillWidth: true }
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
+        }
+        StartupStatus {
+            objectName: "companionExpandedStartup"
+            progress: companion.startup
+            Layout.fillWidth: true
         }
         Text {
             Layout.fillWidth: true; text: companion.recording ? "Listening… release when you're done." : companion.microphoneError || voice.error || (companion.realtimeEnabled ? companion.realtimeStatus || voice.status : voice.status)

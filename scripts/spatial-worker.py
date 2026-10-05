@@ -24,15 +24,26 @@ os.environ.setdefault("HF_HOME", str(args.cache / "weights"))
 if Path("/etc/ssl/certs/ca-certificates.crt").exists():
     os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
 
+
+def startup(completed, message):
+    # Keep protocol events on the original stdout even while libraries redirect
+    # their own startup output to stderr. Stages report work, not estimated time.
+    print(json.dumps({"startup": {"completed": completed, "total": 6, "message": message}}),
+          file=sys.__stdout__, flush=True)
+
+
+startup(0, "Loading the graphics runtime…")
 with contextlib.redirect_stdout(sys.stderr):
     from spatial_geometry import verify
     import numpy as np
     import torch
+    startup(1, "Loading visual tracking tools…")
     from PIL import Image
     from lightglue import DISK, LightGlue
     from lightglue.utils import rbd
     from transformers import AutoImageProcessor, AutoModel
 
+    startup(2, "Preparing the graphics device…")
     torch.set_num_threads(4)
     torch.hub.set_dir(str(args.cache / "weights"))
     device = ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu") if args.device == "auto" else args.device
@@ -45,9 +56,12 @@ with contextlib.redirect_stdout(sys.stderr):
             return factory.from_pretrained(args.model, cache_dir=str(args.cache / "weights"))
 
     processor = cached_model(AutoImageProcessor)
+    startup(3, "Loading the screen recognition model…")
     encoder = cached_model(AutoModel).eval().to(device)
+    startup(4, "Loading the map matching models…")
     extractor = DISK(max_num_keypoints=512).eval().to(device)
     matcher = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(device)
+    startup(5, "Checking model files…")
     digest = hashlib.sha256()
     for model in (encoder, extractor, matcher):
         for name, tensor in model.state_dict().items():
