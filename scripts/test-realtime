@@ -46,6 +46,13 @@ if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   export GAMEBUDDY_TEST_GATE_WAV="$runtime_dir/gate.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_GATE_WAV" 'Look at the game. I am stuck against the wall at the far right edge of town. What should I do here?'
 fi
+if [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
+  export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:9345"
+  export GAMEBUDDY_TEST_PROGRESS_WAV="$runtime_dir/progress.wav" GAMEBUDDY_TEST_COMPLETION_WAV="$runtime_dir/completion.wav" GAMEBUDDY_TEST_RECOVERY_WAV="$runtime_dir/recovery.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_PROGRESS_WAV" 'Where do I go now?'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_COMPLETION_WAV" 'I already killed the enemy and opened the gate out of Eolis. I am way past that. What should I do here?'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_RECOVERY_WAV" 'Hello. Are you still there? Please say ready to help.'
+fi
 if [[ -n "${GAMEBUDDY_TEST_LOCATION:-}" ]]; then
   export GAMEBUDDY_TEST_LOCATION_WAV="$runtime_dir/location.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_LOCATION_WAV" 'I already walked there. I am at the restoration vendors now. Stop telling me to walk left toward them. What should I do here?'
@@ -65,6 +72,16 @@ if [[ -n "${GAMEBUDDY_TEST_STORE:-}" ]]; then
   [[ "$GAMEBUDDY_TEST_STORE" == /tmp/* && -n "${GAMEBUDDY_TEST_SCENE:-}" ]]
   cp "$GAMEBUDDY_TEST_STORE/gamebuddy.sqlite" "$GAMEBUDDY_TEST_DATA/gamebuddy.sqlite"
   cp -a "$GAMEBUDDY_TEST_STORE/maps" "$GAMEBUDDY_TEST_DATA/maps"
+  if [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
+    # Retain the real progress and conversation, but hide copied OSD widgets
+    # so the fixture can verify keyboard focus before drawing its scene.
+    node --input-type=module - "$GAMEBUDDY_TEST_DATA/gamebuddy.sqlite" <<'JS'
+import {DatabaseSync} from 'node:sqlite';
+const db = new DatabaseSync(process.argv[2]);
+db.exec("DELETE FROM documents WHERE key LIKE 'widgets:%' OR key LIKE 'widget-visibility:%' OR key='widget-layout'");
+db.close();
+JS
+  fi
 fi
 cat >"$runtime_dir/settings.json" <<'JSON'
 {"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
@@ -87,7 +104,9 @@ ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -
 for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
-if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
+  rg -qi 'ready to help' "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   rg -qi '\bkey\b' "$runtime_dir/heard.txt"
 else
   rg -qi '\bred\b' "$runtime_dir/heard.txt"

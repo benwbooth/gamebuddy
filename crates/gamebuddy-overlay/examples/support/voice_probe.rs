@@ -9,6 +9,9 @@ use std::{
 };
 use x11rb::rust_connection::RustConnection;
 
+#[path = "progress_probe.rs"]
+mod progress_probe;
+
 fn pactl(args: &[&str]) -> Result<String> {
     let output = Command::new("pactl").args(args).output()?;
     ensure!(
@@ -373,6 +376,11 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_PROGRESS").is_some() {
+        progress_probe::run(&store, &log, quiet, capturing)?;
+        screenshot("realtime-progress-recovery.png")?;
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_SCENE").is_some() {
         let id: String = store.get("active_guide")?.context("Guide")?;
         let guide = store.guide(&id)?;

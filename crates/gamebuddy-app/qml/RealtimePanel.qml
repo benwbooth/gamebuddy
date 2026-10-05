@@ -31,6 +31,9 @@ WebEngineView {
     property bool returningPlayer: false
     property string voiceGame: ""
     property string pendingCue: ""
+    property string recoveryCue: ""
+    property int recoveryAttempts: 0
+    property bool reconnecting: false
     property string captionText: ""
     property bool captionStreaming: false
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
@@ -42,6 +45,14 @@ WebEngineView {
         panel.answer(text)
         pendingCue=text
         runJavaScript("gamebuddyVoice.queueSpeech("+JSON.stringify(text)+")")
+    }
+    function recoverSpeech(text) {
+        if(recoveryAttempts>=1 || reconnecting || proactivePaused || !spokenReplies || !text.length)return false
+        recoveryCue=text;recoveryAttempts++;reconnecting=true
+        connected=false;started=false;transport.disconnect()
+        status="Reconnecting voice · answer shown as text"
+        runJavaScript("gamebuddyVoice.stop()", function(){reconnecting=false;panel.update()})
+        return true
     }
     function updateStatus() {
         if(!started || !connected || failed)return
@@ -73,8 +84,9 @@ WebEngineView {
             instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})
     }
     function update() {
-        if (!loaded) return
+        if (!loaded || reconnecting) return
         if(started && voiceGame!==session.game){
+            recoveryCue="";recoveryAttempts=0
             started=false;connected=false;transport.disconnect();runJavaScript("gamebuddyVoice.stop()")
         }
         const wanted=enabledBackend && !failed && !!session.game && (voice.active || (automaticSession && spokenReplies && !proactivePaused))
@@ -182,6 +194,7 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
+        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
         if(trace && !["input-pcm","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
         if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
@@ -196,7 +209,7 @@ WebEngineView {
         }
         else if(event.type==="input-active"){
             userSpeaking=event.value
-            if(userSpeaking){pendingCue="";if(!captionStreaming)captionText=""}
+            if(userSpeaking){pendingCue="";recoveryCue="";recoveryAttempts=0;if(!captionStreaming)captionText=""}
             transport.player_speech(userSpeaking)
             if(userSpeaking)updateContext()
         }
@@ -214,14 +227,20 @@ WebEngineView {
         else if(event.type==="cue-retry" && pendingCue.length)transport.speak(pendingCue)
         else if(event.type==="request-error"){captionText=event.value;captionStreaming=false}
         else if(event.type==="cue-timeout"){
-            if(pendingCue.length){captionText="Text reply · "+pendingCue;captionStreaming=false}
-            pendingCue="";status="Audio unavailable · text reply shown · you can still speak"
+            const text=pendingCue
+            if(text.length){captionText="Text reply · "+text;captionStreaming=false}
+            pendingCue=""
+            if(!recoverSpeech(text))status="Audio unavailable · text reply shown · you can still speak"
         }
         else if(event.type==="playback-allowed" || event.type==="reply-permit"){if(trace)console.warn("GAMEBUDDY_VOICE_GATE "+event.type+" "+event.value)}
         else if(event.type==="offer")transport.connect_offer(event.value,session.data_dir,panel.lastContext)
         else if(event.type==="error")fail(event.value)
         else if(event.type==="microphone-error") { if(voice.active)voice.toggle_listening();status="Microphone: "+event.value }
-        else if(event.type==="ready") { connected=true;status=capturing?"Live voice · speak naturally":"Guide voice ready · mic off";narrate() }
+        else if(event.type==="ready") {
+            connected=true;status=capturing?"Live voice · speak naturally":"Guide voice ready · mic off"
+            if(recoveryCue.length){const text=recoveryCue;recoveryCue="";speakApproved(text)}
+            else narrate()
+        }
         else if(event.type==="connection") {
             if(event.value==="failed" || event.value==="disconnected")fail("Voice connection lost; choose Listen to reconnect")
         }

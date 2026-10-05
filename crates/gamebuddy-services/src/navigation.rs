@@ -774,6 +774,9 @@ pub fn context(
         &tracker,
         recommendation.as_ref().map(|r| r.step_id.as_str()),
     );
+    if let Some(recommendation) = &recommendation {
+        advice::apply_location_advice(guide, recommendation, &mut advice);
+    }
     if let Some(recommendation) = &recommendation
         && let Some(step) = advice
             .now

@@ -24,7 +24,51 @@ pub struct Recommendation {
     pub updated_at_ms: u64,
     pub step_id: String,
     pub instructions: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location_evidence: Option<Value>,
 }
+
+// Walkthrough ordering is not proof that the player is still behind a gate.
+// A current, accepted source match can support advice at the present location
+// without claiming that every earlier battle, purchase or side task was done.
+pub(crate) fn supports_action(guide: &Guide, step_id: &str, spatial: &Value) -> bool {
+    let observation = &spatial["observation"];
+    if observation["tracker"]["status"] != "tracked" {
+        return false;
+    }
+    let mut at = Some(step_id);
+    while let Some(id) = at {
+        if observation["related_step_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|v| v.as_str() == Some(id)))
+        {
+            return true;
+        }
+        at = guide.step(id).and_then(|s| s.parent_id.as_deref());
+    }
+    false
+}
+
+pub(crate) fn apply_location_advice(
+    guide: &Guide,
+    recommendation: &Recommendation,
+    guidance: &mut gamebuddy_core::Guidance,
+) {
+    if recommendation.location_evidence.is_some()
+        && guidance
+            .now
+            .as_ref()
+            .is_none_or(|step| step.id != recommendation.step_id)
+        && let Some(step) = guide.step(&recommendation.step_id)
+    {
+        guidance.now = Some(step.clone());
+        guidance.target = Some(step.clone());
+        guidance.next.clear();
+        guidance.status = "ready".into();
+        guidance.reason = "Advice for the currently observed area. Earlier walkthrough prerequisites remain unverified; they do not send you back to an area you have already left.".into();
+    }
+}
+
 fn key(guide: &Guide) -> String {
     format!("next-action:{}", guide.id)
 }
@@ -76,12 +120,15 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         &PlaceTracker::default(),
         Some(&action.step_id),
     );
+    let spatial = crate::spatial::context(store, guide)?;
+    let location_supported = supports_action(guide, &action.step_id, &spatial);
     ensure!(
-        guidance
-            .now
-            .as_ref()
-            .is_some_and(|s| s.id == action.step_id),
-        "This action has unconfirmed prerequisites: {}. Record them only if the player's report explicitly establishes them; otherwise ask about the missing prerequisite. Current progress epoch is {}.",
+        location_supported
+            || guidance
+                .now
+                .as_ref()
+                .is_some_and(|s| s.id == action.step_id),
+        "This action has unconfirmed prerequisites and no current source match supporting its location: {}. Do not infer the player's location from this checklist. Inspect the current screen and location_actions; choose an action supported there. Record explicit completion reports, and ask about a prerequisite only when it is actually needed for the current action. Current progress epoch is {}.",
         serde_json::to_string(&guidance.requirements)?,
         progress.epoch
     );
@@ -96,6 +143,14 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         updated_at_ms: screen::now_ms(),
         step_id: action.step_id,
         instructions: action.instructions.trim().into(),
+        location_evidence: location_supported.then(|| {
+            json!({
+                "kind":"current_source_match_not_completion",
+                "room_id":spatial["observation"]["tracker"]["room_id"],
+                "observed_at_ms":spatial["observation"]["tracker"]["observed_at_ms"],
+                "related_step_ids":spatial["observation"]["related_step_ids"]
+            })
+        }),
     };
     store.put_for_progress(guide, progress.epoch, &key(guide), &recommendation)?;
     Ok(

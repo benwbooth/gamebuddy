@@ -1559,6 +1559,61 @@ pub(crate) fn grounded_location(
 mod tests {
     use super::*;
     #[test]
+    fn current_area_advice_does_not_require_backtracking_or_fabricated_completion() -> Result<()> {
+        use crate::navigation::advice::{NextAction, publish};
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(directory.path())?;
+        let mut guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Old gate\nUnlock the gate.\n# New town\nVisit the shop.",
+        )?;
+        guide.steps[1].prerequisites = vec!["step-1".into()];
+        store.save_guide(&guide)?;
+        let ticket = screen::start(&store, &guide.game, true)?;
+        let path = directory.path().join("screen.png");
+        image::RgbImage::from_pixel(96, 72, image::Rgb([30, 160, 40])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "test")?;
+        let frame = screen::snapshot(&store)?;
+        let decoded = image::load_from_memory(&base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &frame.jpeg,
+        )?)?;
+        let mut observation = json!({"guide_revision":guide.revision,"source_signature":source_signature(&guide),"profile":Profile::default(),
+            "capture_signature":screen::frame_signature(&decoded),"related_step_ids":["step-2"],
+            "tracker":{"status":"tracked","room_id":"new-town","session":ticket.session,"capture_epoch":ticket.epoch,"epoch":0,"observed_at_ms":frame.captured_at_ms}});
+        store.put(
+            &format!("world-status:{}", guide.id),
+            &json!({"status":"ready"}),
+        )?;
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        let action = || NextAction {
+            expected_revision: guide.revision,
+            epoch: 0,
+            step_id: "step-2".into(),
+            instructions: "Enter the shop beside you.".into(),
+        };
+        let result = publish(&store, &guide, action())?;
+        assert_eq!(result["navigation"]["guidance"]["now"]["id"], "step-2");
+        assert_eq!(
+            result["navigation"]["guidance"]["requirements"][0]["id"],
+            "step-1"
+        );
+        assert!(store.progress(&guide)?.completed.is_empty());
+        assert!(store.progress(&guide)?.reported_completed.is_empty());
+        // No source match means the ordinary prerequisite check still applies.
+        observation["tracker"]["status"] = json!("lost");
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        assert!(publish(&store, &guide, action()).is_err());
+        // An old capture cannot be used to bypass the dependency either.
+        observation["tracker"]["status"] = json!("tracked");
+        observation["tracker"]["observed_at_ms"] = json!(frame.captured_at_ms - 16_000);
+        store.put(&format!("world-observation:{}", guide.id), &observation)?;
+        assert!(publish(&store, &guide, action()).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn a_new_room_hides_the_previous_live_map_before_the_next_match() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::open(dir.path())?;

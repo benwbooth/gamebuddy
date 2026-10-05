@@ -22,6 +22,8 @@ pub mod ffi {
         #[qinvokable]
         fn speak(self: Pin<&mut RealtimeVoice>, text: QString);
         #[qinvokable]
+        fn trace_event(self: Pin<&mut RealtimeVoice>, kind: QString, value: QString);
+        #[qinvokable]
         fn next_narration(self: Pin<&mut RealtimeVoice>, context: QString) -> QString;
         #[qinvokable]
         fn detect_speech(self: Pin<&mut RealtimeVoice>, samples: QString) -> bool;
@@ -57,9 +59,30 @@ pub struct RealtimeVoiceRust {
 }
 enum Command {
     Speech(String),
+    Diagnostic(String, Value),
 }
 
 impl ffi::RealtimeVoice {
+    pub fn trace_event(self: Pin<&mut Self>, kind: QString, value: QString) {
+        let kind = kind.to_string();
+        // This allowlist deliberately excludes transcripts, speech-ready and PCM.
+        if [
+            "capture",
+            "input-active",
+            "output-active",
+            "reply-pending",
+            "cue-timeout",
+            "connection",
+            "ready",
+        ]
+        .contains(&kind.as_str())
+            && let Ok(value) = serde_json::from_str::<Value>(&value.to_string())
+            && (value.is_boolean() || value.as_str().is_some_and(|s| s.len() <= 32))
+            && let Some(tx) = &self.rust().commands
+        {
+            let _ = tx.send(Command::Diagnostic(kind, value));
+        }
+    }
     pub fn player_speech(self: Pin<&mut Self>, active: bool) {
         self.rust()
             .input
@@ -168,6 +191,9 @@ impl ffi::RealtimeVoice {
             };
             let result = (|| -> anyhow::Result<()> {
                 let store = Store::open(directory.to_string())?;
+                let diagnostics =
+                    gamebuddy_services::voice::diagnostics::Diagnostics::start(&store.root);
+                diagnostics.record("connected_worker", json!({}));
                 let context: Value = serde_json::from_str(&context.to_string())?;
                 let game = context["game"].as_str().unwrap_or_default().to_owned();
                 anyhow::ensure!(!game.trim().is_empty(), "Load a game before starting voice");
@@ -216,6 +242,18 @@ impl ffi::RealtimeVoice {
                                 .as_str()
                                 .unwrap_or_default()
                         );
+                    }
+                    if matches!(
+                        event["method"].as_str(),
+                        Some(
+                            "turn/started"
+                                | "turn/completed"
+                                | "thread/realtime/closed"
+                                | "thread/realtime/error"
+                                | "thread/realtime/transcript/done"
+                        )
+                    ) {
+                        diagnostics.record(event["method"].as_str().unwrap_or_default(), json!({"role":event["params"]["role"],"status":event["params"]["turn"]["status"],"text_bytes":event["params"]["text"].as_str().map(str::len)}));
                     }
                     // The model can generate an answer before delegation finishes.
                     // Locally discarded audio is not something the player heard.
@@ -279,6 +317,10 @@ impl ffi::RealtimeVoice {
                         Ok(command) => {
                             sequence += 1;
                             let (method, params) = match command {
+                                Command::Diagnostic(kind, value) => {
+                                    diagnostics.record(&format!("browser/{kind}"), value);
+                                    continue;
+                                }
                                 Command::Speech(text) => {
                                     approved_speech.set(true);
                                     (
@@ -448,6 +490,10 @@ impl ffi::RealtimeVoice {
                         );
                     }
                     if let Some(answer) = delivery.take_reply(utterance, &request, quiet) {
+                        diagnostics.record(
+                            "answer_ready",
+                            json!({"utterance":utterance,"text_bytes":answer.len()}),
+                        );
                         emit(json!({"method":"gamebuddy/speech","params":{"text":answer}}));
                     }
                     // A late handoff must not deliver the previous answer over
@@ -472,6 +518,10 @@ impl ffi::RealtimeVoice {
                             sequence += 1;
                             start_requests.insert(sequence, utterance);
                             reasoning_since = Some(Instant::now());
+                            diagnostics.record(
+                                "request_dispatched",
+                                json!({"utterance":utterance,"text_bytes":request.len()}),
+                            );
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(
                                     "GAMEBUDDY_VOICE_DISPATCH utterance={utterance} text_bytes={}",

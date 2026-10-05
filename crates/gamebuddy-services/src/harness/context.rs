@@ -45,14 +45,27 @@ pub(super) fn location_actions(
         .filter_map(|id| guide.step(id))
         .take(20)
         .map(|step| {
+            let mut status = action_status(guide, progress, &step.id);
+            let supported =
+                crate::navigation::advice::supports_action(guide, &step.id, &nav["spatial"]);
+            status["location_supported"] = json!(supported);
+            if supported
+                && status["complete"] == false
+                && !guide
+                    .steps
+                    .iter()
+                    .any(|s| s.parent_id.as_deref() == Some(&step.id))
+            {
+                status["eligible_next_action"] = json!(true);
+            }
             json!({
-                "step":step,"status":action_status(guide,progress,&step.id),
+                "step":step,"status":status,
                 "place":atlas.place_for_step(guide,&step.id)
             })
         })
         .collect();
     Ok(
-        json!({"actions":actions,"instruction":"These source actions share the currently matched scenery, including repeated visits. They explain the local landmarks, not which task you have completed. Resolve the next action using the player's latest report, progress, screenshot and map; never repeat previous travel advice when the player says they have arrived."}),
+        json!({"actions":actions,"instruction":"These source actions share the currently matched scenery, including repeated visits. They explain the local landmarks, not which task you have completed. A location_supported action can be recommended here even when earlier walkthrough prerequisites remain unchecked. Do not ask whether the player passed an earlier barrier when the current view already places them beyond it. Resolve the next action using the latest report, progress, screenshot and map; never send them back solely to satisfy an old checkbox."}),
     )
 }
 
