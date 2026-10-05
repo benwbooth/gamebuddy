@@ -10,6 +10,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Interactive coaching must not inherit a heavyweight coding model from the CLI.
+pub const DEFAULT_CODEX_MODEL: &str = "gpt-6-luna";
+
+fn codex_model(model: &str) -> &str {
+    if model.trim().is_empty() {
+        DEFAULT_CODEX_MODEL
+    } else {
+        model.trim()
+    }
+}
+
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -165,6 +176,7 @@ impl CodexClient {
         effort: &str,
         deadline: Instant,
     ) -> Result<String> {
+        let model = codex_model(model);
         let priority = fast
             && self
                 .request("model/list", json!({}), deadline)
@@ -173,13 +185,7 @@ impl CodexClient {
                     models["data"]
                         .as_array()?
                         .iter()
-                        .find(|m| {
-                            if model.is_empty() {
-                                m["isDefault"] == true
-                            } else {
-                                m["model"] == model || m["id"] == model
-                            }
-                        })
+                        .find(|m| m["model"] == model || m["id"] == model)
                         .map(|m| {
                             m["serviceTiers"].as_array().is_some_and(|tiers| {
                                 tiers.iter().any(|tier| tier["id"] == "priority")
@@ -216,9 +222,7 @@ impl CodexClient {
             params["serviceTier"] = json!(tier)
         }
         params["dynamicTools"] = tools;
-        if !model.is_empty() {
-            params["model"] = json!(model);
-        }
+        params["model"] = json!(codex_model(model));
         let value = self.request("thread/start", params, deadline)?;
         self.resolved_model = value["model"].as_str().unwrap_or_default().into();
         if std::env::args().any(|a| a == "--voice-trace") {

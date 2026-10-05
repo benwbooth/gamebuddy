@@ -50,9 +50,10 @@ Rectangle {
     }
     function invalidate() { generation++; requestId = ""; pendingOperation = ""; status = "" }
     function fastEffort(model) {
-        const levels = (models.find(m => m.id === model) || {}).efforts || []
+        const levels = (models.find(m => m.id === (model || defaultModel)) || {}).efforts || []
         if (levels.indexOf("off") >= 0) return "off"
         if (levels.indexOf("low") >= 0) return "low"
+        if (config.kind === "codex" && !model) return "low"
         return "auto"
     }
     function load(value) { invalidate(); config = Object.assign({}, value); models = []; defaultModel = "" }
@@ -75,7 +76,7 @@ Rectangle {
             if (response.error) { card.status = response.error; return }
             if (operation === "models") {
                 card.models = response.models || []; card.defaultModel = response.default_model || ""
-                card.status = (card.defaultModel ? "Client default: " + card.defaultModel + ". " : "") + (response.note || "")
+                card.status = (card.defaultModel ? "GameBuddy default: " + card.defaultModel + ". " : "") + (response.note || "")
             } else {
                 card.status = "Connected · reply in " + (response.elapsed_ms / 1000).toFixed(2) + " s · " + response.reply
             }
@@ -94,7 +95,7 @@ Rectangle {
             onActivated: {
                 const kind = currentValue
                 card.invalidate(); card.models = []; card.defaultModel = ""
-                card.config = {kind:kind,model:kind === "claude_code" ? "sonnet" : "",endpoint:kind === "ollama" ? "http://127.0.0.1:11434" : kind === "open_ai_responses" || kind === "open_ai_compatible" ? "https://api.openai.com/v1" : kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "",api_key_env:"",reasoning_effort:""}
+                card.config = {kind:kind,model:kind === "claude_code" ? "sonnet" : "",endpoint:kind === "ollama" ? "http://127.0.0.1:11434" : kind === "open_ai_responses" || kind === "open_ai_compatible" ? "https://api.openai.com/v1" : kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "",api_key_env:"",reasoning_effort:kind === "codex" ? "low" : ""}
                 card.edited(); card.request("models")
             }
         }
@@ -108,7 +109,7 @@ Rectangle {
             Layout.fillWidth:true
             GbField {
                 id:modelName; objectName:card.role+"Model"; Layout.fillWidth:true
-                text:card.config.model || ""; placeholderText:card.subscription ? "Client default" : "Model name"
+                text:card.config.model || ""; placeholderText:card.config.kind === "codex" ? "GameBuddy default · GPT-6 Luna" : card.subscription ? "Client default" : "Model name"
                 onEditingFinished: if (text.trim() !== card.config.model) { card.invalidate(); card.setField("model",text.trim()); card.setField("reasoning_effort",card.fastEffort(text.trim())) }
             }
             GbButton { text:"Find models"; enabled:!card.pendingOperation; onClicked:card.request("models") }

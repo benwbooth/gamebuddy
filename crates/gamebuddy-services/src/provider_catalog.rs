@@ -44,7 +44,7 @@ pub fn discover(config: &ProviderConfig) -> Result<Value> {
                 deadline,
             )?;
             Ok(
-                json!({"models":models,"default_model":client.resolved_model,"note":"Models from your installed Codex client. Test a model to check access with your subscription."}),
+                json!({"models":models,"default_model":client.resolved_model,"note":"GameBuddy defaults to GPT-6 Luna with Low thinking. Choose another model to override it; Test connection checks access with your subscription."}),
             )
         }
         ProviderKind::ClaudeCode => {
