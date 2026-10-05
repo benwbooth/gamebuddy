@@ -7,10 +7,28 @@
   let outputMuted=false,replyUntil=0,lastReplyAudio=0,assistantDoneAt=0,awaitingAnswer=false;
   let backendBusy=false,playerSpeaking=false,localSpeech=false,confirmedInputUntil=0,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
   let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,queuedSpeechAt=0,lastIncomingAudio=0;
+  let workPending=false,workAnswered=false,workInput='',workRequest=0,workStartedAt=0,workQuietAt=0,workLastCue=0,workUpdates=0,progressCue='';
   let captionParts=[],captionText='',captionFirstMs=null,captionAudioStart=null,captionPending=[],captionGeneration=0;
   function resetCaptions(){captionParts=[];captionText='';captionFirstMs=null;captionAudioStart=null;captionPending=[];captionGeneration++;emit('caption','')}
-  function queueSpeech(text){queuedSpeech=text;queuedSpeechAt=Date.now();emit('reply-pending',true)}
-  function approveSpeech(){approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
+  function clearWork(){workPending=false;workStartedAt=0;workLastCue=0;workUpdates=0}
+  function beginWork(){if(!workPending&&!workAnswered){workPending=true;workStartedAt=Date.now();workUpdates=0;workLastCue=0}}
+  function queueSpeech(text){clearWork();workAnswered=true;queuedSpeech=text;queuedSpeechAt=Date.now();emit('reply-pending',true)}
+  function approveSpeech(){progressCue='';approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
+  function sendProgress(text){
+    // This independent data channel stays responsive while the reasoning
+    // worker waits for tools. Status words never include gameplay advice.
+    events.send(JSON.stringify({type:'session.context.append',channel:'speakable',content:[{type:'input_text',text}]}));
+    emit('work-progress',workRequest+':'+workUpdates);
+  }
+  function updateProgress(now){
+    if(!workPending||outputMuted||playerSpeaking||!sessionReady||events?.readyState!=='open'
+        ||queuedSpeech!==null||assistantTurns.size||approved&&replyUntil>now
+        ||now-workStartedAt<2500||now-workQuietAt<2500||now-lastIncomingAudio<500
+        ||workLastCue&&now-workLastCue<10000)return;
+    const text=workUpdates===0?"I'm on it.":workUpdates===1?"I'm still working on your answer.":"This is taking a little longer. I'm still here.";
+    approveSpeech();progressCue=text;workLastCue=now;workUpdates++;
+    sendProgress(text);
+  }
   function captionsAt(sample,playbackTime){
     if(captionFirstMs===null||captionAudioStart===null)return;
     const ms=captionFirstMs+(sample-captionAudioStart)*1000/audioContext.sampleRate;
@@ -44,13 +62,13 @@
     // before cutting off the speaker. Audio keeps streaming throughout.
     if(active&&Date.now()-lastReplyAudio<1000&&Date.now()>confirmedInputUntil){pendingOverlapUntil=Date.now()+2500;return}
     if(active)pendingOverlapUntil=0;
-    if(active&&!playerSpeaking){queuedSpeech=null;approved=false;outputMeter?.clear();resetCaptions();replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
+    if(active&&!playerSpeaking){clearWork();workAnswered=false;workInput='';workRequest++;progressCue='';queuedSpeech=null;approved=false;outputMeter?.clear();resetCaptions();replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
     if(active!==playerSpeaking)emit('input-active',active);
     playerSpeaking=active;
-    if(!active&&replyUntil)replyUntil=Date.now()+90000;
+    if(!active){workQuietAt=Date.now();if(replyUntil)replyUntil=Date.now()+90000}
     updatePlayback();
   }
-  function requestFailed(text){backendBusy=false;queuedSpeech=null;approved=false;replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;outputMeter?.clear();resetCaptions();emit('reply-pending',false);updatePlayback();if(text)emit('request-error',text)}
+  function requestFailed(text){clearWork();workAnswered=true;progressCue='';backendBusy=false;queuedSpeech=null;approved=false;replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;outputMeter?.clear();resetCaptions();emit('reply-pending',false);updatePlayback();if(text)emit('request-error',text)}
   function setBackendBusy(active){
     // A handoff may acknowledge the question, pause for tools, then answer.
     // Backend work cannot grant itself permission to start speaking.
@@ -72,6 +90,10 @@
         const stillSpeaking=localSpeech;pendingOverlapUntil=0;
         playerSpeech(true);if(!stillSpeaking)playerSpeech(false);
       }
+      // A short stop may be recognized well before its final turn event.
+      workInput=(workInput+v.item.text).slice(-8000);
+      if(/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(workInput.trim()))clearWork();
+      else beginWork();
     }
     if(v.type==='turn.created'&&v.turn?.role==='assistant'){
       if(approved&&approvedTurn!==null&&approvedTurn!==v.turn.id){
@@ -100,7 +122,7 @@
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
-      approved=false;queuedSpeech=null;outputMeter?.clear();resetCaptions();replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
+      clearWork();workAnswered=true;progressCue='';approved=false;queuedSpeech=null;outputMeter?.clear();resetCaptions();replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
       updatePlayback();
     }
     if(v.type==='error')emit('error',v.error?.message||'Voice transport error');
@@ -124,19 +146,20 @@
       // listening UI indefinitely. The companion already has its text.
       queuedSpeech=null;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);
     }
+    updateProgress(now);
     while(captionPending.length&&captionPending[0].at<=(audioContext?.currentTime||0)){
       const part=captionPending.shift();if(part.generation===captionGeneration&&approved&&!outputMuted)emit('caption',part.text);
     }
     if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
-    if(replyUntil&&(playerSpeaking||backendBusy))replyUntil=now+90000;
+    if(replyUntil&&(playerSpeaking||backendBusy&&!progressCue))replyUntil=now+90000;
     // Some new sessions acknowledge an app cue without generating a turn.
     // Retry that exact cue once, only before any speech starts. Never repeat
     // a player request or tool action, or replace an answer already in flight.
-    if(cueWaitingAt&&!backendBusy&&!playerSpeaking){
-      if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true)}
-      else if(now-cueWaitingAt>=6000&&!cueRetried&&!assistantTurns.size){cueRetried=true;emit('cue-retry',true)}
+    if(cueWaitingAt&&(!backendBusy||progressCue)&&!playerSpeaking){
+      if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit(progressCue?'work-progress-timeout':'cue-timeout',true);progressCue=''}
+      else if(now-cueWaitingAt>=6000&&!cueRetried&&!assistantTurns.size){cueRetried=true;if(progressCue){if(workPending&&queuedSpeech===null)sendProgress(progressCue)}else emit('cue-retry',true)}
     }
-    if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&(lastReplyAudio||outputMuted)&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
+    if(replyUntil&&(now>=replyUntil||((!backendBusy||progressCue)&&(!awaitingAnswer||progressCue)&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&(lastReplyAudio||outputMuted)&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;progressCue='';emit('reply-pending',false)}
     const allowed=updatePlayback();
     const audible=allowed&&rms>0.002;
     if(audible){playedMs+=20;lastReplyAudio=now;awaitingAnswer=false;replyUntil=now+90000;cueWaitingAt=0}
@@ -164,7 +187,7 @@
   }
   function closeMic(){captureGeneration++;pendingOverlapUntil=0;confirmedInputUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
   function disconnectOutput(){if(outputMeter?.processor){outputMeter.processor.onaudioprocess=null;outputMeter.processor.disconnect()}disconnectMeter(outputMeter);outputMeter=null;receiver.srcObject=null}
-  function stop(){generation++;queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
+  function stop(){generation++;clearWork();progressCue='';workQuietAt=0;queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;confirmedInputUntil=0;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open'||!sessionReady)return;

@@ -166,9 +166,10 @@ WebEngineView {
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "")
             else if(event.method==="gamebuddy/reply-error"){
-                panel.answer(p.text || "Request failed; please try again.")
+                const text=p.text || "Request failed; please try again."
+                panel.answer(text)
                 panel.backendBusy=false;panel.waitingForReply=false
-                panel.runJavaScript("gamebuddyVoice.requestFailed("+JSON.stringify(p.text || "Request failed; please try again.")+")")
+                panel.runJavaScript("gamebuddyVoice.requestFailed("+JSON.stringify(text)+")",function(){panel.speakApproved(text)})
             }
             else if(event.method==="thread/realtime/transcript/done") {
                 if(p.role==="user")panel.transcript(p.text)
@@ -194,7 +195,7 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
+        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-progress"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
         if(trace && !["input-pcm","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
         if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return

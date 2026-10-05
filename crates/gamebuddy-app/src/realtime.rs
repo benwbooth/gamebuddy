@@ -74,6 +74,7 @@ impl ffi::RealtimeVoice {
             "cue-timeout",
             "connection",
             "ready",
+            "work-progress",
         ]
         .contains(&kind.as_str())
             && let Ok(value) = serde_json::from_str::<Value>(&value.to_string())

@@ -42,6 +42,10 @@ JS
 player=$!
 for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
+  export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Look at my game and create a text widget titled Waiting Test naming the visible colors. Then say exactly: The answer is ready.'
+fi
 if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   export GAMEBUDDY_TEST_GATE_WAV="$runtime_dir/gate.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_GATE_WAV" 'Look at the game. I am stuck against the wall at the far right edge of town. What should I do here?'
@@ -104,7 +108,11 @@ ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -
 for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
-if [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
+  rg -qi 'still working' "$runtime_dir/heard.txt"
+  rg -qi 'answer is ready' "$runtime_dir/heard.txt"
+  node scripts/test-work-progress-audio.mjs "$runtime_dir"
+elif [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
   rg -qi 'ready to help' "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   rg -qi '\bkey\b' "$runtime_dir/heard.txt"

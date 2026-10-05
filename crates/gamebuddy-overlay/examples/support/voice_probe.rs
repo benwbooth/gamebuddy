@@ -11,6 +11,8 @@ use x11rb::rust_connection::RustConnection;
 
 #[path = "progress_probe.rs"]
 mod progress_probe;
+#[path = "work_progress_probe.rs"]
+mod work_progress_probe;
 
 fn pactl(args: &[&str]) -> Result<String> {
     let output = Command::new("pactl").args(args).output()?;
@@ -376,6 +378,11 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_WORKING").is_some() {
+        work_progress_probe::run(&store, &log, quiet, capturing)?;
+        screenshot("realtime-work-progress.png")?;
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_PROGRESS").is_some() {
         progress_probe::run(&store, &log, quiet, capturing)?;
         screenshot("realtime-progress-recovery.png")?;
@@ -654,17 +661,19 @@ fn realtime(
 fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     let story = std::env::var("GAMEBUDDY_TEST_STORY_WAV")?;
     let interrupt = std::env::var("GAMEBUDDY_TEST_INTERRUPT_WAV")?;
-    let playback_count = || -> Result<usize> {
-        Ok(std::fs::read_to_string(log)?
-            .matches("GAMEBUDDY_VOICE_PLAYBACK started")
-            .count())
-    };
-    let wait_story = |before| -> Result<()> {
-        // Speech is released only after the backend completes the requested
-        // five paragraphs. Give long-form generation its own bounded budget;
-        // ordinary gameplay and interruption tools retain their shorter checks.
+    let wait_story = |before: usize| -> Result<()> {
+        // A short work update is not the requested story. Wait for the final
+        // answer's speech-ready event and its subsequent actual playback.
         let deadline = Instant::now() + Duration::from_secs(90);
-        while playback_count()? <= before {
+        loop {
+            let text = std::fs::read_to_string(log)?;
+            let tail = &text[before..];
+            if tail.find("\"type\":\"speech-ready\"").is_some_and(|ready| {
+                tail.rfind("GAMEBUDDY_VOICE_PLAYBACK started")
+                    .is_some_and(|at| at > ready)
+            }) {
+                break;
+            }
             ensure!(
                 Instant::now() < deadline,
                 "Completed long-form reply never started"
@@ -673,7 +682,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
         }
         Ok(())
     };
-    let before = playback_count()?;
+    let before = std::fs::read_to_string(log)?.len();
     play_player(&story)?;
     let started = Instant::now();
     wait_story(before)?;
@@ -688,6 +697,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
             > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false"),
         "The story ended before the interruption test"
     );
+    let interrupt_before = std::fs::read_to_string(log)?.len();
     play_player(&interrupt)?;
     let started = Instant::now();
     wait("interruption reaches the tool backend", || {
@@ -710,12 +720,14 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     );
     wait("interrupted answer finishes", || {
         let text = std::fs::read_to_string(log)?;
-        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
-            && text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-                > text.rfind("GAMEBUDDY_VOICE_GATE reply-permit player"))
+        let tail = &text[interrupt_before..];
+        Ok(tail.find("\"type\":\"speech-ready\"").is_some_and(|ready| {
+            tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+                .is_some_and(|closed| closed > ready)
+        }) && tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
+            > tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
     })?;
-    let before = playback_count()?;
+    let before = std::fs::read_to_string(log)?.len();
     let last_message = store
         .conversation_messages("Faxanadu", "", None, 1)?
         .last()
@@ -755,7 +767,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
         Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
             > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
     })?;
-    let before = playback_count()?;
+    let before = std::fs::read_to_string(log)?.len();
     play_player(&story)?;
     wait_story(before)?;
     thread::sleep(Duration::from_secs(3));
