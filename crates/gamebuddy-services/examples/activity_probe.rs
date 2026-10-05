@@ -46,9 +46,10 @@ fn main() -> Result<()> {
     let step = args.next().context("step to observe")?;
     let args: Vec<_> = args.collect();
     let scheduled = args.iter().any(|a| a == "--scheduled");
+    let spatial = args.iter().any(|a| a == "--spatial");
     let frames: Vec<_> = args
         .iter()
-        .filter(|a| *a != "--scheduled")
+        .filter(|a| *a != "--scheduled" && *a != "--spatial")
         .map(PathBuf::from)
         .collect();
     ensure!(
@@ -67,13 +68,48 @@ fn main() -> Result<()> {
         &guide,
         &Progress {
             current_step: Some(step),
-            ..Default::default()
+            ..if spatial {
+                source.progress(&guide)?
+            } else {
+                Progress::default()
+            }
         },
         "replay_fixture",
     )?;
+    if spatial {
+        for key in [
+            "spatial-worker".into(),
+            gamebuddy_services::spatial::key(&guide),
+            format!("world-profile:{}", guide.id),
+            format!("world-status:{}", guide.id),
+            format!("spatial-maps:{}", guide.id),
+            format!("atlas:{}", guide.id),
+        ] {
+            if let Some(value) = source.get::<serde_json::Value>(&key)? {
+                store.put(&key, &value)?;
+            }
+        }
+    }
     let ticket = screen::start(&store, &guide.game, true)?;
+    if spatial
+        && let Some(mut advice) =
+            source.get::<serde_json::Value>(&format!("next-action:{}", guide.id))?
+    {
+        advice["session"] = json!(ticket.session);
+        advice.as_object_mut().unwrap().remove("movement");
+        store.put(&format!("next-action:{}", guide.id), &advice)?;
+    }
     for path in frames {
         screen::publish(&store, &ticket, &path, "recorded_gameplay_replay")?;
+        if spatial {
+            let frame = screen::snapshot(&store)?;
+            gamebuddy_services::spatial::observe(
+                &store,
+                &guide,
+                &frame,
+                store.progress(&guide)?.epoch,
+            )?;
+        }
         std::thread::sleep(Duration::from_millis(510));
     }
     let frame = screen::snapshot(&store)?;
@@ -106,14 +142,14 @@ fn main() -> Result<()> {
             },
             &observation,
         )?;
-        let completed = activity::save(&store, &observation, &review.completions)?;
+        let completed = activity::save_review(&store, &observation, &review)?;
         (Some(review), completed)
     };
     let progress = store.progress(&guide)?;
     let navigation =
         gamebuddy_services::navigation::context(&store, &guide, &progress, &Default::default())?;
     let result = json!({"elapsed_ms":start.elapsed().as_millis(),"review":review,"completed":completed,"progress":progress,
-        "guidance":navigation["guidance"],"observed_progress":store.observed_progress(&guide,&progress)?,"activity":store.get::<serde_json::Value>("activity-status")?});
+        "guidance":navigation["guidance"],"coaching":navigation["coaching"],"observed_progress":store.observed_progress(&guide,&progress)?,"activity":store.get::<serde_json::Value>("activity-status")?});
     std::fs::write(
         output.join("result.json"),
         serde_json::to_vec_pretty(&result)?,

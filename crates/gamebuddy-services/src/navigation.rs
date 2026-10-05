@@ -881,6 +881,7 @@ pub fn context(
         }
     }
     // These are objective-route links, explicitly not inferred physical doors.
+    let coaching = crate::activity::current_coaching(store, guide, progress)?;
     let mut route_places = vec![];
     for step in advice.now.iter().chain(&advice.next) {
         if let Some(p) = atlas.place_for_step(guide, &step.id)
@@ -890,7 +891,7 @@ pub fn context(
         }
     }
     Ok(
-        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
+        json!({"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
     )
 }
 

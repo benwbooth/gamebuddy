@@ -6,6 +6,18 @@ from spatial_geometry import verify
 
 
 class GeometryTests(unittest.TestCase):
+    def test_atlas_zoom_is_independent_of_camera_tracking_scale(self):
+        rng = np.random.default_rng(63)
+        p = rng.uniform([15, 18], [240, 180], (180, 2)).astype(np.float32)
+        q = (p * [.63, .72] + [31, 5]).astype(np.float32)
+        self.assertIsNone(verify(p, q, 'two_d'))
+        result = verify(p, q, 'two_d', atlas=True)
+        self.assertIsNotNone(result)
+        self.assertGreater(result['inliers'], 170)
+        self.assertIsNone(verify(p, (p * [-.63, .72]).astype(np.float32), 'two_d', atlas=True))
+        self.assertIsNone(verify(p, (p * [.5, 2]).astype(np.float32), 'two_d', atlas=True))
+        self.assertIsNone(verify(p, rng.uniform([0, 0], [256, 192], p.shape).astype(np.float32), 'two_d', atlas=True))
+
     def test_nonplanar_3d_camera_motion_with_outliers(self):
         rng = np.random.default_rng(72)
         xyz = rng.uniform([-3, -2, 4], [3, 2, 10], (400, 3))

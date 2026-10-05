@@ -228,9 +228,17 @@ pub fn locate(
         .map(|t| (t, spatial::retrieval(&query, &t.features)))
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let trace = std::env::var_os("GAMEBUDDY_MAP_TRACE").is_some();
     let mut matches = vec![];
-    for (tile, _) in ranked.into_iter().take(12) {
-        if let Some(r) = engine.register(&query, &tile.features)?
+    for (tile, retrieval) in ranked.into_iter().take(12) {
+        let registration = engine.register_map(&query, &tile.features)?;
+        if trace {
+            eprintln!(
+                "GAMEBUDDY_MAP_RETRIEVAL {}",
+                json!({"map_id":tile.map_id,"tile":[tile.x,tile.y,tile.width,tile.height],"retrieval":retrieval,"registration":registration})
+            );
+        }
+        if let Some(r) = registration
             && r.inliers >= 32
             && r.coverage >= 0.3
         {
@@ -246,6 +254,12 @@ pub fn locate(
             let center = point(128., 96.);
             let polygon =
                 [[0., 0.], [256., 0.], [256., 192.], [0., 192.]].map(|p| point(p[0], p[1]));
+            if trace {
+                eprintln!(
+                    "GAMEBUDDY_MAP_CANDIDATE {}",
+                    json!({"map_id":tile.map_id,"tile":[tile.x,tile.y,tile.width,tile.height],"map_size":[tile.map_width,tile.map_height],"retrieval":retrieval,"score":r.score,"inliers":r.inliers,"coverage":r.coverage,"residual":r.residual,"center":center,"polygon":polygon,"valid":valid_projection(center,&polygon)})
+                );
+            }
             // Reject extrapolated/off-map matches before clipping. Clipping an
             // invalid transform can otherwise look like a confident edge marker.
             if valid_projection(center, &polygon) {

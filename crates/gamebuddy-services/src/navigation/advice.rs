@@ -187,6 +187,14 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         "Progress changed or task already complete. Current progress epoch is {}; read get_game_context before retrying.",
         progress.epoch
     );
+    let session = screen::status(store)?["session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let existing =
+        current(store, guide, &progress, &session)?.filter(|r| r.step_id == action.step_id);
+    // Refining the accepted current objective does not re-open old gates when
+    // the player scrolls beyond the frame that originally supported it.
     let guidance = guidance_from(
         guide,
         &progress,
@@ -197,6 +205,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     let location_supported = supports_action(guide, &action.step_id, &spatial);
     ensure!(
         location_supported
+            || existing.is_some()
             || guidance
                 .now
                 .as_ref()
@@ -227,10 +236,6 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
             })
         })
         .transpose()?;
-    let session = screen::status(store)?["session_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
     let recommendation = Recommendation {
         revision: guide.revision,
         epoch: progress.epoch,
@@ -239,14 +244,16 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         step_id: action.step_id,
         instructions: action.instructions.trim().into(),
         movement,
-        location_evidence: location_supported.then(|| {
-            json!({
-                "kind":"current_source_match_not_completion",
-                "room_id":spatial["observation"]["tracker"]["room_id"],
-                "observed_at_ms":spatial["observation"]["tracker"]["observed_at_ms"],
-                "related_step_ids":spatial["observation"]["related_step_ids"]
+        location_evidence: location_supported
+            .then(|| {
+                json!({
+                    "kind":"current_source_match_not_completion",
+                    "room_id":spatial["observation"]["tracker"]["room_id"],
+                    "observed_at_ms":spatial["observation"]["tracker"]["observed_at_ms"],
+                    "related_step_ids":spatial["observation"]["related_step_ids"]
+                })
             })
-        }),
+            .or_else(|| existing.and_then(|r| r.location_evidence)),
     };
     store.put_for_progress(guide, progress.epoch, &key(guide), &recommendation)?;
     Ok(
@@ -257,6 +264,51 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refining_current_area_advice_preserves_its_route_until_progress_changes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let mut guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Old gate\nUse the key.\n# Cross the chamber\nWalk right.",
+        )?;
+        guide.steps[1].prerequisites = vec!["step-1".into()];
+        store.save_guide(&guide)?;
+        // Represents earlier accepted, source-backed advice in this session.
+        store.put(
+            &key(&guide),
+            &Recommendation {
+                revision: guide.revision,
+                epoch: 0,
+                session: String::new(),
+                updated_at_ms: 1,
+                step_id: "step-2".into(),
+                instructions: "Walk right.".into(),
+                movement: None,
+                location_evidence: Some(
+                    json!({"kind":"current_source_match_not_completion","room_id":"earlier-view"}),
+                ),
+            },
+        )?;
+        let action = |epoch| NextAction {
+            expected_revision: guide.revision,
+            epoch,
+            step_id: "step-2".into(),
+            instructions: "Climb the ladder ahead.".into(),
+            screen_direction: None,
+        };
+        let result = publish(&store, &guide, action(0))?;
+        assert_eq!(result["navigation"]["guidance"]["now"]["id"], "step-2");
+        assert!(store.progress(&guide)?.completed.is_empty());
+        let reset = Progress {
+            epoch: 1,
+            ..Default::default()
+        };
+        store.save_progress(&guide, &reset, "reset")?;
+        assert!(publish(&store, &guide, action(1)).is_err());
+        Ok(())
+    }
     #[test]
     fn reporting_a_past_task_preserves_the_current_unfinished_recommendation() -> Result<()> {
         let dir = tempfile::tempdir()?;

@@ -264,11 +264,26 @@ impl Engine {
         Ok(features)
     }
     pub(crate) fn register(&mut self, a: &Features, b: &Features) -> Result<Option<Registration>> {
+        self.register_with_scale(a, b, false)
+    }
+    pub(crate) fn register_map(
+        &mut self,
+        a: &Features,
+        b: &Features,
+    ) -> Result<Option<Registration>> {
+        self.register_with_scale(a, b, true)
+    }
+    fn register_with_scale(
+        &mut self,
+        a: &Features,
+        b: &Features,
+        atlas: bool,
+    ) -> Result<Option<Registration>> {
         if let Some(config) = &self.worker {
             let value = crate::spatial_worker::call(
                 config,
                 &self.slot,
-                json!({"op":"register","query":a.learned_key,"reference":b.learned_key,"dimension":self.dimension}),
+                json!({"op":"register","query":a.learned_key,"reference":b.learned_key,"dimension":self.dimension,"atlas":atlas}),
             )?;
             return Ok(serde_json::from_value(value)?);
         }
@@ -1633,9 +1648,10 @@ mod tests {
         let mut guide = gamebuddy_core::import_markdown(
             "Game",
             "Route",
-            "# Old gate\nUnlock the gate.\n# New town\nVisit the shop.",
+            "# Old gate\nUnlock the gate.\n# New town\nVisit the shop.\n# Another task\nEnter the castle.",
         )?;
         guide.steps[1].prerequisites = vec!["step-1".into()];
+        guide.steps[2].prerequisites = vec!["step-1".into()];
         store.save_guide(&guide)?;
         let ticket = screen::start(&store, &guide.game, true)?;
         let path = directory.path().join("screen.png");
@@ -1677,15 +1693,23 @@ mod tests {
             result["navigation"]["direction"]["direction"], "right",
             "a source-matched street does not require resolving one shop as the current place"
         );
-        // No source match means the ordinary prerequisite check still applies.
+        // The accepted objective can be refined after the camera moves, but
+        // an unsupported new task still needs its ordinary prerequisites.
         observation["tracker"]["status"] = json!("lost");
         store.put(&format!("world-observation:{}", guide.id), &observation)?;
-        assert!(publish(&store, &guide, action()).is_err());
+        assert!(publish(&store, &guide, action()).is_ok());
+        let unsupported = || {
+            let mut next = action();
+            next.step_id = "step-3".into();
+            next
+        };
+        assert!(publish(&store, &guide, unsupported()).is_err());
         // An old capture cannot be used to bypass the dependency either.
         observation["tracker"]["status"] = json!("tracked");
+        observation["related_step_ids"] = json!(["step-3"]);
         observation["tracker"]["observed_at_ms"] = json!(frame.captured_at_ms - 16_000);
         store.put(&format!("world-observation:{}", guide.id), &observation)?;
-        assert!(publish(&store, &guide, action()).is_err());
+        assert!(publish(&store, &guide, unsupported()).is_err());
         Ok(())
     }
 

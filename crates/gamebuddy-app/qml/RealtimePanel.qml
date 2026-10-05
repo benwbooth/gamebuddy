@@ -31,6 +31,7 @@ WebEngineView {
     property bool returningPlayer: false
     property string voiceGame: ""
     property string pendingCue: ""
+    property string lastNarrationState: ""
     property string recoveryCue: ""
     property int recoveryAttempts: 0
     property bool reconnecting: false
@@ -77,7 +78,7 @@ WebEngineView {
     settings.javascriptCanOpenWindows: false
     function context() {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
-            guidance:session.navigation?.guidance, spatial:session.navigation?.spatial, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
+            guidance:session.navigation?.guidance, spatial:session.navigation?.spatial, coaching:session.navigation?.coaching, guide_id:session.guide?.id, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
             preparing:buddy.preparing, guide_ready:!!session.guide && session.reference_count>0, guide_revision:session.guide?.revision, microphone_active:voice.active, returning_player:returningPlayer,
             conversation_active:conversationActive || localConversationActive || voice.speaking || buddy.busy,
@@ -128,7 +129,13 @@ WebEngineView {
     }
     function narrate() {
         if(!spokenReplies || proactivePaused || (enabledBackend && !connected))return
-        const text=transport.next_narration(context())
+        const currentContext=context()
+        if(trace){
+            const c=JSON.parse(currentContext)
+            const state=JSON.stringify({action:c.guidance?.now?.id, guidance:c.guidance?.status, screen:c.screen?.status, fresh:c.screen?.scene?.fresh, talking:c.conversation_active, busy:buddy.busy, voice:voice.speaking, backend:backendBusy, waiting:waitingForReply, assistant:assistantSpeaking})
+            if(state!==lastNarrationState){lastNarrationState=state;console.warn("GAMEBUDDY_NARRATION_STATE "+state)}
+        }
+        const text=transport.next_narration(currentContext)
         if(text.length){
             if(trace)console.warn("GAMEBUDDY_NARRATION characters="+text.length)
             if(enabledBackend){

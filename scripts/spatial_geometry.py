@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 
 
-def verify(p, q, dimension):
+def verify(p, q, dimension, atlas=False):
     if len(p) < 16 or len(p) != len(q):
         return None
     if dimension == "three_d":
@@ -24,7 +24,12 @@ def verify(p, q, dimension):
         return None
     identity_affine = dict(xx=1.0, xy=0.0, tx=0.0, yx=0.0, yy=1.0, ty=0.0)
     if geometry == "affine":
-        if not (0.65 < matrix[0, 0] < 1.5 and 0.65 < matrix[1, 1] < 1.5 and abs(matrix[0, 1]) < 0.25 and abs(matrix[1, 0]) < 0.25):
+        # Atlas tiles span powers of two and need not have the camera's scale.
+        # Keep the tighter camera-to-camera limits for place tracking.
+        low, high = (0.45, 2.25) if atlas else (0.65, 1.5)
+        if not (low < matrix[0, 0] < high and low < matrix[1, 1] < high and abs(matrix[0, 1]) < 0.25 and abs(matrix[1, 0]) < 0.25):
+            return None
+        if atlas and not (0.65 < matrix[0, 0] / matrix[1, 1] < 1.55):
             return None
         transform = dict(zip(identity_affine, matrix.ravel().tolist()))
         residual = float(np.linalg.norm(p @ matrix[:, :2].T + matrix[:, 2] - q, axis=1)[valid].mean())

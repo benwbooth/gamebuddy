@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run inside nix develop. Proves automatic goal-change speech reaches audio.
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+narration_dir="$(mktemp -d /tmp/gamebuddy-narration-XXXXXXXX)"
+printf 'Narration evidence: %s\n' "$narration_dir"
+cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-overlay --bin gamebuddy --bin gamebuddy-cli --example narration_probe > "$narration_dir/build.log" 2>&1
+export PULSE_SINK="gamebuddy_test_narration_$$"
+narration_module="$(pactl load-module module-null-sink sink_name="$PULSE_SINK" sink_properties=device.description=GameBuddyNarrationTest)"
+narration_recorder=""
+cleanup(){
+    if [[ -n "$narration_recorder" ]]; then kill -INT "$narration_recorder" 2>/dev/null || true; wait "$narration_recorder" 2>/dev/null || true; fi
+    pactl unload-module "$narration_module"
+}
+trap cleanup EXIT
+./target/debug/examples/narration_probe --prepare "$narration_dir/data"
+date +%s%3N > "$narration_dir/recording-start-ms"
+parec --device="$PULSE_SINK.monitor" --file-format=wav "$narration_dir/speech.wav" & narration_recorder=$!
+./target/debug/gamebuddy --launch --windowed --game 'Narration fixture' --no-prepare --no-listen --voice-trace --data-dir "$narration_dir/data" -- \
+    ./target/debug/examples/narration_probe --run "$narration_dir/data" > "$narration_dir/runtime.log" 2>&1
+kill -INT "$narration_recorder"; wait "$narration_recorder" || true; narration_recorder=""
+rg -q 'NARRATION_FIXTURE_FINISHED' "$narration_dir/runtime.log"
+ffmpeg -nostdin -hide_banner -loglevel error -y -i "$narration_dir/speech.wav" -f segment -segment_time 35 "$narration_dir/chunk-%03d.wav"
+: > "$narration_dir/heard.txt"
+for chunk in "$narration_dir"/chunk-*.wav; do
+    ./target/debug/gamebuddy-cli --data-dir "$narration_dir/data" transcribe "$chunk" >> "$narration_dir/heard.txt"
+done
+rg -qi 'blue platform' "$narration_dir/heard.txt"
+rg -qi 'green door' "$narration_dir/heard.txt"
+rg -qi 'running start' "$narration_dir/heard.txt"
+cat "$narration_dir/heard.txt"
+printf 'PASS automatic next-step audio without a player question: %s\n' "$narration_dir"

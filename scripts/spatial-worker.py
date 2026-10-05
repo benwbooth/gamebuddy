@@ -85,7 +85,7 @@ def extract(path):
 
 
 @torch.inference_mode()
-def register(query, reference, dimension):
+def register(query, reference, dimension, atlas=False):
     a, b = features(query), features(reference)
     result = rbd(matcher({"image0": a, "image1": b}))
     pairs = result["matches"].cpu().numpy()
@@ -93,7 +93,7 @@ def register(query, reference, dimension):
         return None
     p = a["keypoints"][0].cpu().numpy()[pairs[:, 0]].astype(np.float32)
     q = b["keypoints"][0].cpu().numpy()[pairs[:, 1]].astype(np.float32)
-    return verify(p, q, dimension)
+    return verify(p, q, dimension, atlas=atlas)
 
 
 for line in sys.stdin:
@@ -105,7 +105,7 @@ for line in sys.stdin:
             elif request["op"] == "extract":
                 answer = extract(request["path"])
             elif request["op"] == "register":
-                answer = register(request["query"], request["reference"], request["dimension"])
+                answer = register(request["query"], request["reference"], request["dimension"], request.get("atlas", False))
             else:
                 raise ValueError("Unknown spatial operation")
         print(json.dumps({"result": answer}, allow_nan=False), flush=True)
