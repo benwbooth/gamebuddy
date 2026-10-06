@@ -18,6 +18,7 @@ pub mod captions;
 pub mod conversation;
 pub mod guide_browser;
 pub mod harness;
+pub mod journal;
 pub mod navigation;
 pub mod plan;
 pub mod preparation;

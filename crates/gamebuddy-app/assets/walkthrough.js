@@ -14,7 +14,7 @@ function walkthroughContext(content, sourceSteps=content.guide.steps) {
   const used=new Set([current]);
   const later=now?future.filter(s=>{if(used.has(s.id)||inherited(s.id,completed)||inherited(s.id,skipped))return false;used.add(s.id);return true}).slice(0,4).map(describe):[];
   return {guide:content.guide.id,now:now?{id:now.id,title:now.title,instructions:now.instructions}:null,path:path(byId.get(current)||now).join(' › '),earlier,later,
-    laterLabel:preview.length?'Coming up':'Later in walkthrough',status:content.guidance?.status||'ready',reason:content.guidance?.reason||'',requirements:(content.guidance?.requirements||[]).map(s=>s.title),preparation:content.preparation?.message||''};
+    recoveryStatus:content.recovery?.status,laterLabel:preview.length?'Coming up':'Later in walkthrough',status:content.guidance?.status||'ready',reason:['pending','repairing','needs_information'].includes(content.recovery?.status)?(content.recovery.message||'Updating the walkthrough…'):(content.guidance?.reason||''),requirements:(content.guidance?.requirements||[]).map(s=>s.title),preparation:content.preparation?.message||''};
 }
 
 function mountWalkthrough(body,initial) {
@@ -80,7 +80,7 @@ function mountWalkthrough(body,initial) {
     path.textContent=model.path;path.title=model.path;path.hidden=!model.path;
     const nextReading=JSON.stringify([model.guide,model.now,model.status,model.requirements,model.reason]);
     if(nextReading!==readingKey){readingKey=nextReading;stopScroll();position=0;viewport.scrollTop=0;maximum=0}
-    const status=model.requirements.length?'Check prerequisite':({ready:'Now',plan:'Suggested next step',unlocated:'Location unconfirmed',blocked:'Plan needs attention',goals_complete:'Selected goal complete'})[model.status]||'Current step';
+    const status=['pending','repairing'].includes(model.recoveryStatus)?'Updating walkthrough':model.requirements.length?'Check prerequisite':({ready:'Now',plan:'Suggested next step',unlocated:'Location unconfirmed',blocked:'Plan needs attention',goals_complete:'Selected goal complete'})[model.status]||'Current step';
     label.textContent=status;title.textContent=model.now?.title||(!model.reason?'Preparing player actions…':'');title.hidden=!title.textContent;
     if(model.now){title.dataset.stepId=model.now.id;title.setAttribute('aria-current','step');evidence(title,'Step sources',()=>stepEvidence([model.now.id]));evidence(copy,'Step sources',()=>stepEvidence([model.now.id]))}
     else {delete title.dataset.stepId;title.removeAttribute('aria-current');delete title.dataset.evidence;delete copy.dataset.evidence}

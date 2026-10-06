@@ -5,6 +5,8 @@ use gamebuddy_core::{Guide, PlayerGoal, ReferencePreference, Step};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod recovery;
+
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanEdit {

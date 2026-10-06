@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 mod activity;
 mod cached;
 mod conversation;
+mod journal;
 
 pub fn data_dir() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("GAMEBUDDY_DATA_DIR") {
@@ -32,6 +33,7 @@ impl Store {
         connection.execute_batch("CREATE TABLE IF NOT EXISTS guide_revisions(guide_id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, summary TEXT NOT NULL, PRIMARY KEY(guide_id,revision));")?;
         cached::initialize(&connection)?;
         conversation::initialize(&connection)?;
+        journal::initialize(&connection)?;
         Ok(Self { root, connection })
     }
     pub fn save_guide(&self, guide: &Guide) -> Result<()> {
@@ -76,6 +78,11 @@ impl Store {
             &self.connection,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        self.revise_guide_locked(guide, expected, summary)?;
+        transaction.commit()?;
+        Ok(())
+    }
+    fn revise_guide_locked(&self, guide: &Guide, expected: u64, summary: &str) -> Result<()> {
         let old = self.guide(&guide.id)?;
         ensure!(
             old.revision == expected,
@@ -99,8 +106,8 @@ impl Store {
         }) {
             progress.current_step = None;
         }
-        transaction.execute("INSERT OR IGNORE INTO guide_revisions(guide_id,revision,body,summary) VALUES(?1,?2,?3,'Before first tracked edit')",params![old.id,i64::try_from(old.revision)?,serde_json::to_string(&old)?])?;
-        transaction.execute(
+        self.connection.execute("INSERT OR IGNORE INTO guide_revisions(guide_id,revision,body,summary) VALUES(?1,?2,?3,'Before first tracked edit')",params![old.id,i64::try_from(old.revision)?,serde_json::to_string(&old)?])?;
+        self.connection.execute(
             "INSERT INTO guide_revisions(guide_id,revision,body,summary) VALUES(?1,?2,?3,?4)",
             params![
                 guide.id,
@@ -159,7 +166,7 @@ impl Store {
             index.guide_revision = guide.revision;
             self.save_index(&index)?;
         }
-        transaction.execute(
+        self.connection.execute(
             "INSERT INTO events(guide_id,kind,body) VALUES(?1,'plan_edit',?2)",
             params![
                 guide.id,
@@ -167,8 +174,108 @@ impl Store {
                     .to_string()
             ],
         )?;
-        transaction.commit()?;
         Ok(())
+    }
+    /// Recovery preserves progress and rule definitions in the same transaction
+    /// as its revision. A concurrent capture or player edit invalidates the job.
+    pub fn recover_plan(
+        &self,
+        old: &Guide,
+        epoch: u64,
+        mut revised: Guide,
+        rules: Option<gamebuddy_core::outcomes::OutcomeModel>,
+        clear_completed_outcome: bool,
+        summary: &str,
+    ) -> Result<Guide> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            self.guide(&old.id)?.revision == old.revision && self.progress(old)?.epoch == epoch,
+            "Plan or progress changed during repair"
+        );
+        ensure!(
+            revised.id == old.id
+                && revised.sources == old.sources
+                && revised.reference_preferences == old.reference_preferences,
+            "Automatic recovery must preserve source identity and preferences"
+        );
+        ensure!(
+            self.get::<String>("active_guide")?
+                .is_none_or(|id| id == old.id),
+            "Active game changed during repair"
+        );
+        let before = self.progress(old)?;
+        ensure!(
+            old.steps
+                .iter()
+                .all(|s| !gamebuddy_core::step_complete(old, &before, &s.id)
+                    || revised.step(&s.id) == Some(s)),
+            "Automatic recovery must preserve completed actions"
+        );
+        revised.revision = old.revision + 1;
+        revised.validate()?;
+        let mut prepared = crate::outcomes::prepared(self, old)?
+            .map(|p| (*p).clone())
+            .unwrap_or(crate::outcomes::Prepared {
+                guide_revision: old.revision,
+                reviewed_scopes: vec![],
+                model: Default::default(),
+                provider_model: "plan_recovery".into(),
+                elapsed_ms: 0,
+            });
+        if let Some(rules) = rules {
+            prepared.model.merge(rules);
+        }
+        prepared.model.validate(&revised)?;
+        prepared.guide_revision = revised.revision;
+        self.revise_guide_locked(&revised, old.revision, summary)?;
+        if clear_completed_outcome {
+            let mut progress = self.progress(&revised)?;
+            ensure!(
+                progress
+                    .world
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.satisfied_when.satisfied(&progress.world)),
+                "Cannot retire an unfinished outcome goal"
+            );
+            progress.world.goal = None;
+            self.put(
+                &format!("progress:{}:{}", revised.id, revised.revision),
+                &progress,
+            )?;
+        }
+        if let Some(widgets) = self
+            .get::<Vec<gamebuddy_core::Widget>>(&format!("widgets:{}:{}", old.id, old.revision))?
+        {
+            self.put(
+                &format!("widgets:{}:{}", revised.id, revised.revision),
+                &widgets,
+            )?;
+        }
+        let tracker_key = crate::navigation::tracker_key(old);
+        if let Some(mut tracker) = self
+            .get::<gamebuddy_core::PlaceTracker>(&tracker_key)?
+            .filter(|t| t.epoch == epoch)
+        {
+            tracker.epoch = epoch + 1;
+            self.put(&crate::navigation::tracker_key(&revised), &tracker)?;
+        }
+        // Historical action evidence is retained; a repaired rule is not new
+        // evidence for retroactively adding inventory or completing an action.
+        self.put(&format!("outcomes:{}", revised.id), &prepared)?;
+        self.connection.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'plan_recovery',?2)",
+            params![
+                old.id,
+                serde_json::json!({"from":old.revision,"to":revised.revision,"summary":summary})
+                    .to_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(revised)
     }
     pub fn guides(&self) -> Result<Vec<Guide>> {
         let mut stmt = self
@@ -350,7 +457,7 @@ impl Store {
             "INSERT INTO events(guide_id,kind,body) VALUES(?1,'player_report',?2)",
             params![
                 guide.id,
-                serde_json::json!({"step_id":step_id,"report":report,"progress":progress})
+                serde_json::json!({"step_id":step_id,"report":report,"progress":progress,"journal_image":crate::journal::capture(self,guide).ok()})
                     .to_string()
             ],
         )?;
@@ -443,7 +550,7 @@ impl Store {
             "INSERT INTO events(guide_id,kind,body) VALUES(?1,'reader_checkbox',?2)",
             params![
                 guide.id,
-                serde_json::json!({"step_id":step_id,"checked":checked,"progress":progress})
+                serde_json::json!({"step_id":step_id,"checked":checked,"progress":progress,"journal_image":crate::journal::capture(self,guide).ok()})
                     .to_string()
             ],
         )?;
@@ -486,7 +593,7 @@ impl Store {
             "INSERT INTO events(guide_id,kind,body) VALUES(?1,'player_location',?2)",
             params![
                 guide.id,
-                serde_json::json!({"report":report,"location":tracker}).to_string()
+                serde_json::json!({"report":report,"location":tracker,"journal_image":crate::journal::capture(self,guide).ok()}).to_string()
             ],
         )?;
         tx.commit()?;
@@ -612,7 +719,7 @@ impl Store {
             "INSERT INTO events(guide_id,kind,body) VALUES(?1,'world_report',?2)",
             rusqlite::params![
                 guide.id,
-                serde_json::json!({"report":update.player_report,"progress":progress}).to_string()
+                serde_json::json!({"report":update.player_report,"progress":progress,"journal_image":crate::journal::capture(self,guide).ok()}).to_string()
             ],
         )?;
         tx.commit()?;

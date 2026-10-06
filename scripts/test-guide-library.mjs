@@ -6,6 +6,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {imageInputs,widgetInputs} from './test-widget-gestures.mjs';
+import {journalInputs} from './test-journal.mjs';
 import {walkthroughInputs} from './test-walkthrough.mjs';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
@@ -165,6 +166,7 @@ try {
   }
   await widgetInputs({call,evaluate,until});
   await walkthroughInputs({call,evaluate,until,screenshot});
+  await journalInputs({call,evaluate,until,screenshot,guide,db});
   assert.deepEqual(errors,[],'JavaScript runtime errors');
   console.log('PASS: Qt reader persistence, sources and widget controls; pinned next action; stable map/image across live updates, moving marker, open controls and stale location; optional captured-frame map and follow-player.');
 } finally {socket.close();db.close()}

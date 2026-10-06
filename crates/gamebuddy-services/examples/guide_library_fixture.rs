@@ -95,6 +95,23 @@ fn main() -> Result<()> {
         "fixture",
     )?;
     store.put(&format!("widget-visibility:{}",guide.id),&json!({"guide-library":true,"walkthrough-outline":false,"location-map":false,"current-step":false}))?;
+    let ticket = gamebuddy_services::screen::start(&store, &guide.game, true)?;
+    gamebuddy_services::screen::publish(
+        &store,
+        &ticket,
+        &store.root.join("picture-0.jpg"),
+        "generated_test_frame",
+    )?;
+    gamebuddy_services::journal::record(
+        &store,
+        &guide,
+        serde_json::from_value(
+            json!({"title":"Tower inscription", "body":"The inscription reads 0417. Generated integration fixture, not real gameplay.", "category":"clue", "capture_screenshot":true}),
+        )?,
+        "agent_note",
+    )?;
+    gamebuddy_services::screen::set_enabled(&store, &ticket.session, &guide.game, false)?;
+    store.put(&format!("widget-visibility:{}",guide.id),&json!({"guide-library":true,"run-journal":false,"walkthrough-outline":false,"location-map":false,"current-step":false}))?;
     store.put(
         "widget-layout",
         &json!({"guide-library":{"x":110,"y":15,"width":1100,"height":685}}),

@@ -371,6 +371,11 @@ impl ffi::Buddy {
                     })
                     .transpose()?
                     .unwrap_or_else(|| json!({}));
+                let journal = data
+                    .guide
+                    .as_ref()
+                    .map(|g| services::journal::summary(&store, g))
+                    .transpose()?;
                 let current = &navigation["guidance"]["now"];
                 let widgets = data
                     .guide
@@ -415,7 +420,7 @@ impl ffi::Buddy {
                     })
                     .and_then(|p| url::Url::from_file_path(p).ok())
                     .map(|u| u.to_string());
-                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"journal":journal,"screen":services::screen::status(&store)?,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
             })();
             if std::env::args().any(|a| a == "--ui-trace") {
                 eprintln!(
@@ -1330,6 +1335,7 @@ impl ffi::Buddy {
                 "/* GUIDE_LIBRARY_SCRIPT */",
                 include_str!("../assets/guide-library.js"),
             )
+            .replace("/* JOURNAL */", include_str!("../assets/journal.js"))
             .replace(
                 "/* WALKTHROUGH_SCRIPT */",
                 include_str!("../assets/walkthrough.js"),
@@ -1453,6 +1459,10 @@ impl ffi::Buddy {
                 let progress = guide.as_ref().map(|g| store.progress(g)).transpose()?;
                 let mut place = None;
                 let mut atlas_pending = false;
+                if let Some(guide) = &guide {
+                    services::plan::recovery::schedule(&store, guide, prepare);
+                    store.journal_sync(guide)?;
+                }
                 if prepare && let Some(guide) = &guide {
                     services::outcomes::schedule(&store, guide);
                     let state: serde_json::Value = serde_json::from_str(&state)?;
@@ -1557,6 +1567,7 @@ impl ffi::Buddy {
                 [
                     "current-step",
                     "walkthrough-outline",
+                    "run-journal",
                     "location-map",
                     "guide-library",
                     "navigation-arrow"

@@ -39,6 +39,7 @@ ApplicationWindow {
     property var widgetCatalog: {
         let items=[]
         if(session.guide)items.push({id:"walkthrough-outline",title:"Walkthrough"})
+        if(session.guide)items.push({id:"run-journal",title:"Run journal · notes & screenshots",defaultVisible:false})
         if(session.guide)items.push({id:"guide-library",title:"Guide library · pictures, maps & sources",defaultVisible:false})
         if(session.guide)items.push({id:"navigation-arrow",title:"Navigation arrow"})
         if(!session.guide && (session.navigation?.guidance || session.current))items.push({id:"current-step",title:"Next action"})
@@ -330,7 +331,7 @@ ApplicationWindow {
             settings.localContentCanAccessFileUrls: false
             settings.javascriptCanOpenWindows: false
             function updateWidgets() {
-                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, reference_count:root.session.reference_count, layouts: root.session.layouts || {}, widget_visibility:root.session.widget_visibility, locked: false}) + ")")
+                runJavaScript("window.gamebuddy && window.gamebuddy.render(" + JSON.stringify({widgets: root.session.widgets || [], current: root.session.current, navigation: root.session.navigation, guide:root.session.guide, journal:root.session.journal, progress:root.session.progress, estimate:root.session.estimate, preparation:root.session.preparation, reference_count:root.session.reference_count, layouts: root.session.layouts || {}, widget_visibility:root.session.widget_visibility, locked: false}) + ")")
             }
             Component.onCompleted: loadHtml(buddy.widget_html())
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }

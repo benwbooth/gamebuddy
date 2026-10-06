@@ -27,6 +27,9 @@ pub struct Request {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
     Snapshot,
+    Journal {
+        request: crate::journal::Request,
+    },
     Images {
         ids: Vec<String>,
     },
@@ -90,6 +93,7 @@ pub fn respond(store: &Store, request: &Request) -> Result<Value> {
     );
     match &request.action {
         Action::Snapshot => snapshot(store, &guide),
+        Action::Journal { request } => crate::journal::respond(store, &guide, request),
         Action::Images { ids } => {
             ensure!(ids.len() <= 8, "Load at most eight pictures at a time");
             let index = store
