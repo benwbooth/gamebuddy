@@ -41,7 +41,7 @@ ApplicationWindow {
         if(session.guide)items.push({id:"walkthrough-outline",title:"Walkthrough"})
         if(session.guide)items.push({id:"guide-library",title:"Guide library · pictures, maps & sources",defaultVisible:false})
         if(session.guide)items.push({id:"navigation-arrow",title:"Navigation arrow"})
-        if(session.navigation?.guidance || session.current)items.push({id:"current-step",title:"Next action"})
+        if(!session.guide && (session.navigation?.guidance || session.current))items.push({id:"current-step",title:"Next action"})
         if(session.navigation?.map)items.push({id:"location-map",title:"Location map"})
         return items.concat(session.widgets || [])
     }

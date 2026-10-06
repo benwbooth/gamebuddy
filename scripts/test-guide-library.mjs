@@ -6,6 +6,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {imageInputs,widgetInputs} from './test-widget-gestures.mjs';
+import {walkthroughInputs} from './test-walkthrough.mjs';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
 assert(new URL(endpoint).hostname==='127.0.0.1','Only a private local test port is supported');
@@ -27,7 +28,7 @@ async function evaluate(expression){const result=await call('Runtime.evaluate',{
 async function until(check,message){const start=Date.now();while(!await check()){assert(Date.now()-start<15000,message);await new Promise(r=>setTimeout(r,100))}}
 async function click(selector){const rect=await evaluate(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n)return null;n.scrollIntoView({block:'nearest'});const r=n.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);assert(rect,'Missing '+selector);await call('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...rect});await call('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...rect})}
 async function button(label){const selector=await evaluate(`(()=>{const n=[...document.querySelectorAll('.library button')].find(n=>n.textContent===${JSON.stringify(label)});if(!n)return null;n.dataset.testTarget='yes';return '[data-test-target="yes"]'})()`);assert(selector,'Missing button '+label);await click(selector);await evaluate(`document.querySelector('[data-test-target="yes"]')?.removeAttribute('data-test-target')`)}
-async function screenshot(name){const result=await call('Page.captureScreenshot',{format:'png'});writeFileSync(root+'/'+name+'.png',Buffer.from(result.data,'base64'))}
+async function screenshot(name,clip){const result=await call('Page.captureScreenshot',{format:'png',...(clip?{clip}:{})});writeFileSync(root+'/'+name+'.png',Buffer.from(result.data,'base64'))}
 try {
   await call('Runtime.enable');
   await until(()=>evaluate(`document.querySelector('.library')?.textContent.includes('12 pictures')`),'Manifest did not arrive through Qt');
@@ -77,12 +78,11 @@ try {
   // Ignore background fixture snapshots, but retain internal gesture/picker
   // flushes of the exact state under test.
   await evaluate(`gamebuddy.render=state=>{if(state===testState)testRender(state)};testState.widget_visibility={'walkthrough-outline':true,'location-map':true,'current-step':false,'guide-library':false};testRender(testState)`);
-  assert(await evaluate(`document.querySelector('.outline-next')?.textContent.includes(testState.navigation.guidance.now.instructions)`),'Next instructions are not pinned');
+  assert(await evaluate(`document.querySelector('.outline-next')?.textContent.includes(testState.navigation.guidance.now.instructions)`),'Current instructions are not visible');
   assert(await evaluate(`document.querySelector('[aria-current=step]').dataset.stepId==='step-3' && document.querySelector('.outline-next').textContent.includes(${JSON.stringify(advice)})`),'Outline did not follow conversation advice');
   await screenshot('shared-next-action');
-  await evaluate(`const current=document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]');current.click();let parent=current.closest('details');while(parent){parent.open=false;parent=parent.parentElement.closest('details')}`);
-  await until(()=>evaluate(`[...document.querySelectorAll('[data-widget-id="walkthrough-outline"] details')].filter(d=>d.querySelector('[aria-current=step]')).every(d=>d.open)`),'Current path can be collapsed');
-  assert(await evaluate(`document.querySelector('[data-widget-id="walkthrough-outline"] [aria-current=step]').parentElement.querySelector('.instructions')?.textContent===testState.navigation.guidance.now.instructions`),'Current action click hid its instructions');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-widget-id="walkthrough-outline"] details').length`),0,'Passive outline still requires manual branch expansion');
+  assert.equal(await evaluate(`document.querySelector('.outline-next .instructions').textContent`),advice);
   // Reproduce frequent live observations while holding the same atlas image.
   await evaluate(`testState.navigation.map.current_place=testState.navigation.map.places[0];testState.navigation.map.selected_map_id='town';testState.navigation.map.geometric_marker={map_id:'town',region:{x:.1,y:.1,width:.2,height:.5},precision:'camera_footprint'};testRender(testState)`);
   await until(()=>evaluate(`document.querySelector('.map-viewport img')?.src.startsWith('data:image/jpeg') && document.querySelector('.map-viewport img').naturalWidth>0`),'Fixture map missing');
@@ -164,6 +164,7 @@ try {
     await evaluate(`window.testState=${JSON.stringify(fixtureState)};testRender(testState)`);
   }
   await widgetInputs({call,evaluate,until});
+  await walkthroughInputs({call,evaluate,until,screenshot});
   assert.deepEqual(errors,[],'JavaScript runtime errors');
   console.log('PASS: Qt reader persistence, sources and widget controls; pinned next action; stable map/image across live updates, moving marker, open controls and stale location; optional captured-frame map and follow-player.');
 } finally {socket.close();db.close()}

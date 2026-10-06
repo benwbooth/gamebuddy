@@ -1329,6 +1329,10 @@ impl ffi::Buddy {
             .replace(
                 "/* GUIDE_LIBRARY_SCRIPT */",
                 include_str!("../assets/guide-library.js"),
+            )
+            .replace(
+                "/* WALKTHROUGH_SCRIPT */",
+                include_str!("../assets/walkthrough.js"),
             ))
     }
     pub fn voice_path(&self) -> QString {

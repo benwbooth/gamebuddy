@@ -111,8 +111,16 @@ scenarios.forEach(state=>{{const b=document.createElement('button');b.textConten
     );
     let html = include_str!("../../gamebuddy-app/assets/widgets.html")
         .replace(
+            "/* WIDGET_GESTURES_SCRIPT */",
+            include_str!("../../gamebuddy-app/assets/widget-gestures.js"),
+        )
+        .replace(
             "/* GUIDE_LIBRARY_SCRIPT */",
             include_str!("../../gamebuddy-app/assets/guide-library.js"),
+        )
+        .replace(
+            "/* WALKTHROUGH_SCRIPT */",
+            include_str!("../../gamebuddy-app/assets/walkthrough.js"),
         )
         .replace("</body>", &format!("{script}</body>"));
     std::fs::create_dir_all(&output)?;
