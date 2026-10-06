@@ -583,6 +583,29 @@ pub fn guidance_with_view(
     recommendation: Option<&str>,
     plan: &crate::outcomes::PlanningView,
 ) -> Guidance {
+    guidance_with_priorities(guide, progress, location, recommendation, plan, true)
+}
+
+/// Resolve the prerequisites of an already accepted action before returning to
+/// a longer-term checklist goal. This does not edit or complete that goal.
+pub fn guidance_for_action(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    action: &str,
+    plan: &crate::outcomes::PlanningView,
+) -> Guidance {
+    guidance_with_priorities(guide, progress, location, Some(action), plan, false)
+}
+
+fn guidance_with_priorities(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    recommendation: Option<&str>,
+    plan: &crate::outcomes::PlanningView,
+    honor_goals: bool,
+) -> Guidance {
     if plan.goal_complete {
         return Guidance { status: "goals_complete".into(), reason: "Your selected outcome is satisfied by the saved world facts. Alternative methods need not be completed.".into(), ..Default::default() };
     }
@@ -594,6 +617,7 @@ pub fn guidance_with_view(
         .iter()
         .flat_map(|g| &g.step_ids)
         .chain(plan.goal_steps.iter())
+        .filter(|_| honor_goals)
         .collect();
     if !goal_ids.is_empty() && goal_ids.iter().all(|id| step_complete(guide, progress, id)) {
         return Guidance { status: "goals_complete".into(), reason: "Your selected goals are complete according to saved confirmations and player reports.".into(), ..Default::default() };

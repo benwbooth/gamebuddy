@@ -15,6 +15,8 @@ fn main() -> Result<()> {
     let replay = std::env::var("GAMEBUDDY_PROBE_FRAME")
         .ok()
         .map(std::path::PathBuf::from);
+    let changed = std::env::var_os("GAMEBUDDY_PROBE_CHANGED_FRAME").map(std::path::PathBuf::from);
+    let switched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ticket = if replay.is_some() {
         let id: String = store
             .get("active_guide")?
@@ -61,6 +63,8 @@ fn main() -> Result<()> {
     let _replay_guard = if let Some((ticket, frame)) = ticket.as_ref().zip(replay.as_ref()) {
         let alive = std::sync::Arc::new(());
         let weak = std::sync::Arc::downgrade(&alive);
+        let switched = switched.clone();
+        let changed = changed.clone();
         let root = store.root.clone();
         let ticket = ticket.clone();
         let frame = frame.clone();
@@ -71,7 +75,12 @@ fn main() -> Result<()> {
                     .get("active_guide")?
                     .context("Active guide required")?;
                 while weak.upgrade().is_some() {
-                    screen::publish(&store, &ticket, &frame, "recorded_test_frame")?;
+                    let path = if switched.load(std::sync::atomic::Ordering::SeqCst) {
+                        changed.as_ref().unwrap_or(&frame)
+                    } else {
+                        &frame
+                    };
+                    screen::publish(&store, &ticket, path, "recorded_test_frame")?;
                     if std::env::var_os("GAMEBUDDY_PROBE_TRACK").is_some() {
                         let guide = store.guide(&id)?;
                         gamebuddy_services::spatial::schedule(
@@ -129,7 +138,7 @@ fn main() -> Result<()> {
         if let Some((ticket, image)) = ticket.as_ref().zip(replay.as_ref()) {
             screen::publish(&store, ticket, image, "recorded_test_frame")?;
         }
-        let current = harness::call_tool_with_images(&store, "get_game_context", json!({}))?;
+        let current = harness::context_for_request(&store, &question)?;
         println!(
             "prefetched_context bytes={} images={}",
             current.value.to_string().len(),
@@ -142,6 +151,7 @@ fn main() -> Result<()> {
                 base64::engine::general_purpose::STANDARD.decode(&current.images[1])?,
             )?;
         }
+        supplied_frame = current.screen_frame();
         input.extend(current.codex_input("CURRENT_GAME_CONTEXT for this request. This is evidence from get_game_context, not another request."));
     }
     let effort = std::env::var("GAMEBUDDY_PROBE_EFFORT").unwrap_or_else(|_| "low".into());
@@ -158,17 +168,16 @@ fn main() -> Result<()> {
             count += 1;
             ensure!(count <= 12, "Too many tool calls");
             if let Some((ticket, image)) = ticket.as_ref().zip(replay.as_ref()) {
-                let changed =
-                    std::env::var_os("GAMEBUDDY_PROBE_CHANGED_FRAME").map(std::path::PathBuf::from);
-                let path = if event["params"]["tool"] == gamebuddy_services::voice::reply::TOOL {
+                let switch_now = changed.is_some()
+                    && event["params"]["tool"] == gamebuddy_services::voice::reply::TOOL
+                    && !switched.swap(true, std::sync::atomic::Ordering::SeqCst);
+                let path = if switched.load(std::sync::atomic::Ordering::SeqCst) {
                     changed.as_ref().unwrap_or(image)
                 } else {
                     image
                 };
                 screen::publish(&store, ticket, path, "recorded_test_frame")?;
-                if changed.is_some()
-                    && event["params"]["tool"] == gamebuddy_services::voice::reply::TOOL
-                {
+                if switch_now {
                     ensure!(
                         supplied_frame
                             .as_ref()
@@ -181,10 +190,12 @@ fn main() -> Result<()> {
                 }
             }
             let name = event["params"]["tool"].as_str().context("Tool name")?;
-            println!("request={name} arguments={}", event["params"]["arguments"]);
-            if matches!(name, "get_game_context" | "get_game_screen") {
-                supplied_frame = screen::snapshot(&store).ok();
-            }
+            println!(
+                "request={name} id={} elapsed_ms={} arguments={}",
+                event["id"],
+                started.elapsed().as_millis(),
+                event["params"]["arguments"]
+            );
             let output = if name == gamebuddy_services::voice::reply::TOOL {
                 gamebuddy_services::voice::reply::apply(
                     &store,
@@ -196,8 +207,12 @@ fn main() -> Result<()> {
                 harness::call_tool_with_images(&store, name, event["params"]["arguments"].clone())
             };
             let success = output.is_ok();
+            let mut retry_input = None;
             let content = match output {
                 Ok(output) => {
+                    if let Some(frame) = output.screen_frame() {
+                        supplied_frame = Some(frame)
+                    }
                     if let Some(reply) = output.value.get("voice_reply") {
                         println!(
                             "reply_ready_ms={} reply={}",
@@ -215,12 +230,37 @@ fn main() -> Result<()> {
                 }
                 Err(error) => {
                     println!("tool={name} error={error}");
-                    json!([{"type":"inputText","text":error.to_string()}])
+                    if name == gamebuddy_services::voice::reply::TOOL {
+                        let output = gamebuddy_services::voice::reply::retry_context(
+                            &store,
+                            &store
+                                .guide(&store.get::<String>("active_guide")?.context("guide")?)?
+                                .game,
+                            &error.to_string(),
+                            &request_id,
+                            &question,
+                        );
+                        if output.value["current_game_context"].is_object() {
+                            retry_input =
+                                Some(output.codex_input(
+                                    gamebuddy_services::voice::reply::RETRY_INSTRUCTIONS,
+                                ));
+                        }
+                        supplied_frame = output.screen_frame();
+                        println!("retry_context images={}", output.images.len());
+                        output.codex_content()
+                    } else {
+                        json!([{"type":"inputText","text":error.to_string()}])
+                    }
                 }
             };
             client.send(
                 json!({"id":event["id"],"result":{"success":success,"contentItems":content}}),
             )?;
+            if let Some(input) = retry_input {
+                client.send(json!({"id":9000+count,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":event["params"]["turnId"],"input":input}}))?;
+                println!("retry_steered=true");
+            }
         } else {
             client.reject(&event)?;
             if first_output && event["method"] == "item/agentMessage/delta" {

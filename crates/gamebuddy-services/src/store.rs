@@ -646,6 +646,24 @@ impl Store {
                 provider_model: "conversation_review".into(),
                 elapsed_ms: 0,
             });
+        let removed_effects: std::collections::HashSet<_> = update
+            .rules
+            .actions
+            .iter()
+            .flat_map(|rule| {
+                prepared
+                    .model
+                    .actions
+                    .iter()
+                    .filter(|old| old.step_id == rule.step_id)
+                    .flat_map(move |old| {
+                        old.effects
+                            .iter()
+                            .filter(|effect| !rule.effects.contains(effect))
+                            .map(|effect| (rule.step_id.clone(), effect.id.clone(), effect.value))
+                    })
+            })
+            .collect();
         prepared.model.merge(update.rules);
         prepared.model.validate(guide)?;
         // A source-backed conversational review is a completed planning pass
@@ -657,12 +675,7 @@ impl Store {
         // A changed effect is not retrospective evidence for a different fact.
         progress.world.facts.retain(|id, fact| {
             fact.step_id.as_deref().is_none_or(|step| {
-                prepared.model.actions.iter().any(|r| {
-                    r.step_id == step
-                        && r.effects
-                            .iter()
-                            .any(|e| e.id == *id && e.value == fact.value)
-                })
+                !removed_effects.contains(&(step.to_owned(), id.clone(), fact.value))
             })
         });
         progress.epoch += 1;

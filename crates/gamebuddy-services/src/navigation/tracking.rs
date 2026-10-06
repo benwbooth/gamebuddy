@@ -244,6 +244,29 @@ mod tests {
         );
     }
     #[test]
+    fn a_current_player_location_can_support_advice_past_an_old_route_goal() {
+        let (_dir, store, mut guide) = fixture();
+        guide.goals = vec![gamebuddy_core::PlayerGoal {
+            id: "old-route".into(),
+            description: "Visit the forest".into(),
+            step_ids: vec!["step-3".into()],
+        }];
+        store.save_guide(&guide).unwrap();
+        screen::start(&store, &guide.game, true).unwrap();
+        report(&store, &guide, "shop", "step-2", 0).unwrap();
+        let progress = store.progress(&guide).unwrap();
+        let result=call_tool(&store,"set_next_action",json!({"expected_revision":guide.revision,"epoch":progress.epoch,"step_id":"step-2","instructions":"Buy the key from the shopkeeper."})).unwrap();
+        assert_eq!(result["navigation"]["guidance"]["now"]["id"], "step-2");
+        assert!(store.progress(&guide).unwrap().completed.is_empty());
+        let search = call_tool(
+            &store,
+            "search_guide",
+            json!({"query":"I am in the shop. What should I do?"}),
+        )
+        .unwrap();
+        assert_eq!(search["places_by_step"]["step-2"]["id"], "shop");
+    }
+    #[test]
     fn player_location_drives_map_and_cursor_survives_uncertainty_and_completion() {
         let (_dir, store, guide) = fixture();
         screen::start(&store, &guide.game, true).unwrap();

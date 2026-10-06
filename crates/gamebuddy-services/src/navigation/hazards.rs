@@ -159,6 +159,73 @@ pub fn upcoming(
     None
 }
 
+/// Warn about a nearby departure/gate before the player crosses it. Requirements
+/// are compiled from source mechanics, never inferred from scene identity.
+pub fn readiness(
+    guide: &Guide,
+    progress: &Progress,
+    guidance: &Guidance,
+    model: &gamebuddy_core::outcomes::OutcomeModel,
+    view: &PlanningView,
+) -> Option<Warning> {
+    let current = guide.step(&guidance.now.as_ref()?.id)?;
+    let mut queue = std::collections::VecDeque::from([(current, 0usize)]);
+    let mut seen = HashSet::new();
+    while let Some((step, distance)) = queue.pop_front() {
+        if !seen.insert(&step.id) || seen.len() > 16 || !guide.step_enabled(step) {
+            continue;
+        }
+        if !gamebuddy_core::step_complete(guide, progress, &step.id)
+            && !view.skipped.contains_key(&step.id)
+            && let Some(required) = view.requirements.get(&step.id).filter(|r| !r.is_empty())
+        {
+            let source = guide.step(&required[0])?;
+            let mut at = Some(step);
+            while let Some(node) = at {
+                if let Some(rule) = model
+                    .actions
+                    .iter()
+                    .find(|r| r.step_id == node.id && r.requires.is_some())
+                {
+                    return Some(Warning {
+                        id: format!("{}:{}:readiness:{}", guide.id, guide.revision, step.id),
+                        text: format!(
+                            "Before continuing: {}. {}",
+                            required
+                                .iter()
+                                .filter_map(|id| guide.step(id))
+                                .map(|s| s.title.trim_end_matches('.'))
+                                .collect::<Vec<_>>()
+                                .join("; "),
+                            rule.reason
+                        ),
+                        source_step_id: source.id.clone(),
+                        encounter_step_id: step.id.clone(),
+                        trigger_step_id: current.id.clone(),
+                        evidence_kind: "source_route_requirement",
+                    });
+                }
+                at = node.parent_id.as_deref().and_then(|id| guide.step(id));
+            }
+        }
+        if distance < 3 {
+            for id in route_successors(guide, step) {
+                if let Some(next) = guide.step(id) {
+                    queue.push_back((next, distance + 1));
+                }
+            }
+            if let Some(child) = guide
+                .steps
+                .iter()
+                .find(|s| s.parent_id.as_deref() == Some(&step.id))
+            {
+                queue.push_front((child, distance));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

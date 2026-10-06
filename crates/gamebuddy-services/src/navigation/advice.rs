@@ -215,6 +215,13 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         !view.blocked.contains_key(&action.step_id),
         "This action has unsatisfied world requirements. Resolve the missing fact before giving directions."
     );
+    ensure!(
+        view.requirements
+            .get(&action.step_id)
+            .is_none_or(Vec::is_empty),
+        "This action needs a source-established outcome first: {}. Being at its location does not establish possession. Resolve these requirements before giving this instruction.",
+        serde_json::to_string(&view.requirements.get(&action.step_id))?
+    );
     let guidance = guidance_with_outcomes(
         guide,
         &progress,
@@ -223,9 +230,25 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         model,
     );
     let spatial = crate::spatial::context(store, guide)?;
+    let reported = store
+        .get::<PlaceTracker>(&super::tracker_key(guide))?
+        .filter(|tracker| {
+            tracker.status == "reported"
+                && tracker.session_id == session
+                && tracker.epoch == progress.epoch
+        });
+    let reported_place = if let Some(tracker) = &reported {
+        super::atlas(store, guide)?
+            .place_for_step(guide, &action.step_id)
+            .filter(|p| Some(&p.id) == tracker.place_id.as_ref())
+            .cloned()
+    } else {
+        None
+    };
     let location_supported = supports_action(guide, &action.step_id, &spatial);
     ensure!(
         location_supported
+            || reported_place.is_some()
             || existing.is_some()
             || guidance
                 .now
@@ -265,7 +288,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         step_id: action.step_id,
         instructions: action.instructions.trim().into(),
         movement,
-        location_evidence: location_supported
+        location_evidence: reported_place.map(|place|json!({"kind":"player_report_not_completion","place_id":place.id,"reported_at_ms":reported.as_ref().map(|t|t.observed_at_ms)})).or_else(||location_supported
             .then(|| {
                 json!({
                     "kind":"current_source_match_not_completion",
@@ -274,7 +297,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
                     "related_step_ids":spatial["observation"]["related_step_ids"]
                 })
             })
-            .or_else(|| existing.and_then(|r| r.location_evidence)),
+            .or_else(|| existing.and_then(|r| r.location_evidence))),
     };
     store.put_for_progress(guide, progress.epoch, &key(guide), &recommendation)?;
     Ok(
@@ -285,6 +308,118 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_area_advice_cannot_bypass_a_missing_item_or_departure_requirement() -> Result<()> {
+        use gamebuddy_core::outcomes::{KnownFact, OutcomeModel};
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Speak again\nReceive the amber seal before leaving. It opens the later shrine; returning consumes another key.\n# Leave the room\nTake the exit.\n# Open the shrine\nPress against the stone.",
+        )?;
+        store.save_guide(&guide)?;
+        let model: OutcomeModel = serde_json::from_value(json!({
+            "facts":[{"id":"has_seal","description":"Carrying the amber seal","possession_names":["amber seal"],"evidence_step_ids":["step-1"]}],
+            "actions":[
+                {"step_id":"step-1","requires":{"op":"always"},"effects":[{"id":"has_seal","value":true}],"unnecessary_when":{"op":"fact","id":"has_seal","value":true},"reason":"Separate reward conversation","evidence_step_ids":["step-1"]},
+                {"step_id":"step-2","requires":{"op":"fact","id":"has_seal","value":true},"reason":"The seal opens the later shrine; returning consumes another key.","evidence_step_ids":["step-1","step-2"]},
+                {"step_id":"step-3","requires":{"op":"fact","id":"has_seal","value":true},"reason":"The shrine requires the seal.","evidence_step_ids":["step-1","step-3"]}
+            ]
+        }))?;
+        store.put(
+            &format!("outcomes:{}", guide.id),
+            &crate::outcomes::Prepared {
+                guide_revision: guide.revision,
+                reviewed_scopes: vec![],
+                model: model.clone(),
+                provider_model: "fixture".into(),
+                elapsed_ms: 0,
+            },
+        )?;
+        let ticket = screen::start(&store, &guide.game, true)?;
+        let picture = dir.path().join("frame.png");
+        image::RgbImage::from_pixel(40, 40, image::Rgb([90, 50, 100])).save(&picture)?;
+        screen::publish(&store, &ticket, &picture, "test")?;
+        for id in ["step-2", "step-3"] {
+            let mut progress = Progress {
+                current_step: Some(id.into()),
+                ..Default::default()
+            };
+            store.save_progress(&guide, &progress, "fixture")?;
+            store.put(
+                &key(&guide),
+                &Recommendation {
+                    revision: guide.revision,
+                    epoch: 0,
+                    session: ticket.session.clone(),
+                    updated_at_ms: screen::now_ms(),
+                    step_id: id.into(),
+                    instructions: "Old advice to leave or push the stone".into(),
+                    location_evidence: Some(json!({"kind":"fixture"})),
+                    movement: None,
+                },
+            )?;
+            let action = || NextAction {
+                expected_revision: guide.revision,
+                epoch: 0,
+                step_id: id.into(),
+                instructions: "Proceed now.".into(),
+                screen_direction: None,
+            };
+            assert!(
+                publish(&store, &guide, action())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("source-established outcome")
+            );
+            let nav = super::super::context(&store, &guide, &progress, &Default::default())?;
+            assert_ne!(
+                nav["guidance"]["now"]["id"], id,
+                "Old accepted advice bypassed a newly prepared requirement"
+            );
+            let guidance = gamebuddy_core::Guidance {
+                now: Some(guide.steps[0].clone()),
+                ..Default::default()
+            };
+            let warning = super::super::hazards::readiness(
+                &guide,
+                &progress,
+                &guidance,
+                &model,
+                &model.view(&guide, &progress),
+            )
+            .expect("Warn before departure");
+            assert!(warning.text.contains("another key"));
+            progress.world.facts.insert(
+                "has_seal".into(),
+                KnownFact {
+                    value: true,
+                    evidence: "I have the amber seal".into(),
+                    source: "player_report".into(),
+                    step_id: None,
+                    at_ms: screen::now_ms(),
+                },
+            );
+            store.save_progress(&guide, &progress, "fixture")?;
+            assert!(
+                publish(&store, &guide, action()).is_ok(),
+                "Possession should satisfy both gates without a pickup checkbox"
+            );
+            assert!(
+                super::super::hazards::readiness(
+                    &guide,
+                    &progress,
+                    &guidance,
+                    &model,
+                    &model.view(&guide, &progress)
+                )
+                .is_none()
+            );
+            assert!(store.progress(&guide)?.completed.is_empty());
+        }
+        Ok(())
+    }
     #[test]
     fn refining_current_area_advice_preserves_its_route_until_progress_changes() -> Result<()> {
         let dir = tempfile::tempdir()?;

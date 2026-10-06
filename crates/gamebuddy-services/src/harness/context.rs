@@ -3,6 +3,66 @@
 use super::*;
 use gamebuddy_core::{PlaceTracker, Progress, guidance_with_view};
 
+pub(super) fn search_words(text: &str) -> std::collections::HashSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| {
+            !word.is_empty()
+                && ![
+                    "a",
+                    "an",
+                    "the",
+                    "i",
+                    "m",
+                    "am",
+                    "at",
+                    "in",
+                    "on",
+                    "to",
+                    "of",
+                    "for",
+                    "from",
+                    "and",
+                    "or",
+                    "but",
+                    "is",
+                    "it",
+                    "its",
+                    "this",
+                    "that",
+                    "there",
+                    "here",
+                    "do",
+                    "does",
+                    "did",
+                    "what",
+                    "where",
+                    "when",
+                    "why",
+                    "how",
+                    "can",
+                    "could",
+                    "should",
+                    "would",
+                    "must",
+                    "my",
+                    "me",
+                    "you",
+                    "your",
+                    "have",
+                    "has",
+                    "had",
+                    "just",
+                    "now",
+                    "please",
+                    "gamebuddy",
+                ]
+                .contains(word)
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 pub(super) fn navigation(value: &Value) -> Value {
     let mut recommendation = value["recommendation"].clone();
     if let Some(at) = recommendation["updated_at_ms"].as_u64() {
@@ -54,6 +114,7 @@ pub(super) fn location_actions(
                 crate::navigation::advice::supports_action(guide, &step.id, &nav["spatial"]);
             status["location_supported"] = json!(supported);
             if supported
+                && view.requirements_met(&step.id)
                 && status["complete"] == false
                 && status["not_needed"] == false
                 && status["world_requirements_blocked"] == false
@@ -87,7 +148,7 @@ pub(super) fn action_status(
         .iter()
         .any(|s| s.parent_id.as_deref() == Some(id));
     let advice = guidance_with_view(guide, progress, &PlaceTracker::default(), Some(id), view);
-    json!({"complete":complete,"not_needed":view.skipped.contains_key(id),"reason":view.skipped.get(id),"world_requirements_blocked":view.blocked.contains_key(id),"eligible_next_action":!complete && leaf && !view.skipped.contains_key(id) && !view.blocked.contains_key(id) && advice.now.as_ref().is_some_and(|s|s.id==id),
+    json!({"complete":complete,"not_needed":view.skipped.contains_key(id),"reason":view.skipped.get(id),"world_requirements_blocked":!view.requirements_met(id),"eligible_next_action":!complete && leaf && !view.skipped.contains_key(id) && !view.blocked.contains_key(id) && advice.now.as_ref().is_some_and(|s|s.id==id),
         "unconfirmed_prerequisites":advice.requirements.iter().map(|s|&s.id).collect::<Vec<_>>()})
 }
 

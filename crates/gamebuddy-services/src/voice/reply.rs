@@ -7,12 +7,40 @@ use serde_json::{Value, json};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const TOOL: &str = "finish_voice_reply";
+pub const RETRY_INSTRUCTIONS: &str = "The prior answer was rejected. This is the replacement evidence for the SAME live request. Use the supplied current context and any new pixels directly, then finish the corrected answer; no separate screen fetch is needed. Preserve successful actions already completed in this turn.";
 pub const INSTRUCTIONS: &str = "For live voice, finish with finish_voice_reply as soon as the complete player request is satisfied. It delivers speech immediately. Copy request_id from the latest application request; a follow-up or corrected transcript replaces that ID. For a new gameplay instruction, include next_action in that same call instead of a separate set_next_action; its instructions will be the spoken text. Complete any other requested tool actions and check their successful results first. Do not batch this final tool with other actions. Set screen_grounded=true whenever the answer depends on the supplied screenshot, such as identifying this door or directing an immediate movement. Set it false for instructions or facts supported entirely by the guide and confirmed progress; ordinary screen movement does not invalidate those. Use next_action=null for factual answers, clarifications, uncertainty or conversation. After success, end the turn without repeating the answer or calling more tools. On failure, correct only the reported problem and retry. Never claim an action succeeded before its tool succeeded.";
 
 pub fn request_id(utterance: u64, request: &str) -> String {
     let mut hash = DefaultHasher::new();
     request.hash(&mut hash);
     format!("{utterance}-{:016x}", hash.finish())
+}
+
+/// A failed answer remains failed, but its next pass already has the current
+/// image, epoch and request identity. No context-fetch round trip is needed.
+pub fn retry_context(
+    store: &Store,
+    game: &str,
+    error: &str,
+    request_id: &str,
+    request: &str,
+) -> ToolOutput {
+    let mut output = ToolOutput {
+        value: json!({"error":error,"live_player_request":request,"request_id":request_id}),
+        images: vec![],
+    };
+    if let Ok(context) = crate::harness::context_for_request(store, request)
+        && context.value["game"]
+            .as_str()
+            .is_some_and(|g| g.eq_ignore_ascii_case(game))
+    {
+        output.value["current_game_context"] = context.value;
+        output.value["retry_instruction"] = json!(
+            "Use the supplied current context and images to revise the answer. Do not repeat successful actions or fetch this same context again. Nothing from the failed answer was published."
+        );
+        output.images = context.images;
+    }
+    output
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -65,7 +93,7 @@ pub fn apply(
     if reply.requires_current_screen() {
         ensure!(
             frame.is_some_and(|frame| screen::still_current(store, frame).unwrap_or(false)),
-            "The supplied screen is no longer current. Read get_game_context and answer from its new image before finishing. No advice was published."
+            "The supplied screen is no longer current. Reassess the replacement image attached to this rejection before finishing. If no replacement context is attached, read get_game_context. No advice was published."
         );
     }
     let step_id = reply
@@ -88,6 +116,50 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_answer_returns_exact_replacement_pixels_without_publishing() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = Store::open(root.path())?;
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Guide", "# Continue\nTalk to the guard.")?;
+        store.save_guide(&guide)?;
+        store.put("active_guide", &guide.id)?;
+        let ticket = screen::start(&store, "Game", true)?;
+        let path = root.path().join("frame.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([200, 30, 40])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "fixture")?;
+        let old = screen::snapshot(&store)?;
+        image::RgbImage::from_pixel(64, 64, image::Rgb([20, 30, 240])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "fixture")?;
+        let answer = json!({"request_id":"current","text":"It is blue.","screen_grounded":true,"next_action":null});
+        let error = apply(&store, answer.clone(), "current", Some(&old))
+            .err()
+            .expect("Old pixels must fail");
+        let output = retry_context(
+            &store,
+            "Game",
+            &error.to_string(),
+            "current",
+            "What color is it now?",
+        );
+        let fresh = output.screen_frame().expect("Retry has its actual image");
+        assert_eq!(fresh.jpeg, output.images[0]);
+        assert_ne!(fresh.jpeg, old.jpeg);
+        assert_eq!(output.value["request_id"], "current");
+        assert!(
+            store
+                .get::<Value>(&format!("next-action:{}", guide.id))?
+                .is_none()
+        );
+        assert!(apply(&store, answer, "current", Some(&fresh)).is_ok());
+        assert!(
+            retry_context(&store, "Other game", "failure", "current", "question")
+                .images
+                .is_empty()
+        );
+        Ok(())
+    }
 
     #[test]
     fn final_reply_publishes_matching_advice_and_rejects_stale_or_invalid_changes() {

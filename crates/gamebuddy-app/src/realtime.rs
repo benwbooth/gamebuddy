@@ -948,6 +948,15 @@ impl ffi::RealtimeVoice {
                         decision_ready = None;
                     }
                     if let Some(proposal) = decision.poll() {
+                        if proposal.decision.is_ok() {
+                            let mut shared = proposal.evidence.frame.clone();
+                            shared.jpeg = proposal.evidence.image.clone();
+                            let _ = gamebuddy_services::screen::seen::record(
+                                &store,
+                                &shared,
+                                "assistant",
+                            );
+                        }
                         decision_ready = Some(proposal);
                     }
                     if quiet
@@ -1117,18 +1126,15 @@ impl ffi::RealtimeVoice {
                                 continue;
                             }
                             let context_started = Instant::now();
-                            let frame = gamebuddy_services::screen::snapshot(&store).ok();
-                            let evidence = gamebuddy_services::harness::call_tool_with_images(
-                                &store,
-                                "get_game_context",
-                                json!({}),
-                            )
-                            .ok()
-                            .filter(|c| {
-                                c.value["game"]
-                                    .as_str()
-                                    .is_some_and(|g| g.eq_ignore_ascii_case(&game))
-                            });
+                            let evidence =
+                                gamebuddy_services::harness::context_for_request(&store, &request)
+                                    .ok()
+                                    .filter(|c| {
+                                        c.value["game"]
+                                            .as_str()
+                                            .is_some_and(|g| g.eq_ignore_ascii_case(&game))
+                                    });
+                            let frame = evidence.as_ref().and_then(|c| c.screen_frame());
                             discussed_step = evidence
                                 .as_ref()
                                 .and_then(|c| {
@@ -1142,7 +1148,8 @@ impl ffi::RealtimeVoice {
                             let turn_input = evidence.as_ref().map(|c| c.codex_input(&label))
                                 .unwrap_or_else(|| vec![json!({"type":"text","text":format!("Complete live player request: {request}. request_id: {}", gamebuddy_services::voice::reply::request_id(utterance, &request))})]);
                             sequence += 1;
-                            start_requests.insert(sequence, (utterance, request.clone(), frame));
+                            start_requests
+                                .insert(sequence, (utterance, request.clone(), frame.clone()));
                             reasoning_since = Some(Instant::now());
                             diagnostics.record(
                                 "request_dispatched",
@@ -1163,6 +1170,13 @@ impl ffi::RealtimeVoice {
                                 );
                             }
                             client.send(json!({"id":sequence,"method":"turn/start","params":{"threadId":thread,"input":turn_input,"environments":[]}}))?;
+                            if let Some(frame) = &frame {
+                                let _ = gamebuddy_services::screen::seen::record(
+                                    &store,
+                                    frame,
+                                    "assistant",
+                                );
+                            }
                         }
                         // Refresh native visual evidence while a long reasoning
                         // turn is in flight. A new camera view supersedes its old
@@ -1216,25 +1230,28 @@ impl ffi::RealtimeVoice {
                             }
                             let mut updated_frame = supplied_frame.clone();
                             let evidence = if supplied_request.is_empty() || changed_view {
-                                updated_frame = gamebuddy_services::screen::snapshot(&store).ok();
-                                gamebuddy_services::harness::call_tool_with_images(
-                                    &store,
-                                    "get_game_context",
-                                    json!({}),
-                                )
-                                .ok()
-                                .filter(|c| {
-                                    c.value["game"]
-                                        .as_str()
-                                        .is_some_and(|g| g.eq_ignore_ascii_case(&game))
-                                })
+                                gamebuddy_services::harness::context_for_request(&store, &request)
+                                    .ok()
+                                    .filter(|c| {
+                                        c.value["game"]
+                                            .as_str()
+                                            .is_some_and(|g| g.eq_ignore_ascii_case(&game))
+                                    })
                             } else {
                                 None
                             };
                             sequence += 1;
+                            if let Some(context) = &evidence {
+                                updated_frame = context.screen_frame();
+                            }
                             context_requests.insert(
                                 sequence,
-                                (turn_id.clone(), utterance, request.clone(), updated_frame),
+                                (
+                                    turn_id.clone(),
+                                    utterance,
+                                    request.clone(),
+                                    updated_frame.clone(),
+                                ),
                             );
                             let label = format!(
                                 "The latest complete live player request is: {request}. Treat this as a follow-up to the conversation already in this turn. Use evidence and successful actions already obtained; do not repeat completed tools. Answer the latest question and retain earlier requested actions unless the player replaces or cancels them. Resolve any location correction before repeating advice. If a newer image accompanies this update, reassess the changed view before giving directions. request_id: {}.",
@@ -1251,6 +1268,15 @@ impl ffi::RealtimeVoice {
                             }
                             diagnostics.record("request_update_sent", json!({"utterance":utterance,"text_bytes":request.len(),"images":evidence.as_ref().map_or(0,|c|c.images.len())}));
                             client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
+                            if evidence.is_some() {
+                                if let Some(frame) = &updated_frame {
+                                    let _ = gamebuddy_services::screen::seen::record(
+                                        &store,
+                                        frame,
+                                        "assistant",
+                                    );
+                                }
+                            }
                         }
                         if let Some((event, reject)) = pending_tools.pop_front() {
                             let outcome = answer_tool(
@@ -1268,6 +1294,29 @@ impl ffi::RealtimeVoice {
                             )?;
                             if let Some(frame) = outcome.frame {
                                 supplied_frame = Some(frame);
+                            }
+                            if let Some(input) = outcome.retry_input
+                                && let Some(turn_id) =
+                                    event["params"].get("turnId").filter(|id| id.is_string())
+                                && reasoning_turn.as_ref() == Some(turn_id)
+                                && !context_requests.values().any(|(id, ..)| id == turn_id)
+                            {
+                                // A native steer makes replacement pixels available
+                                // at the next reasoning step, rather than leaving the
+                                // model to rediscover them inside a failed tool result.
+                                sequence += 1;
+                                context_requests.insert(
+                                    sequence,
+                                    (
+                                        turn_id.clone(),
+                                        utterance,
+                                        request.clone(),
+                                        supplied_frame.clone(),
+                                    ),
+                                );
+                                client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":input}}))?;
+                                diagnostics
+                                    .record("reply_retry_steered", json!({"utterance":utterance}));
                             }
                             if let Some(reply) = outcome.voice_reply {
                                 response_step = reply["step_id"]
@@ -1315,6 +1364,7 @@ struct ToolOutcome {
     state_changed: bool,
     voice_reply: Option<Value>,
     frame: Option<gamebuddy_services::screen::Snapshot>,
+    retry_input: Option<Vec<Value>>,
 }
 
 fn answer_tool(
@@ -1339,12 +1389,6 @@ fn answer_tool(
             .and_then(|id| store.guide(&id).ok())
             .map(|g| g.game)
     };
-    let frame = matches!(
-        params["tool"].as_str(),
-        Some("get_game_context" | "get_game_screen")
-    )
-    .then(|| gamebuddy_services::screen::snapshot(store).ok())
-    .flatten();
     let result = if rejected {
         Err(anyhow::anyhow!(
             "The player continued speaking while this action was planned. It was not executed. Read live_player_request and carry out the complete request."
@@ -1393,8 +1437,34 @@ fn answer_tool(
         .ok()
         .filter(|_| params["tool"] == gamebuddy_services::voice::reply::TOOL)
         .and_then(|output| output.value.get("voice_reply").cloned());
-    diagnostics.record("tool_result", json!({"tool":params["tool"],"success":success,"rejected":rejected,"elapsed_ms":tool_started.elapsed().as_millis()}));
-    let content=result.map(|r|r.codex_content()).unwrap_or_else(|e|json!([{"type":"inputText","text":json!({"error":e.to_string(),"live_player_request":request}).to_string()}]));
+    diagnostics.record("tool_result", json!({"tool":params["tool"],"success":success,"rejected":rejected,"error":result.as_ref().err().map(|e|e.to_string().chars().take(300).collect::<String>()),"elapsed_ms":tool_started.elapsed().as_millis()}));
+    let mut frame = result.as_ref().ok().and_then(|r| r.screen_frame());
+    let mut retry_input = None;
+    let content = match result {
+        Ok(output) => output.codex_content(),
+        Err(error) => {
+            let output = if params["tool"] == gamebuddy_services::voice::reply::TOOL {
+                gamebuddy_services::voice::reply::retry_context(
+                    store,
+                    game,
+                    &error.to_string(),
+                    &gamebuddy_services::voice::reply::request_id(evidence.utterance, request),
+                    request,
+                )
+            } else {
+                gamebuddy_services::harness::ToolOutput {
+                    value: json!({"error":error.to_string(),"live_player_request":request}),
+                    images: vec![],
+                }
+            };
+            frame = output.screen_frame();
+            if output.value["current_game_context"].is_object() {
+                retry_input =
+                    Some(output.codex_input(gamebuddy_services::voice::reply::RETRY_INSTRUCTIONS));
+            }
+            output.codex_content()
+        }
+    };
     if std::env::args().any(|a| a == "--voice-trace") {
         eprintln!(
             "GAMEBUDDY_VOICE_TOOL name={} success={} images={} elapsed_ms={} text_bytes={}",
@@ -1416,6 +1486,9 @@ fn answer_tool(
         );
     }
     client.send(json!({"id":event["id"],"result":{"success":success,"contentItems":content}}))?;
+    if let Some(frame) = &frame {
+        let _ = gamebuddy_services::screen::seen::record(store, frame, "assistant");
+    }
     let state_changed = voice_reply
         .as_ref()
         .is_some_and(|reply| reply["step_id"].is_string())
@@ -1437,6 +1510,7 @@ fn answer_tool(
     Ok(ToolOutcome {
         state_changed,
         voice_reply,
-        frame: if success { frame } else { None },
+        frame,
+        retry_input,
     })
 }

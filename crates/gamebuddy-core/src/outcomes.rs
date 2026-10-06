@@ -491,6 +491,11 @@ pub struct PlanningView {
     pub goal_blocked: bool,
 }
 impl PlanningView {
+    /// A known acquisition route is still an unmet requirement. Location
+    /// evidence may bypass historical checklist order, never world state.
+    pub fn requirements_met(&self, id: &str) -> bool {
+        !self.blocked.contains_key(id) && self.requirements.get(id).is_none_or(Vec::is_empty)
+    }
     pub fn resolved(&self, guide: &Guide, progress: &Progress, id: &str) -> bool {
         if self.skipped.contains_key(id) || crate::step_complete(guide, progress, id) {
             return true;

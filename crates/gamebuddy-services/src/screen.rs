@@ -10,6 +10,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub mod seen;
+
 const KEY: &str = "live-screen";
 pub const FRESH_MS: u64 = 15_000;
 // Local inference takes several seconds. Permit that latency only while the

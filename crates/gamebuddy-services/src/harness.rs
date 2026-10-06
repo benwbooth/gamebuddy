@@ -79,7 +79,64 @@ pub struct ToolOutput {
     pub value: Value,
     pub images: Vec<String>,
 }
+
+/// Resolve the player's named objective before asking the reasoner. This
+/// supplies source actions and their place IDs in the initial request, avoiding
+/// serial search/atlas calls for an item outside the current route window.
+pub fn context_for_request(store: &Store, request: &str) -> Result<ToolOutput> {
+    let mut output = call_tool_with_images(store, "get_game_context", json!({}))?;
+    if !request.trim().is_empty() {
+        let mut matches = call_tool(store, "search_guide", json!({"query":request}))?;
+        if let Some(steps) = matches["steps"].as_array_mut() {
+            steps.truncate(5);
+        }
+        let ids: std::collections::HashSet<_> = matches["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s["id"].as_str())
+            .map(str::to_owned)
+            .collect();
+        for field in ["action_status", "places_by_step"] {
+            if let Some(rows) = matches[field].as_object_mut() {
+                rows.retain(|id, _| ids.contains(id));
+            }
+        }
+        output.value["request_matches"] = matches;
+        output.value["request_matches_instruction"] = json!(
+            "These source search results match the current player request. Their place IDs are ready for explicit location reports. Use them directly when relevant; do not repeat the same search or atlas lookup. Matches are reference evidence, not proof of current location or inventory."
+        );
+    }
+    Ok(output)
+}
 impl ToolOutput {
+    /// Recover the image actually attached to this result. Taking another
+    /// snapshot here can bind validation and the preview to different pixels.
+    pub fn screen_frame(&self) -> Option<crate::screen::Snapshot> {
+        let value = self
+            .value
+            .get("current_game_context")
+            .unwrap_or(&self.value);
+        let metadata = if value["screen"].is_object() {
+            &value["screen"]
+        } else {
+            value
+        };
+        if metadata["status"] != "live" || metadata["screen_tool"] != "get_game_screen" {
+            return None;
+        }
+        Some(crate::screen::Snapshot {
+            ticket: crate::screen::Ticket {
+                session: metadata["session_id"].as_str()?.into(),
+                epoch: metadata["capture_epoch"].as_u64()?,
+                game: metadata["game"].as_str()?.into(),
+                crop: serde_json::from_value(metadata["crop"].clone()).ok()?,
+            },
+            captured_at_ms: metadata["captured_at_ms"].as_u64()?,
+            jpeg: self.images.first()?.clone(),
+            metadata: metadata.clone(),
+        })
+    }
     /// Native turn/steer input uses a different tagged shape than tool output.
     pub fn codex_input(&self, label: &str) -> Vec<Value> {
         let mut input = vec![json!({"type":"text","text":format!("{label}\n{}",self.value)})];
@@ -197,6 +254,19 @@ pub fn call_tool_with_images(store: &Store, name: &str, arguments: Value) -> Res
         return Ok(ToolOutput { value, images });
     }
     let mut value = call_tool(store, name, arguments)?;
+    if name == "get_atlas" {
+        // Maps and source-backed place bindings are useful; dense map links
+        // and the compiler's reviewed-ID log only repeat background state.
+        if let Some(atlas) = value.as_object_mut() {
+            if let Some(reviewed) = atlas.remove("reviewed_steps") {
+                atlas.insert(
+                    "reviewed_step_count".into(),
+                    json!(reviewed.as_array().map_or(0, Vec::len)),
+                );
+            }
+            atlas.remove("map_links");
+        }
+    }
     if name == "set_next_action" {
         // The model just chose this action from current context. Acknowledging
         // it does not require sending the full map and planning state again.
@@ -439,16 +509,42 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
                 .as_str()
                 .context("query must be a string")?
                 .to_lowercase();
-            let words: Vec<_> = query.split_whitespace().filter(|w| w.len() > 1).collect();
-            let mut scored: Vec<_> = guide
+            let words = context::search_words(&query);
+            let candidates: Vec<_> = guide
                 .steps
                 .iter()
                 .filter(|step| guide.step_enabled(step))
                 .map(|step| {
-                    let text = format!("{} {}", step.title, step.instructions).to_lowercase();
                     (
-                        words.iter().filter(|word| text.contains(**word)).count(),
                         step,
+                        context::search_words(&format!("{} {}", step.title, step.instructions)),
+                    )
+                })
+                .collect();
+            let weights: Vec<_> = words
+                .iter()
+                .map(|word| {
+                    (
+                        word,
+                        1 + candidates.len()
+                            / candidates
+                                .iter()
+                                .filter(|(_, terms)| terms.contains(word))
+                                .count()
+                                .max(1),
+                    )
+                })
+                .collect();
+            let mut scored: Vec<_> = candidates
+                .iter()
+                .map(|(step, terms)| {
+                    (
+                        weights
+                            .iter()
+                            .filter(|(word, _)| terms.contains(*word))
+                            .map(|(_, weight)| weight)
+                            .sum::<usize>(),
+                        *step,
                     )
                 })
                 .filter(|(score, _)| *score > 0)
@@ -460,6 +556,11 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
             let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
             let model = prepared.as_ref().map_or(&fallback, |p| &p.model);
             let view = model.view(&guide, &progress);
+            let atlas = crate::navigation::atlas(store, &guide)?;
+            let places: std::collections::BTreeMap<_, _> = steps
+                .iter()
+                .filter_map(|s| atlas.place_for_step(&guide, &s.id).map(|p| (&s.id, p)))
+                .collect();
             let status: std::collections::BTreeMap<_, _> = steps
                 .iter()
                 .map(|s| {
@@ -470,7 +571,7 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
                 })
                 .collect();
             Ok(
-                json!({"steps":steps,"action_status":status,"guide_revision":guide.revision,"epoch":progress.epoch}),
+                json!({"steps":steps,"action_status":status,"places_by_step":places,"guide_revision":guide.revision,"epoch":progress.epoch,"location_instruction":"These place IDs can be used directly for an explicit player location report. Do not fetch get_atlas again when the relevant place is already supplied."}),
             )
         }
         "show_widget" => {
@@ -604,7 +705,7 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
         } else {
             screen_status
         };
-        let mut images: Vec<_> = screen.into_iter().map(|s| s.jpeg).collect();
+        let mut images: Vec<_> = screen.iter().map(|s| s.jpeg.clone()).collect();
         let screen_images = images.len();
         images.extend(reference_images.clone());
         let text = provider.complete(ModelRequest {
@@ -612,6 +713,9 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
             prompt: format!("Current game screen: {screen_status}. The first {screen_images} image is the actual current game screenshot; inspect it for screen questions. Additional images are reference evidence from the latest image tool: {image_context}. Map camera boxes are not exact player coordinates. Otherwise explain the capture status without pretending to see it.\nRecent conversation: {}\nPlayer: {question}\nAvailable tools: {}\nEvidence and tool results: {}\nThe harness supplies expected_revision only for edit_plan, restore_plan and add_reference; omit it for those tools. For report_step_complete, report_location and set_next_action, supply expected_revision and epoch from fresh game context. Round {} of 8. Return either {{\"tool\":\"search_guide\",\"arguments\":{{\"query\":string}}}} (or another listed tool), or {{\"answer\":string,\"widgets\":[widget objects]}}. Answer in one or two short sentences unless the player asks for detail. Put longer instructions and lists in a useful widget. Do not repeat advice or add follow-up questions by default. On round 8 return an answer; there are no more tool calls. Do not invent URLs.", serde_json::to_string(&history)?, if round == 7 { json!([]) } else { model_tools.clone() }, serde_json::to_string(&evidence)?, round+1),
             images, json: true,
         })?;
+        if let Some(screen) = &screen {
+            let _ = crate::screen::seen::record(store, screen, "assistant");
+        }
         let value: Value = parse_json(&text)?;
         if let Some(name) = value["tool"].as_str() {
             ensure!(

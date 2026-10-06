@@ -5,6 +5,58 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn nonverbal(annotation: &str) -> bool {
+    matches!(
+        annotation.trim().to_ascii_lowercase().as_str(),
+        "sigh"
+            | "sighs"
+            | "sighing"
+            | "tongue click"
+            | "click"
+            | "tsk"
+            | "cough"
+            | "coughing"
+            | "breath"
+            | "breathing"
+            | "yawn"
+            | "yawning"
+            | "laugh"
+            | "laughing"
+            | "laughter"
+            | "sniff"
+            | "sniffing"
+            | "silence"
+    )
+}
+
+/// Remove recognized acoustic annotations, including an unfinished trailing
+/// annotation, without dropping real speech or an unknown bracketed phrase.
+fn clean_transcript(mut remaining: &str) -> String {
+    let mut result = String::new();
+    while let Some((before, after)) = remaining.split_once('[') {
+        result.push_str(before);
+        if let Some((annotation, rest)) = after.split_once(']') {
+            if nonverbal(annotation) {
+                result.push(' ');
+            } else {
+                result.push('[');
+                result.push_str(annotation);
+                result.push(']');
+            }
+            remaining = rest;
+        } else {
+            if !nonverbal(after) {
+                result.push('[');
+                result.push_str(after);
+            }
+            remaining = "";
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[derive(Default)]
 pub struct PlayerInput {
     utterance: u64,
@@ -107,24 +159,7 @@ impl PlayerInput {
             .filter(|(at, _)| self.started.is_none_or(|start| *at >= start))
             .map(|(_, text)| text.as_str())
             .collect();
-        // Recognition can produce stage directions for breaths or clicks.
-        // They must not become a new model request after the player stops.
-        let noise = value.trim().trim_matches(['[', ']']).to_ascii_lowercase();
-        if matches!(
-            noise.as_str(),
-            "sigh"
-                | "sighs"
-                | "sighing"
-                | "tongue click"
-                | "click"
-                | "cough"
-                | "coughing"
-                | "breathing"
-                | "silence"
-        ) && value.trim().starts_with('[')
-        {
-            return String::new();
-        }
+        let value = clean_transcript(&value);
         // Bound a deliberately long dictated request without splitting UTF-8.
         value
             .trim()
@@ -150,6 +185,30 @@ mod tests {
         let mut input = PlayerInput::default();
         input.finish("How do I silence the alarm?", now);
         assert_eq!(input.text(now), "How do I silence the alarm?");
+    }
+    #[test]
+    fn breaths_and_truncated_annotations_keep_the_actual_request() {
+        for noise in [
+            "[breath]",
+            "[breath",
+            "[sigh",
+            "[yawn] [breathing]",
+            "[laugh]",
+        ] {
+            assert!(clean_transcript(noise).is_empty(), "{noise}");
+        }
+        assert_eq!(
+            clean_transcript("[sigh] I do not have the ring. [breath"),
+            "I do not have the ring."
+        );
+        assert_eq!(
+            clean_transcript("Where [breath] do I go? [sigh]"),
+            "Where do I go?"
+        );
+        assert_eq!(
+            clean_transcript("Read [door code] and [unknown"),
+            "Read [door code] and [unknown"
+        );
     }
     #[test]
     fn final_transcript_padding_does_not_change_a_dispatched_request() {

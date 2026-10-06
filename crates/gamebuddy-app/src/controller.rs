@@ -452,7 +452,9 @@ impl ffi::Buddy {
                     })
                     .and_then(|p| url::Url::from_file_path(p).ok())
                     .map(|u| u.to_string());
-                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"journal":journal,"screen":services::screen::status(&store)?,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+                let screen = services::screen::status(&store)?;
+                let seen_screen = services::screen::seen::context(&store, &screen)?;
+                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"journal":journal,"screen":screen,"seen_screen":seen_screen,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
             })();
             if std::env::args().any(|a| a == "--ui-trace") {
                 eprintln!(
@@ -1046,6 +1048,11 @@ impl ffi::Buddy {
                     &location_context,
                 )
             });
+            if result.is_ok() {
+                let _ = Store::open(&root).and_then(|store| {
+                    services::screen::seen::record(&store, &snapshot, "observer")
+                });
+            }
             let saved = Store::open(&root)
                 .and_then(|store| services::screen::save_observation(&store, &snapshot, &result));
             if saved.is_ok()
@@ -1442,28 +1449,31 @@ impl ffi::Buddy {
         self.set_transcript(text);
     }
     pub fn map_preview(self: Pin<&mut Self>, id: QString) {
-        let Some(guide) = self.rust().guide.clone() else {
-            return;
-        };
+        let guide = self.rust().guide.clone();
         let root = self.rust().root.clone();
         let thread = self.qt_thread();
         let id = id.to_string();
         std::thread::spawn(move || {
             let preview = Store::open(root)
                 .and_then(|s| {
+                    if id.starts_with("seen:") {
+                        return services::screen::seen::image(&s, &id);
+                    }
+                    let guide = guide.as_ref().context("No guide loaded")?;
                     if let Some(room) = id.strip_prefix("spatial:") {
-                        services::spatial::preview(&s, &guide, room)
+                        services::spatial::preview(&s, guide, room)
                     } else {
-                        services::navigation::cached_preview(&s, &guide, &id)
+                        services::navigation::cached_preview(&s, guide, &id)
                     }
                 })
                 .ok();
             let _ = thread.queue(move |object| {
-                if object
-                    .rust()
-                    .guide
-                    .as_ref()
-                    .is_some_and(|g| g.id == guide.id && g.revision == guide.revision)
+                if (id.starts_with("seen:")
+                    || object.rust().guide.as_ref().is_some_and(|g| {
+                        guide.as_ref().is_some_and(|source| {
+                            g.id == source.id && g.revision == source.revision
+                        })
+                    }))
                     && let Some(preview) = preview
                 {
                     object.map_preview_ready(q(id), q(preview));
@@ -1600,7 +1610,7 @@ impl ffi::Buddy {
     }
     pub fn set_widget_visible(mut self: Pin<&mut Self>, id: QString, visible: bool) {
         let result = (|| -> Result<()> {
-            let guide = self.rust().guide.as_ref().context("No game guide loaded")?;
+            let guide = self.rust().guide.as_ref();
             let id = id.to_string();
             let store = Store::open(&self.rust().root)?;
             anyhow::ensure!(
@@ -1610,15 +1620,19 @@ impl ffi::Buddy {
                     "run-journal",
                     "location-map",
                     "guide-library",
-                    "navigation-arrow"
+                    "navigation-arrow",
+                    "last-seen-screen"
                 ]
                 .contains(&id.as_str())
-                    || services::harness::widgets(&store, guide)?
+                    || services::harness::widgets(&store, guide.context("No game guide loaded")?)?
                         .iter()
                         .any(|w| w.id == id),
                 "Unknown widget"
             );
-            let key = format!("widget-visibility:{}", guide.id);
+            let key = format!(
+                "widget-visibility:{}",
+                guide.map(|g| g.id.as_str()).unwrap_or_default()
+            );
             let mut prefs = store
                 .get::<serde_json::Value>(&key)?
                 .unwrap_or_else(|| json!({}));

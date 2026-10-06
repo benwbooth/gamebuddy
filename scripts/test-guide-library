@@ -3,7 +3,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 reader_root="$(mktemp -d /tmp/gamebuddy-reader-XXXXXXXX)"
-cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-services --bin gamebuddy --bin gamebuddy-cli --example guide_library_fixture > "$reader_root/build.log" 2>&1
+cargo build -p gamebuddy-app -p gamebuddy-cli -p gamebuddy-services --bin gamebuddy --bin gamebuddy-cli --example guide_library_fixture --example seen_screen_probe > "$reader_root/build.log" 2>&1
 ./target/debug/examples/guide_library_fixture "$reader_root/data" > "$reader_root/guide-id"
 reader_app_pid=""
 Xvfb -displayfd 3 -screen 0 1280x720x24 3> "$reader_root/display" > "$reader_root/xvfb.log" 2>&1 &

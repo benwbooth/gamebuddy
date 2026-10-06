@@ -123,6 +123,18 @@ impl Responsiveness {
                         | "uh huh"
                         | "thanks"
                         | "thank you"
+                        | "mm"
+                        | "hmm"
+                        | "mhm"
+                        | "mm hmm thanks"
+                        | "okay thanks"
+                        | "all right"
+                        | "alright"
+                        | "ah"
+                        | "oh"
+                        | "ugh"
+                        | "uh"
+                        | "tsk"
                 )
             {
                 return None;
@@ -333,7 +345,17 @@ mod tests {
     #[test]
     fn normal_native_answers_and_backchannels_need_no_recovery() {
         let now = Instant::now();
-        for text in ["Okay.", "Mm hmm.", "Thanks.", "Stop."] {
+        for text in [
+            "Okay.",
+            "Mm hmm.",
+            "Thanks.",
+            "Stop.",
+            "All right.",
+            "Mm-hmm, thanks.",
+            "Ugh.",
+            "[breath]",
+            "[breath",
+        ] {
             let mut input = PlayerInput::default();
             say(&mut input, text, now);
             assert!(

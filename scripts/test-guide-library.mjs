@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {imageInputs,widgetInputs} from './test-widget-gestures.mjs';
 import {journalInputs} from './test-journal.mjs';
 import {walkthroughInputs} from './test-walkthrough.mjs';
+import {seenScreenInputs} from './test-seen-screen.mjs';
 const [endpoint,root]=process.argv.slice(2);
 assert(endpoint&&root,'Usage: node scripts/test-guide-library.mjs http://127.0.0.1:PORT TEMP_DATA_DIR');
 assert(new URL(endpoint).hostname==='127.0.0.1','Only a private local test port is supported');
@@ -164,6 +165,7 @@ try {
     assert(await evaluate(`document.querySelector('.reader-detail input[type=checkbox]').checked`),'Flattening source sections lost inherited completion');
     await evaluate(`window.testState=${JSON.stringify(fixtureState)};testRender(testState)`);
   }
+  await seenScreenInputs({evaluate,until,screenshot,root});
   await widgetInputs({call,evaluate,until});
   await walkthroughInputs({call,evaluate,until,screenshot});
   await journalInputs({call,evaluate,until,screenshot,guide,db});
