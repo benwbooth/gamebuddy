@@ -226,7 +226,12 @@ mod tests {
             ..Default::default()
         };
         store.save_progress(&guide, &progress, "fixture").unwrap();
-        call_tool(&store, "set_next_action", json!({"expected_revision":guide.revision,"epoch":0,"step_id":"step-1","instructions":"Walk left to the church."})).unwrap();
+        // Old advice from before route enforcement must still expire on arrival.
+        let session = screen::status(&store).unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        store.put(&format!("next-action:{}", guide.id), &json!({"revision":guide.revision,"epoch":0,"session":session,"updated_at_ms":screen::now_ms(),"step_id":"step-1","instructions":"Walk left to the church."})).unwrap();
         let result = call_tool(&store,"report_location",json!({"expected_revision":guide.revision,"epoch":0,"place_id":"church","player_report":"I am already at the church."})).unwrap();
         assert_eq!(result["navigation"]["location"]["place_id"], "church");
         assert_eq!(result["navigation"]["location"]["status"], "reported");

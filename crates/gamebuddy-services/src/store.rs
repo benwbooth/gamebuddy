@@ -678,6 +678,7 @@ impl Store {
                 !removed_effects.contains(&(step.to_owned(), id.clone(), fact.value))
             })
         });
+        crate::navigation::advice::retain_route(self, guide, &mut progress, true)?;
         progress.epoch += 1;
         self.put(&format!("outcomes:{}", guide.id), &prepared)?;
         self.put(
@@ -702,6 +703,14 @@ impl Store {
             self.guide(&guide.id)?.revision == guide.revision && progress.epoch == update.epoch,
             "Progress changed; read current context"
         );
+        // Keep the route position when new inventory evidence invalidates the
+        // old wording. Facts are not a request to restart an earlier visit.
+        crate::navigation::advice::retain_route(
+            self,
+            guide,
+            &mut progress,
+            update.goal.is_none() && !update.clear_goal,
+        )?;
         for fact in update.facts {
             progress.world.facts.insert(
                 fact.id,

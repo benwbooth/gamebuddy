@@ -1,7 +1,7 @@
 //! Small, current evidence for interactive coaching. The full atlas, outline
 //! and geometry diagnostics remain available through their dedicated tools.
 use super::*;
-use gamebuddy_core::{PlaceTracker, Progress, guidance_with_view};
+use gamebuddy_core::{PlaceTracker, Progress};
 
 pub(super) fn search_words(text: &str) -> std::collections::HashSet<String> {
     text.to_lowercase()
@@ -72,6 +72,7 @@ pub(super) fn navigation(value: &Value) -> Value {
     json!({
         "location":value["location"], "cursor":value["cursor"],
         "guidance":value["guidance"], "direction":value["direction"], "recommendation":recommendation,
+        "authored_route":value["authored_route"],
         "map":{
             "status":value["map"]["status"], "current_place":value["map"]["current_place"],
             "target_place":value["map"]["target_place"], "precision":value["map"]["precision"]
@@ -102,6 +103,13 @@ pub(super) fn location_actions(
     let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
     let model = prepared.as_ref().map_or(&fallback, |p| &p.model);
     let view = model.view(guide, progress);
+    let next = nav["guidance"]["now"]["id"].as_str();
+    let location: PlaceTracker =
+        serde_json::from_value(nav["location"].clone()).unwrap_or_default();
+    let mut route_progress = progress.clone();
+    if let Some(id) = nav["recommendation"]["step_id"].as_str() {
+        route_progress.current_step = Some(id.into());
+    }
     let actions: Vec<_> = ids
         .into_iter()
         .flatten()
@@ -109,11 +117,21 @@ pub(super) fn location_actions(
         .filter_map(|id| guide.step(id))
         .take(20)
         .map(|step| {
-            let mut status = action_status(guide, progress, &step.id, &view);
+            let mut status = action_status(guide, progress, &step.id, &view, next);
             let supported =
                 crate::navigation::advice::supports_action(guide, &step.id, &nav["spatial"]);
             status["location_supported"] = json!(supported);
             if supported
+                && (next == Some(step.id.as_str())
+                    || crate::navigation::advice::can_reanchor(
+                        guide,
+                        &route_progress,
+                        &atlas,
+                        &location,
+                        next,
+                        &step.id,
+                        &view,
+                    ))
                 && view.requirements_met(&step.id)
                 && status["complete"] == false
                 && status["not_needed"] == false
@@ -132,7 +150,7 @@ pub(super) fn location_actions(
         })
         .collect();
     Ok(
-        json!({"actions":actions,"instruction":"These source actions share the currently matched scenery, including repeated visits. They explain the local landmarks, not which task you have completed. A location_supported action can be recommended here even when earlier walkthrough prerequisites remain unchecked. Do not ask whether the player passed an earlier barrier when the current view already places them beyond it. Resolve the next action using the latest report, progress, screenshot and map; never send them back solely to satisfy an old checkbox."}),
+        json!({"actions":actions,"instruction":"These source actions share the currently matched scenery, including repeated visits. Follow navigation.authored_route by default; matching a room does not authorize jumping to a later visit or skipping an unfinished pickup in that room. Current evidence of arrival in a different area can reanchor the route without completing old tasks. Resolve explicit player reports before giving advice; never send them back solely to satisfy a past travel checkbox."}),
     )
 }
 
@@ -141,14 +159,16 @@ pub(super) fn action_status(
     progress: &Progress,
     id: &str,
     view: &gamebuddy_core::outcomes::PlanningView,
+    next: Option<&str>,
 ) -> Value {
     let complete = gamebuddy_core::step_complete(guide, progress, id);
     let leaf = !guide
         .steps
         .iter()
         .any(|s| s.parent_id.as_deref() == Some(id));
-    let advice = guidance_with_view(guide, progress, &PlaceTracker::default(), Some(id), view);
-    json!({"complete":complete,"not_needed":view.skipped.contains_key(id),"reason":view.skipped.get(id),"world_requirements_blocked":!view.requirements_met(id),"eligible_next_action":!complete && leaf && !view.skipped.contains_key(id) && !view.blocked.contains_key(id) && advice.now.as_ref().is_some_and(|s|s.id==id),
+    let advice =
+        gamebuddy_core::guidance_for_action(guide, progress, &PlaceTracker::default(), id, view);
+    json!({"complete":complete,"not_needed":view.skipped.contains_key(id),"reason":view.skipped.get(id),"world_requirements_blocked":!view.requirements_met(id),"on_current_route":next == Some(id),"eligible_next_action":next == Some(id) && !complete && leaf && !view.skipped.contains_key(id) && view.requirements_met(id),
         "unconfirmed_prerequisites":advice.requirements.iter().map(|s|&s.id).collect::<Vec<_>>()})
 }
 
@@ -180,7 +200,7 @@ pub(super) fn nearby_actions(
             .take(12)
             .filter_map(|s| guide.step(&s.id))
             .map(|step| {
-                json!({"step":step,"status":action_status(guide,progress,&step.id,&view)})
+                json!({"step":step,"status":action_status(guide,progress,&step.id,&view,current["id"].as_str())})
             })
             .collect::<Vec<_>>()
     )

@@ -68,6 +68,15 @@ try {
   await button('Bookmarks');assert(await evaluate(`document.querySelector('.reader-tree').textContent.includes('Shop')`));
   // Exercise the same harness mutation used by speech/chat, then observe the
   // persisted result through the actual Qt polling bridge.
+  const cli=fileURLToPath(new URL('../target/debug/gamebuddy-cli',import.meta.url));
+  const beforeSkip=progress();
+  assert.throws(()=>execFileSync(cli,[
+    '--data-dir',root,'tool','set_next_action',JSON.stringify({expected_revision:guide().revision,epoch:beforeSkip.epoch,step_id:'step-3',instructions:'Go to the shop now.'})
+  ],{stdio:['ignore','pipe','pipe']}),/authored walkthrough route/,'An unfinished source step must not be silently skipped');
+  assert.deepEqual(progress(),beforeSkip,'Rejected route change must not claim progress');
+  execFileSync(cli,[
+    '--data-dir',root,'tool','report_step_complete',JSON.stringify({expected_revision:guide().revision,epoch:beforeSkip.epoch,step_id:'step-2',player_report:'I finished talking to the guru.'})
+  ]);
   const beforeAdvice=progress();
   const advice='Speak to the shopkeeper and buy the key before leaving town.';
   execFileSync(fileURLToPath(new URL('../target/debug/gamebuddy-cli',import.meta.url)),[

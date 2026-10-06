@@ -441,43 +441,12 @@ fn unfinished<'a>(
     guide: &'a Guide,
     progress: &Progress,
     id: &str,
-    visited: &mut HashSet<String>,
     plan: &crate::outcomes::PlanningView,
 ) -> Option<&'a Step> {
-    if !visited.insert(id.to_owned()) {
-        return None;
-    }
-    let step = guide.step(id)?;
-    if !guide.step_enabled(step) {
-        return None;
-    }
-    if plan.skipped.contains_key(id) {
-        if let Some(next) = plan.redirects.get(id) {
-            return unfinished(guide, progress, next, visited, plan);
-        }
-    } else if !step_complete(guide, progress, id) {
-        let children: Vec<_> = guide
-            .steps
-            .iter()
-            .filter(|s| s.parent_id.as_deref() == Some(id))
-            .collect();
-        if children.is_empty() && is_player_action(step) {
-            return Some(step);
-        }
-        for child in children {
-            if !step_complete(guide, progress, &child.id)
-                && let Some(s) = unfinished(guide, progress, &child.id, visited, plan)
-            {
-                return Some(s);
-            }
-        }
-    }
-    for next in route_successors(guide, step) {
-        if let Some(s) = unfinished(guide, progress, next, visited, plan) {
-            return Some(s);
-        }
-    }
-    None
+    crate::route::authored_route(guide, progress, plan, id, 1)
+        .step_ids
+        .first()
+        .and_then(|id| guide.step(id))
 }
 
 /// A container's outgoing route starts after its last descendant. Video
@@ -485,6 +454,14 @@ fn unfinished<'a>(
 pub fn route_successors<'a>(guide: &'a Guide, step: &'a Step) -> Vec<&'a str> {
     let mut result = vec![];
     let mut cursor = step;
+    while let Some(last) = guide
+        .steps
+        .iter()
+        .rev()
+        .find(|s| s.parent_id.as_deref() == Some(&cursor.id))
+    {
+        cursor = last;
+    }
     loop {
         for next in &cursor.next {
             let mut target = guide.step(next);
@@ -626,28 +603,47 @@ fn guidance_with_priorities(
         .iter()
         .copied()
         .filter(|id| !step_complete(guide, progress, id))
-        .find_map(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan));
+        .find_map(|id| unfinished(guide, progress, id, plan));
     if !goal_ids.is_empty() && goal.is_none() {
         return Guidance { status: "blocked".into(), reason: "The selected goal has no enabled unfinished instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
     }
-    let start = goal
-        .or_else(|| {
-            recommendation.and_then(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan))
-        })
-        .or_else(|| {
-            location
-                .reference_step_id
-                .as_deref()
-                .or(progress.current_step.as_deref())
-                .and_then(|id| unfinished(guide, progress, id, &mut HashSet::new(), plan))
-        })
-        .or_else(|| {
-            guide
-                .steps
+    let route_cursor = recommendation
+        .or(progress.current_step.as_deref())
+        .or(location.reference_step_id.as_deref());
+    let route_start = route_cursor.and_then(|id| unfinished(guide, progress, id, plan));
+    if goal.is_none()
+        && route_start.is_none()
+        && let Some(cursor) = route_cursor.filter(|id| guide.step(id).is_some())
+    {
+        let route = crate::route::authored_route(guide, progress, plan, cursor, 1);
+        return Guidance {
+            status: if route.stop == "branch" { "route_choice" } else { "waiting" }.into(),
+            next: route.choices.iter().filter_map(|id| guide.step(id).cloned()).collect(),
+            reason: match route.stop.as_str() {
+                "branch" => "The walkthrough branches here. Choose a source-supported continuation for the player's goal.",
+                "end" => "The current source route has ended. Earlier unchecked actions remain unconfirmed; they are not a reason to restart it.",
+                _ => "The current source route has no supported continuation. Check its source or route choice before giving directions.",
+            }.into(),
+            ..Default::default()
+        };
+    }
+    // A goal names the destination, not permission to jump over its approach,
+    // intermediate pickups or second conversations in the authored route.
+    let approach = route_start.filter(|start| {
+        goal.is_some_and(|goal| {
+            crate::route::authored_route(guide, progress, plan, &start.id, guide.steps.len())
+                .step_ids
                 .iter()
-                .filter(|s| s.parent_id.is_none())
-                .find_map(|s| unfinished(guide, progress, &s.id, &mut HashSet::new(), plan))
-        });
+                .any(|id| id == &goal.id)
+        })
+    });
+    let start = approach.or(goal).or(route_start).or_else(|| {
+        guide
+            .steps
+            .iter()
+            .filter(|s| s.parent_id.is_none())
+            .find_map(|s| unfinished(guide, progress, &s.id, plan))
+    });
     let Some(target) = start else {
         return Guidance {
             status: "waiting".into(),
@@ -682,13 +678,15 @@ fn guidance_with_priorities(
         let Some(first) = required.first() else {
             break;
         };
-        let Some(next) = unfinished(guide, progress, &first.id, &mut HashSet::new(), plan) else {
+        let Some(next) = unfinished(guide, progress, &first.id, plan) else {
             return Guidance { status: "blocked".into(), target: Some(target.clone()), requirements: missing, reason: "A prerequisite has no enabled instructions. Enable its reference or adjust the outline.".into(), ..Default::default() };
         };
         selected = next;
     }
     let reason = if !missing.is_empty() {
         "A prerequisite is still unconfirmed. Complete or confirm it before the target task."
+    } else if approach.is_some() {
+        "Following the walkthrough's route toward your selected goal."
     } else if goal.is_some() {
         "Following your selected goal and its prerequisites."
     } else if location.status == "reported"
@@ -716,9 +714,7 @@ fn guidance_with_priorities(
         let candidate = if selected.id != target.id && !step_complete(guide, &preview, &target.id) {
             Some(target)
         } else {
-            route_successors(guide, cursor)
-                .into_iter()
-                .find_map(|id| unfinished(guide, &preview, id, &mut HashSet::new(), plan))
+            unfinished(guide, &preview, &cursor.id, plan)
         };
         let Some(mut candidate) = candidate else {
             break;
@@ -738,8 +734,7 @@ fn guidance_with_priorities(
             let Some(first) = required.first() else {
                 break;
             };
-            let Some(required) = unfinished(guide, &preview, &first.id, &mut HashSet::new(), plan)
-            else {
+            let Some(required) = unfinished(guide, &preview, &first.id, plan) else {
                 blocked = true;
                 break;
             };
@@ -780,6 +775,53 @@ fn guidance_with_priorities(
 mod tests {
     use super::*;
     use crate::{Candidate, PlayerGoal, ReferencePreference, import_markdown};
+    #[test]
+    fn a_later_goal_keeps_the_authored_approach_and_unmodelled_pickup() {
+        let mut guide = import_markdown("Game", "Walkthrough", "# Restore spring\nSpeak to the keeper.\n# Receive seal\nSpeak again for the seal.\n# Leave\nReturn to town.").unwrap();
+        guide.goals.push(PlayerGoal {
+            id: "town".into(),
+            description: "Return to town".into(),
+            step_ids: vec!["step-3".into()],
+        });
+        let progress = Progress {
+            current_step: Some("step-1".into()),
+            reported_completed: HashSet::from(["step-1".into()]),
+            ..Default::default()
+        };
+        let advice = guidance(&guide, &progress, &PlaceTracker::default());
+        assert_eq!(advice.now.unwrap().id, "step-2");
+        assert_eq!(advice.next[0].id, "step-3");
+        assert!(progress.completed.is_empty());
+    }
+
+    #[test]
+    fn later_visual_visit_does_not_replace_saved_route_and_end_does_not_restart_it() {
+        let guide = import_markdown(
+            "Game",
+            "Walkthrough",
+            "# First visit\nCollect the seal.\n# Leave\nExit.\n# Later visit\nUse the seal.",
+        )
+        .unwrap();
+        let mut progress = Progress {
+            current_step: Some("step-1".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            guidance(&guide, &progress, &location("step-3"))
+                .now
+                .unwrap()
+                .id,
+            "step-1"
+        );
+        progress.current_step = Some("step-3".into());
+        progress.reported_completed.insert("step-3".into());
+        let advice = guidance(&guide, &progress, &PlaceTracker::default());
+        assert!(
+            advice.now.is_none(),
+            "The route end must not revive unchecked tasks from an earlier visit"
+        );
+        assert_eq!(progress.reported_completed.len(), 1);
+    }
     #[test]
     fn player_outline_skips_source_intervals_and_plans_without_a_location_lock() {
         let guide = import_markdown("Game", "Video", "# Introduction\n## Intro · 0:00\nReference reviewed: no actionable steps.\n# Town\nFollow the 2 detailed actions below. Expand each timed section for tasks.\n## Town · 0:04\nDetailed tasks below follow the demonstrated route.\n### Enter town\nWalk through the right door.\n### Get the ring\nTalk to the guru.\n# Unreviewed\nVideo segment awaiting interpretation.").unwrap();

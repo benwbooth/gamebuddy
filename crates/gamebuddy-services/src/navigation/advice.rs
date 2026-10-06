@@ -2,7 +2,7 @@
 use crate::{Store, screen};
 use anyhow::{Result, ensure};
 use gamebuddy_core::navigation::direction::{ScreenDirection, movement};
-use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate, guidance_with_outcomes};
+use gamebuddy_core::{Guide, PlaceTracker, Progress, SyncEstimate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -95,6 +95,68 @@ pub(crate) fn apply_location_advice(
     }
 }
 
+/// The accepted action is a route cursor, even when an older temporary goal
+/// still exists. Resolving its world requirements always precedes continuation.
+pub(crate) fn route_guidance(
+    guide: &Guide,
+    progress: &Progress,
+    location: &PlaceTracker,
+    accepted: Option<&str>,
+    view: &gamebuddy_core::outcomes::PlanningView,
+) -> gamebuddy_core::Guidance {
+    match accepted {
+        Some(id) => gamebuddy_core::guidance_for_action(guide, progress, location, id, view),
+        None => gamebuddy_core::guidance_with_view(guide, progress, location, None, view),
+    }
+}
+
+/// Scenery may establish arrival in a different area, but cannot distinguish
+/// two visits or skip tasks within the same room. Explicit task reports can.
+pub(crate) fn can_reanchor(
+    guide: &Guide,
+    progress: &Progress,
+    atlas: &gamebuddy_core::Atlas,
+    location: &PlaceTracker,
+    expected: Option<&str>,
+    candidate: &str,
+    view: &gamebuddy_core::outcomes::PlanningView,
+) -> bool {
+    if location.status == "reported" && location.reference_step_id.as_deref() == Some(candidate) {
+        return true;
+    }
+    if progress.current_step.is_none() {
+        return true;
+    }
+    let different_place = expected
+        .and_then(|id| atlas.place_for_step(guide, id))
+        .zip(atlas.place_for_step(guide, candidate))
+        .is_some_and(|(a, b)| a.id != b.id);
+    if !different_place {
+        return false;
+    }
+    let route = gamebuddy_core::route::authored_route(
+        guide,
+        progress,
+        view,
+        expected.unwrap(),
+        guide.steps.len(),
+    );
+    if route.step_ids.iter().any(|id| id == candidate) {
+        let place = atlas.place_for_step(guide, candidate).unwrap();
+        // A newly identified room still doesn't select its later return visit.
+        return route
+            .step_ids
+            .iter()
+            .find(|id| {
+                atlas
+                    .place_for_step(guide, id)
+                    .is_some_and(|p| p.id == place.id)
+            })
+            .is_some_and(|id| id == candidate);
+    }
+    true
+}
+
 fn key(guide: &Guide) -> String {
     format!("next-action:{}", guide.id)
 }
@@ -145,6 +207,27 @@ pub(crate) fn after_completion(
     }
     Ok(())
 }
+
+pub(crate) fn retain_route(
+    store: &Store,
+    guide: &Guide,
+    progress: &mut Progress,
+    keep_recommendation: bool,
+) -> Result<()> {
+    let session = screen::status(store)?["session_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if let Some(mut action) = current(store, guide, progress, &session)? {
+        progress.current_step = Some(action.step_id.clone());
+        if keep_recommendation {
+            action.epoch += 1;
+            action.movement = None;
+            store.put(&key(guide), &action)?;
+        }
+    }
+    Ok(())
+}
 pub fn current(
     store: &Store,
     guide: &Guide,
@@ -191,8 +274,8 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let existing =
-        current(store, guide, &progress, &session)?.filter(|r| r.step_id == action.step_id);
+    let accepted = current(store, guide, &progress, &session)?;
+    let existing = accepted.as_ref().filter(|r| r.step_id == action.step_id);
     // Refining the accepted current objective does not re-open old gates when
     // the player scrolls beyond the frame that originally supported it.
     let prepared = crate::outcomes::prepared(store, guide)?;
@@ -222,12 +305,12 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         "This action needs a source-established outcome first: {}. Being at its location does not establish possession. Resolve these requirements before giving this instruction.",
         serde_json::to_string(&view.requirements.get(&action.step_id))?
     );
-    let guidance = guidance_with_outcomes(
+    let guidance = gamebuddy_core::guidance_for_action(
         guide,
         &progress,
         &PlaceTracker::default(),
-        Some(&action.step_id),
-        model,
+        &action.step_id,
+        &view,
     );
     let spatial = crate::spatial::context(store, guide)?;
     let reported = store
@@ -246,6 +329,55 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         None
     };
     let location_supported = supports_action(guide, &action.step_id, &spatial);
+    let tracker = reported.clone().unwrap_or_default();
+    let completed = completed_cursor(store, guide, &progress)?;
+    let mut route = route_guidance(
+        guide,
+        &progress,
+        &tracker,
+        accepted
+            .as_ref()
+            .map(|r| r.step_id.as_str())
+            .or(completed.as_deref()),
+        &view,
+    );
+    if let Some(previous) = &accepted
+        && view.requirements_met(&previous.step_id)
+        && !view.skipped.contains_key(&previous.step_id)
+    {
+        apply_location_advice(guide, previous, &mut route);
+    }
+    let expected = route.now.as_ref().map(|s| s.id.as_str());
+    let mut route_progress = progress.clone();
+    if let Some(accepted) = &accepted {
+        route_progress.current_step = Some(accepted.step_id.clone());
+    }
+    let reanchor = (reported_place.is_some() || location_supported)
+        && can_reanchor(
+            guide,
+            &route_progress,
+            &super::atlas(store, guide)?,
+            &tracker,
+            expected,
+            &action.step_id,
+            &view,
+        );
+    let branch_choice =
+        route.status == "route_choice" && route.next.iter().any(|s| s.id == action.step_id);
+    ensure!(
+        expected == Some(action.step_id.as_str())
+            || reanchor
+            || existing.is_some()
+            || branch_choice,
+        "Follow the authored walkthrough route. The next action is {} ({}); choosing {} would leave that route unfinished. A matching room does not establish the visit or complete intervening pickups. Use confirmed progress, an explicit current task report, or a source-supported conditional bypass before changing the route.",
+        route
+            .now
+            .as_ref()
+            .map(|s| s.title.as_str())
+            .unwrap_or("unresolved"),
+        expected.unwrap_or("no supported next step"),
+        action.step_id
+    );
     ensure!(
         location_supported
             || reported_place.is_some()
@@ -297,7 +429,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
                     "related_step_ids":spatial["observation"]["related_step_ids"]
                 })
             })
-            .or_else(|| existing.and_then(|r| r.location_evidence))),
+            .or_else(|| existing.and_then(|r| r.location_evidence.clone()))),
     };
     store.put_for_progress(guide, progress.epoch, &key(guide), &recommendation)?;
     Ok(
@@ -308,6 +440,240 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn arrival_selects_the_first_unfinished_visit_to_that_room() -> Result<()> {
+        use gamebuddy_core::{Atlas, Place, PlaceBinding};
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Gate\nGo through.\n# First visit\nReceive the seal.\n# Forest\nCross the forest.\n# Return visit\nUnlock the chamber again.",
+        )?;
+        store.save_guide(&guide)?;
+        let atlas = Atlas {
+            guide_id: guide.id.clone(),
+            guide_revision: guide.revision,
+            places: ["gate", "chamber", "forest"]
+                .iter()
+                .map(|id| Place {
+                    id: (*id).into(),
+                    label: (*id).into(),
+                    map_id: None,
+                    landmarks: (*id).into(),
+                })
+                .collect(),
+            bindings: ["gate", "chamber", "forest", "chamber"]
+                .iter()
+                .zip(&guide.steps)
+                .map(|(place, step)| PlaceBinding {
+                    step_id: step.id.clone(),
+                    place_id: (*place).into(),
+                    evidence: "Source room identity".into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        super::super::save(&store, &guide, &atlas)?;
+        store.save_progress(
+            &guide,
+            &Progress {
+                current_step: Some("step-1".into()),
+                ..Default::default()
+            },
+            "fixture",
+        )?;
+        let report = super::super::report_location(
+            &store,
+            &guide,
+            super::super::LocationReport {
+                place_id: "chamber".into(),
+                step_id: None,
+                player_report: "I am in the chamber now.".into(),
+                expected_revision: guide.revision,
+                epoch: 0,
+            },
+        )?;
+        let epoch = report["progress"]["epoch"].as_u64().unwrap();
+        let action = |id: &str| NextAction {
+            expected_revision: guide.revision,
+            epoch,
+            step_id: id.into(),
+            instructions: "Follow this source action.".into(),
+            screen_direction: None,
+        };
+        assert!(
+            publish(&store, &guide, action("step-4")).is_err(),
+            "Room identity must not select the return visit"
+        );
+        assert!(
+            publish(&store, &guide, action("step-2")).is_ok(),
+            "Arrival can bypass old travel without inventing completion"
+        );
+        assert!(store.progress(&guide)?.reported_completed.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn planning_updates_keep_the_accepted_route_instead_of_reviving_an_old_goal() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let mut guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Route",
+            "# Old goal\nCheck the old gate.\n# Current task\nReceive the seal.\n# Next task\nLeave the room.",
+        )?;
+        guide.goals.push(gamebuddy_core::PlayerGoal {
+            id: "old".into(),
+            description: "Check the old gate".into(),
+            step_ids: vec!["step-1".into()],
+        });
+        store.save_guide(&guide)?;
+        store.put(
+            &key(&guide),
+            &Recommendation {
+                revision: guide.revision,
+                epoch: 0,
+                session: String::new(),
+                updated_at_ms: 1,
+                step_id: "step-2".into(),
+                instructions: "Receive the seal.".into(),
+                location_evidence: None,
+                movement: None,
+            },
+        )?;
+        let result = crate::outcomes::report(
+            &store,
+            &guide,
+            crate::outcomes::Report {
+                expected_revision: guide.revision,
+                epoch: 0,
+                player_report: "Keep optional extras off.".into(),
+                facts: vec![],
+                include_optional: Some(false),
+                goal: None,
+                clear_goal: false,
+            },
+        )?;
+        assert_eq!(result["guidance"]["now"]["id"], "step-2");
+        assert_eq!(result["authored_route"]["steps"][1]["id"], "step-3");
+        assert_eq!(result["progress"]["current_step"], "step-2");
+        assert!(store.progress(&guide)?.completed.is_empty());
+        assert_eq!(store.guide(&guide.id)?.goals, guide.goals);
+        let progress = store.report_complete(&guide, 1, "step-2", "I received the seal")?;
+        publish(
+            &store,
+            &guide,
+            NextAction {
+                expected_revision: guide.revision,
+                epoch: progress.epoch,
+                step_id: "step-3".into(),
+                instructions: "Leave the room.".into(),
+                screen_direction: None,
+            },
+        )?;
+        assert!(!gamebuddy_core::step_complete(&guide, &progress, "step-1"));
+        Ok(())
+    }
+    #[test]
+    fn authored_order_protects_a_pickup_without_an_outcome_rule_even_in_the_same_room() -> Result<()>
+    {
+        use gamebuddy_core::{Atlas, Place, PlaceBinding};
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Walkthrough",
+            "# Restore spring\nSpeak to the keeper.\n# Receive seal\nSpeak again for the seal before leaving.\n# Leave\nReturn to town.\n# Later visit\nUnlock this room again.",
+        )?;
+        store.save_guide(&guide)?;
+        let atlas = Atlas {
+            guide_id: guide.id.clone(),
+            guide_revision: guide.revision,
+            places: vec![Place {
+                id: "chamber".into(),
+                label: "Chamber".into(),
+                map_id: None,
+                landmarks: "Keeper".into(),
+            }],
+            bindings: guide
+                .steps
+                .iter()
+                .map(|s| PlaceBinding {
+                    step_id: s.id.clone(),
+                    place_id: "chamber".into(),
+                    evidence: "Same room at different times in the source".into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        super::super::save(&store, &guide, &atlas)?;
+        let progress = Progress {
+            current_step: Some("step-1".into()),
+            reported_completed: std::collections::HashSet::from(["step-1".into()]),
+            ..Default::default()
+        };
+        store.save_progress(&guide, &progress, "fixture")?;
+        let mut place = PlaceTracker::default();
+        place.report_place("chamber", 0, screen::now_ms(), "I am in the keeper's room");
+        store.put(&super::super::tracker_key(&guide), &place)?;
+        let action = |id: &str, epoch| NextAction {
+            expected_revision: guide.revision,
+            epoch,
+            step_id: id.into(),
+            instructions: "Continue with this action.".into(),
+            screen_direction: None,
+        };
+        for id in ["step-3", "step-4"] {
+            assert!(
+                publish(&store, &guide, action(id, 0))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("authored walkthrough route")
+            );
+        }
+        let picked = publish(&store, &guide, action("step-2", 0))?;
+        assert_eq!(
+            picked["navigation"]["authored_route"]["steps"][1]["id"],
+            "step-3"
+        );
+        let progress = store.report_complete(&guide, 0, "step-2", "I received the seal")?;
+        assert!(publish(&store, &guide, action("step-3", progress.epoch)).is_ok());
+        assert!(!gamebuddy_core::step_complete(&guide, &progress, "step-4"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_explicit_current_task_can_reanchor_without_fabricating_past_completion() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Walkthrough",
+            "# Old task\nSpeak to the keeper.\n# Current task\nLeave through the arch.",
+        )?;
+        store.save_guide(&guide)?;
+        // report_location atomically stores this explicit task cursor.
+        let progress = Progress {
+            current_step: Some("step-2".into()),
+            ..Default::default()
+        };
+        store.save_progress(&guide, &progress, "player_location_fixture")?;
+        publish(
+            &store,
+            &guide,
+            NextAction {
+                expected_revision: guide.revision,
+                epoch: 0,
+                step_id: "step-2".into(),
+                instructions: "Leave through the arch.".into(),
+                screen_direction: None,
+            },
+        )?;
+        assert!(store.progress(&guide)?.reported_completed.is_empty());
+        assert!(store.progress(&guide)?.completed.is_empty());
+        Ok(())
+    }
     #[test]
     fn current_area_advice_cannot_bypass_a_missing_item_or_departure_requirement() -> Result<()> {
         use gamebuddy_core::outcomes::{KnownFact, OutcomeModel};
@@ -475,6 +841,14 @@ mod tests {
             "# Old enemy\nJump past it.\n# Treatment\nPay for healing.",
         )?;
         store.save_guide(&guide)?;
+        store.save_progress(
+            &guide,
+            &Progress {
+                current_step: Some("step-2".into()),
+                ..Default::default()
+            },
+            "explicit_task_fixture",
+        )?;
         publish(
             &store,
             &guide,
@@ -508,7 +882,7 @@ mod tests {
         store.save_progress(
             &guide,
             &Progress {
-                current_step: Some("step-1".into()),
+                current_step: Some("step-2".into()),
                 ..Default::default()
             },
             "fixture",
@@ -523,6 +897,15 @@ mod tests {
                 instructions: "Accept treatment.".into(),
                 screen_direction: None,
             },
+        )?;
+        // A legacy stored cursor may still precede the current accepted action.
+        store.save_progress(
+            &guide,
+            &Progress {
+                current_step: Some("step-1".into()),
+                ..Default::default()
+            },
+            "legacy_cursor_fixture",
         )?;
         let mut progress = store.report_complete(&guide, 0, "step-2", "I got the treatment")?;
         let context = |progress: &Progress| {
@@ -739,6 +1122,16 @@ mod tests {
         )
         .unwrap();
         store.save_guide(&guide).unwrap();
+        store
+            .save_progress(
+                &guide,
+                &Progress {
+                    current_step: Some("step-2".into()),
+                    ..Default::default()
+                },
+                "explicit_task_fixture",
+            )
+            .unwrap();
         let progress = store.progress(&guide).unwrap();
         let action = NextAction {
             expected_revision: guide.revision,

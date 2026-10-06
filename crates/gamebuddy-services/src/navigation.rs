@@ -6,7 +6,6 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use gamebuddy_core::{
     Atlas, Guide, MapAsset, MapLink, Place, PlaceBinding, PlaceTracker, Progress, SyncEstimate,
-    guidance_with_view,
 };
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -776,28 +775,16 @@ pub fn context(
     let default_outcomes = gamebuddy_core::outcomes::OutcomeModel::default();
     let outcome_model = outcomes.as_ref().map_or(&default_outcomes, |p| &p.model);
     let outcome_view = outcome_model.view(guide, progress);
-    let mut advice = if let Some(action) = recommendation.as_ref().filter(|r| {
-        !outcome_view.requirements_met(&r.step_id) && !outcome_view.skipped.contains_key(&r.step_id)
-    }) {
-        gamebuddy_core::guidance_for_action(
-            guide,
-            progress,
-            &tracker,
-            &action.step_id,
-            &outcome_view,
-        )
-    } else {
-        guidance_with_view(
-            guide,
-            progress,
-            &tracker,
-            recommendation
-                .as_ref()
-                .map(|r| r.step_id.as_str())
-                .or(completed_cursor.as_deref()),
-            &outcome_view,
-        )
-    };
+    let mut advice = advice::route_guidance(
+        guide,
+        progress,
+        &tracker,
+        recommendation
+            .as_ref()
+            .map(|r| r.step_id.as_str())
+            .or(completed_cursor.as_deref()),
+        &outcome_view,
+    );
     if let Some(recommendation) = &recommendation
         && outcome_view.requirements_met(&recommendation.step_id)
         && !outcome_view.skipped.contains_key(&recommendation.step_id)
@@ -913,7 +900,12 @@ pub fn context(
             route_places.push(p.id.clone());
         }
     }
-    let mut value = json!({"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    let authored_route = advice.now.as_ref().map(|now| {
+        let trace = gamebuddy_core::route::authored_route(guide, progress, &outcome_view, &now.id, 8);
+        json!({"next_step_id":now.id,"steps":trace.step_ids.iter().filter_map(|id| guide.step(id)).map(|s| json!({"id":s.id,"title":s.title,"anchors":s.anchors})).collect::<Vec<_>>(),"stop":trace.stop,"choices":trace.choices,
+            "instruction":"Follow these authored steps in order. Later steps are previews, not eligible immediate actions. Preserve required pickups and return-visit identity. Only confirmed progress, explicit current task reports, or supported optional/conditional bypasses change this sequence. This is objective order, not a verified physical path."})
+    });
+    let mut value = json!({"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
     if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
         value["guidance"]["warning"] = json!(
             hazards::readiness(guide, progress, &advice, outcome_model, &outcome_view)

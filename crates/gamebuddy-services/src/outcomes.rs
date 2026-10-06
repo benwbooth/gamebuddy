@@ -53,13 +53,9 @@ pub fn review(store: &Store, guide: &Guide, update: RouteReview) -> Result<Value
 }
 
 fn updated_context(store: &Store, guide: &Guide, progress: &Progress) -> Result<Value> {
-    let prepared = prepared(store, guide)?;
-    let fallback = OutcomeModel::default();
-    let model = prepared.as_ref().map_or(&fallback, |p| &p.model);
-    let guidance =
-        gamebuddy_core::guidance_with_outcomes(guide, progress, &Default::default(), None, model);
+    let navigation = crate::navigation::context(store, guide, progress, &Default::default())?;
     Ok(
-        json!({"guide_revision":guide.revision,"progress":progress,"planning":brief_context(store,guide,progress)?,"guidance":guidance}),
+        json!({"guide_revision":guide.revision,"progress":progress,"planning":brief_context(store,guide,progress)?,"guidance":navigation["guidance"],"authored_route":navigation["authored_route"]}),
     )
 }
 
