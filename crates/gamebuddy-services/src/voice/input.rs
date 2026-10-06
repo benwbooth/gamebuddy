@@ -83,6 +83,13 @@ impl PlayerInput {
                     now.saturating_duration_since(*last) >= Duration::from_millis(800)
                 }))
     }
+    /// Read-only preparation may start during a stable phrase; it never owns delivery.
+    pub fn preview(&self, now: Instant) -> Option<String> {
+        self.chunks
+            .back()
+            .filter(|(at, _)| now.saturating_duration_since(*at) >= Duration::from_millis(350))
+            .map(|_| self.text(now))
+    }
     pub fn text(&self, now: Instant) -> String {
         if self
             .chunks

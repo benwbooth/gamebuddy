@@ -8,6 +8,9 @@ pub struct Delivery {
 }
 
 impl Delivery {
+    pub fn finished(&self, utterance: u64) -> bool {
+        self.delivered == Some(utterance)
+    }
     pub fn started(&mut self, utterance: u64) {
         self.started = Some(utterance);
     }
@@ -31,6 +34,13 @@ impl Delivery {
         }
         self.started(utterance);
         true
+    }
+
+    pub fn retry(&mut self, utterance: u64) {
+        if self.started == Some(utterance) {
+            self.started = None;
+        }
+        self.completed = None;
     }
 
     pub fn abandon(&mut self, utterance: u64) {

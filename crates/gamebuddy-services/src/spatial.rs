@@ -1402,9 +1402,6 @@ pub fn schedule_notifying(
                     continue;
                 }
                 processed = Some(identity);
-                if let Err(error) = crate::telemetry::observe(&store, &snapshot, epoch) {
-                    let _ = store.put("emulator-error", &error.to_string());
-                }
                 if let Err(error) = observe(&store, &guide, &snapshot, epoch) {
                     store.put(&format!("world-error:{}", guide.id), &error.to_string())?;
                 }

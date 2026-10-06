@@ -900,9 +900,11 @@ pub fn context(
             route_places.push(p.id.clone());
         }
     }
-    Ok(
-        json!({"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}}),
-    )
+    let mut value = json!({"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    value["prepared_speech"] = json!(crate::voice::prepared::frontier(
+        store, guide, progress, &value
+    )?);
+    Ok(value)
 }
 
 pub fn add_map(store: &Store, guide: &Guide, map: MapAsset) -> Result<Atlas> {

@@ -152,10 +152,15 @@ pub fn run(
         let r = rect.as_array().context("Control bounds")?;
         let x = (r[0].as_f64().unwrap() + r[2].as_f64().unwrap() / 2.0) as i16;
         let y = (r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0) as i16;
-        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, x, y, 0)?
-            .check()?;
-        conn.flush()?;
-        thread::sleep(Duration::from_millis(350));
+        // As with hover below, keep motion alive through Gamescope's
+        // asynchronous transfer from game input to the overlay surface.
+        for offset in 0..12 {
+            conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, x + offset % 2, y, 0)?
+                .check()?;
+            conn.flush()?;
+            thread::sleep(Duration::from_millis(100));
+        }
+        thread::sleep(Duration::from_millis(150));
         conn.xtest_fake_input(BUTTON_PRESS_EVENT, 1, 0, root, 0, 0, 0)?
             .check()?;
         conn.xtest_fake_input(BUTTON_RELEASE_EVENT, 1, 0, root, 0, 0, 0)?

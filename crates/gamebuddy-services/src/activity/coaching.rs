@@ -50,7 +50,12 @@ pub fn save_review(store: &Store, observation: &Observation, review: &Review) ->
         || progress.epoch != observation.progress.epoch + u64::from(completed > 0)
         || store.get::<String>("active_guide")?.as_deref() != Some(&guide.id)
         || store.guide(&guide.id)?.revision != guide.revision
-        || screen::now_ms().saturating_sub(latest.captured_at_ms) > 30_000
+        || screen::now_ms().saturating_sub(latest.captured_at_ms)
+            > if matches!(coaching.kind, Kind::Danger | Kind::Recovery) {
+                3_000
+            } else {
+                30_000
+            }
         || !screen::still_current(store, latest)?
         || newer_advice
     {
@@ -112,9 +117,14 @@ pub fn current_coaching(
         || cue["epoch"] != progress.epoch
         || cue["ticket"]["session"] != capture["session_id"]
         || cue["ticket"]["epoch"] != capture["capture_epoch"]
-        || cue["captured_at_ms"]
-            .as_u64()
-            .is_none_or(|at| screen::now_ms().saturating_sub(at) > 30_000)
+        || cue["captured_at_ms"].as_u64().is_none_or(|at| {
+            screen::now_ms().saturating_sub(at)
+                > if matches!(cue["kind"].as_str(), Some("danger" | "recovery")) {
+                    3_000
+                } else {
+                    30_000
+                }
+        })
         || cue["step_id"]
             .as_str()
             .is_none_or(|id| gamebuddy_core::step_complete(guide, progress, id))

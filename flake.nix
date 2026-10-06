@@ -13,9 +13,10 @@
           patches = (old.patches or []) ++ [ ./nix/gamescope-input.patch ];
         });
       in {
-        packages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux { inherit gamescope; };
+        packages = { prepared-speech-runtime = pkgs.python3.withPackages (ps: [ (ps.toPythonModule pkgs.piper-tts) ]); }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux { inherit gamescope; };
         devShells.default = pkgs.mkShell {
-          packages = (with pkgs; [ cargo rustc rustfmt clippy pkg-config clang cmake ninja ffmpeg yt-dlp whisper-cpp watchexec ])
+          packages = (with pkgs; [ cargo rustc rustfmt clippy pkg-config clang cmake ninja ffmpeg yt-dlp whisper-cpp watchexec tesseract ])
             ++ qtModules ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.alsa-lib pkgs.libxcb-cursor pkgs.mold pkgs.pipewire pkgs.pulseaudio gamescope ];
           QMAKE = "${qtEnv}/bin/qmake";
           FLAKE_INPUTS = builtins.concatStringsSep ":" (map (input: input.outPath) (builtins.attrValues (builtins.removeAttrs inputs [ "self" ])));

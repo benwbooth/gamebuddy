@@ -43,6 +43,10 @@ JS
 player=$!
 for attempt in {1..100}; do [[ -S "$GAMEBUDDY_TEST_PLAY_SOCKET" ]] && break; sleep 0.05; done
 nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot of my game. What shapes, colors and background can you see? Put your description in a text widget titled Voice Works. Then tell me what you see.'
+if [[ -n "${GAMEBUDDY_TEST_ROUTINE:-}" ]]; then
+  export GAMEBUDDY_TEST_ROUTINE_WAV="$runtime_dir/routine.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ROUTINE_WAV" 'What should I do next?'
+fi
 if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
   export GAMEBUDDY_TEST_PRESENCE_WAV="$runtime_dir/presence.wav" GAMEBUDDY_TEST_COMMAND_WAV="$runtime_dir/command.wav"
@@ -94,6 +98,9 @@ fi
 cat >"$runtime_dir/settings.json" <<'JSON'
 {"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime"}
 JSON
+if [[ -n "${GAMEBUDDY_TEST_PREPARED_PYTHON:-}" ]]; then
+  node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.prepared_speech={enabled:true,python:process.env.GAMEBUDDY_TEST_PREPARED_PYTHON,model:process.env.GAMEBUDDY_TEST_PREPARED_MODEL};fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"
+fi
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
 if [[ -n "${GAMEBUDDY_TEST_VOICE_MODEL:-}" ]]; then
   node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.reasoning.model=process.env.GAMEBUDDY_TEST_VOICE_MODEL;fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"
@@ -112,7 +119,11 @@ ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -
 for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
-if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_FAST_EVENT:-}" ]]; then
+  rg -qi "game.over" "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_ROUTINE:-}" ]]; then
+  rg -qi "restoration|vendor|street" "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   if rg -qi "still working|i.m on it" "$runtime_dir/heard.txt"; then
     printf 'Unexpected spoken filler in the recording\n' >&2
     exit 1
@@ -133,7 +144,7 @@ fi
 if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
   rg -qi 'purple elephants?' "$runtime_dir/heard.txt"
 fi
-if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" && -z "${GAMEBUDDY_TEST_FAST_EVENT:-}" ]]; then
   rg -qi 'silver lantern glows' "$runtime_dir/heard.txt"
 fi
 # Keep a separate tail excerpt for the later selected visual feedback.

@@ -22,6 +22,7 @@ scraper = "0.24"
 fs2 = "0.4"
 webrtc-vad = "0.4"
 hound = "3.5"
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 tiny_http = "0.12"

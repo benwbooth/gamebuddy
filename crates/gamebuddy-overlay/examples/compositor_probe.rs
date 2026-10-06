@@ -236,16 +236,20 @@ fn main() -> anyhow::Result<()> {
         std::fs::copy("/tmp/gamescope.png", directory.join(name))?;
         Ok(())
     };
-    conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 900, 600, 0)?
+    // Let Gamescope finish focusing the mapped game before placing the pointer.
+    thread::sleep(Duration::from_secs(2));
+    // Stay outside the outline/map resize margins as their content loads.
+    conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 1250, 690, 0)?
         .check()?;
     conn.flush()?;
-    thread::sleep(Duration::from_secs(2));
+    pause();
     screenshot("initial-input.png")?;
     ensure!(
         cardinal(&conn, overlay, focus)? == 0,
-        "Collapsed overlay trapped input: mode={} pointer={:?}",
+        "Collapsed overlay trapped input: mode={} pointer=({}, {})",
         cardinal(&conn, overlay, focus)?,
-        conn.query_pointer(root)?.reply()?
+        conn.query_pointer(root)?.reply()?.root_x,
+        conn.query_pointer(root)?.reply()?.root_y
     );
     count_a()?;
     send_key(a, true)?;

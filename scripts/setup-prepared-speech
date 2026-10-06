@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Install optional CPU speech synthesis and preserve the user's other settings.
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+speech_dir="${GAMEBUDDY_SPEECH_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/GameBuddy/models/piper}"
+cli="${GAMEBUDDY_CLI:-$project_dir/target/debug/gamebuddy-cli}"
+mkdir -p -- "$speech_dir"
+if command -v nix >/dev/null; then
+  nix build "$project_dir#prepared-speech-runtime" --out-link "$speech_dir/runtime"
+  speech_python="$speech_dir/runtime/bin/python"
+else
+  uv venv --python 3.12 --allow-existing "$speech_dir/venv"
+  uv pip install --python "$speech_dir/venv/bin/python" 'piper-tts==1.8.0'
+  speech_python="$speech_dir/venv/bin/python"
+fi
+"$speech_python" - "$speech_dir" <<'PY'
+import hashlib, pathlib, sys, urllib.request
+root = pathlib.Path(sys.argv[1])
+base = 'https://huggingface.co/rhasspy/piper-voices/resolve/b145f2ac26522d6a2ccde0164b7b0e48b1e3199c/en/en_US/ljspeech/medium/'
+files = {
+ 'en_US-ljspeech-medium.onnx': '6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22',
+ 'en_US-ljspeech-medium.onnx.json': '141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860',
+ 'MODEL_CARD': 'fbee1529c89d36b3fe76d7e9f3f832dce17f44900a52d76a9bda735654766b4d',
+}
+for name, digest in files.items():
+    destination = root / (name if name != 'MODEL_CARD' else 'ljspeech-MODEL_CARD')
+    if destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() == digest:
+        continue
+    temporary = destination.with_suffix(destination.suffix + '.download')
+    urllib.request.urlretrieve(base + name, temporary)
+    if hashlib.sha256(temporary.read_bytes()).hexdigest() != digest:
+        temporary.unlink()
+        raise RuntimeError('Voice download failed checksum verification: ' + name)
+    temporary.replace(destination)
+PY
+settings_file="$(mktemp)"
+trap 'rm -f -- "$settings_file"' EXIT
+"$cli" "$@" settings > "$settings_file"
+"$speech_python" - "$settings_file" "$speech_python" "$speech_dir/en_US-ljspeech-medium.onnx" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+settings = json.loads(path.read_text())
+settings['prepared_speech'] = {'enabled': True, 'python': sys.argv[2], 'model': sys.argv[3]}
+path.write_text(json.dumps(settings, indent=2) + '\n')
+PY
+"$cli" "$@" configure "$settings_file"
+printf 'Prepared speech is installed. Reconnect voice to use it.\n'

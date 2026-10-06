@@ -16,6 +16,8 @@ pub struct Narrator {
     last_scene_at: u64,
     pending_event: String,
     event_votes: u8,
+    urgent: bool,
+    progress_epoch: Option<u64>,
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -23,7 +25,20 @@ fn field<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 
 impl Narrator {
+    pub fn heard_advice(&mut self, context: &Value, now: Instant) {
+        let action = &context["guidance"]["now"];
+        if !field(action, "id").is_empty() {
+            self.spoken_actions
+                .insert(format!("{}:{}", field(action, "id"), cue(context)));
+            self.last_spoken = Some(now);
+        }
+    }
+    pub fn next_cue(&mut self, context: &Value, now: Instant) -> Option<Value> {
+        self.next(context, now)
+            .map(|text| serde_json::json!({"text":text,"urgent":self.urgent}))
+    }
     pub fn next(&mut self, context: &Value, now: Instant) -> Option<String> {
+        self.urgent = false;
         let game = field(context, "game");
         if game.is_empty() {
             return None;
@@ -38,6 +53,12 @@ impl Narrator {
                 session,
                 ..Self::default()
             };
+        }
+        let epoch = context["progress_epoch"].as_u64();
+        if self.progress_epoch != epoch {
+            self.spoken_actions.clear();
+            self.spoken_coaching.clear();
+            self.progress_epoch = epoch;
         }
         let scene = &context["screen"]["scene"];
         if context["screen"]["status"] == "live"
@@ -61,13 +82,45 @@ impl Narrator {
         }
         // Keep the latest action pending while the player or Buddy is speaking.
         // Seeing an action during a conversation is not proof it was spoken.
-        if context["conversation_active"] == true {
+        let live = context["screen"]["status"] == "live";
+        let fast = &context["fast_event"];
+        let event_available = |event: &str, seconds| {
+            self.spoken_events
+                .get(event)
+                .is_none_or(|t| now.duration_since(*t) >= Duration::from_secs(seconds))
+        };
+        let fast_event = live
+            && fast["fresh"] == true
+            && matches!(field(fast, "event"), "death" | "danger" | "victory")
+            && event_available(field(fast, "event"), 30);
+        let coaching = &context["coaching"];
+        let urgent = matches!(field(coaching, "kind"), "danger" | "recovery");
+        let coach_id = field(coaching, "id");
+        let can_coach = live
+            && field(coaching, "kind") != "next_action"
+            && !coach_id.is_empty()
+            && !field(coaching, "text").is_empty()
+            && !self.spoken_coaching.contains(coach_id)
+            && self.last_coaching.is_none_or(|t| {
+                now.duration_since(t) >= Duration::from_secs(if urgent { 12 } else { 30 })
+            });
+        let urgent_coaching = can_coach && urgent;
+        let urgent_event = (fast_event && matches!(field(fast, "event"), "death" | "danger"))
+            || (self.event_votes >= 2
+                && matches!(field(scene, "event"), "death" | "danger")
+                && scene["fresh"] == true
+                && scene["age_ms"].as_u64().unwrap_or(0) <= 3000
+                && event_available(field(scene, "event"), 30));
+        let can_interrupt =
+            context["player_speaking"] == false && (urgent_coaching || urgent_event);
+        if context["conversation_active"] == true && !can_interrupt {
             self.last_conversation = Some(now);
             return None;
         }
         if self
             .last_conversation
             .is_some_and(|t| now.duration_since(t) < Duration::from_millis(250))
+            && !can_interrupt
         {
             return None;
         }
@@ -82,42 +135,18 @@ impl Narrator {
                     && context["coaching"]["step_id"] == guidance["now"]["id"]));
         let action = &guidance["now"];
         let action_key = format!("{}:{}", field(action, "id"), cue(context));
-        if !self.introduced {
-            self.introduced = true;
-            self.last_spoken = Some(now);
-            let greeting = if context["returning_player"] == true {
-                "Welcome back."
-            } else {
-                "Hey, I'm GameBuddy."
-            };
-            let next = if ready && !field(action, "id").is_empty() {
-                self.spoken_actions.insert(action_key);
-                cue(context)
-            } else if context["preparing"] == true && context["guide_ready"] != true {
-                "I'm preparing your guide. I'll talk you through the next steps as you play.".into()
-            } else {
-                "I'll talk you through the next steps as you play.".into()
-            };
-            return Some(format!("{greeting} {next}"));
-        }
-
-        // Source-grounded coaching has already passed capture and progress
-        // freshness checks. Urgent recovery can precede a changed objective.
-        let coaching = &context["coaching"];
-        let urgent = matches!(field(coaching, "kind"), "danger" | "recovery");
-        let coach_id = field(coaching, "id");
-        let can_coach = live
-            && field(coaching, "kind") != "next_action"
-            && !coach_id.is_empty()
-            && !field(coaching, "text").is_empty()
-            && !self.spoken_coaching.contains(coach_id)
-            && self.last_coaching.is_none_or(|t| {
-                now.duration_since(t) >= Duration::from_secs(if urgent { 12 } else { 30 })
-            });
-        if can_coach && urgent {
+        // Urgent, eligible cues precede greetings and may interrupt thinking.
+        if urgent_coaching && context["player_speaking"] != true {
+            self.urgent = true;
             return Some(self.coach(coaching, now));
         }
-        if live && scene["fresh"] == true {
+        if fast_event && context["player_speaking"] != true {
+            self.spoken_events.insert(field(fast, "event").into(), now);
+            self.last_spoken = Some(now);
+            self.urgent = matches!(field(fast, "event"), "death" | "danger");
+            return Some(field(fast, "text").to_owned());
+        }
+        if live && scene["fresh"] == true && scene["age_ms"].as_u64().unwrap_or(0) <= 3000 {
             let event = field(scene, "event");
             let supplied = field(scene, "feedback");
             let feedback = if supplied.trim().is_empty() {
@@ -143,9 +172,29 @@ impl Narrator {
             {
                 self.spoken_events.insert(event.into(), now);
                 self.last_spoken = Some(now);
+                self.urgent = matches!(event, "death" | "danger");
                 return Some(brief(feedback));
             }
         }
+        if !self.introduced {
+            self.introduced = true;
+            self.last_spoken = Some(now);
+            let greeting = if context["returning_player"] == true {
+                "Welcome back."
+            } else {
+                "Hey, I'm GameBuddy."
+            };
+            let next = if ready && !field(action, "id").is_empty() {
+                self.spoken_actions.insert(action_key);
+                cue(context)
+            } else if context["preparing"] == true && context["guide_ready"] != true {
+                "I'm preparing your guide. I'll talk you through the next steps as you play.".into()
+            } else {
+                "I'll talk you through the next steps as you play.".into()
+            };
+            return Some(format!("{greeting} {next}"));
+        }
+
         if ready && !field(action, "id").is_empty() && self.spoken_actions.insert(action_key) {
             self.last_spoken = Some(now);
             // Actual instructions, immediately on the next poll. No named-place
@@ -172,13 +221,7 @@ impl Narrator {
 }
 
 fn brief(text: &str) -> String {
-    let sentences: Vec<_> = text.split_inclusive(['.', '!', '?']).take(2).collect();
-    sentences
-        .concat()
-        .split_whitespace()
-        .take(65)
-        .collect::<Vec<_>>()
-        .join(" ")
+    super::prepared::brief(text)
 }
 
 fn cue(context: &Value) -> String {
@@ -312,6 +355,40 @@ mod tests {
             n.next(&c, t + Duration::from_millis(700)).as_deref(),
             Some("Walk right to b. Climb the ladder.")
         );
+    }
+
+    #[test]
+    fn urgent_event_interrupts_thinking_once_but_never_the_player() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        c["conversation_active"] = json!(true);
+        c["player_speaking"] = json!(true);
+        c["fast_event"] = json!({"fresh":true,"event":"death","text":"The screen says game over."});
+        assert!(n.next_cue(&c, t).is_none());
+        c["player_speaking"] = json!(false);
+        let cue = n.next_cue(&c, t + Duration::from_secs(1)).unwrap();
+        assert_eq!(cue["urgent"], true);
+        assert!(cue["text"].as_str().unwrap().contains("game over"));
+        assert!(
+            n.next_cue(&c, t + Duration::from_secs(2)).is_none(),
+            "cooldown cannot allow an ordinary cue through a conversation"
+        );
+        c["fast_event"]["fresh"] = json!(false);
+        assert!(n.next_cue(&c, t + Duration::from_secs(40)).is_none());
+    }
+    #[test]
+    fn old_vision_danger_does_not_interrupt_on_its_second_vote() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        n.next(&c, t);
+        c["conversation_active"] = json!(true);
+        c["player_speaking"] = json!(false);
+        c["screen"]["scene"] = json!({"fresh":true,"confidence":0.95,"event":"danger","feedback":"Jump now!","age_ms":6000,"captured_at_ms":1});
+        assert!(n.next(&c, t + Duration::from_secs(1)).is_none());
+        c["screen"]["scene"]["captured_at_ms"] = json!(2);
+        assert!(n.next(&c, t + Duration::from_secs(2)).is_none());
     }
 
     #[test]

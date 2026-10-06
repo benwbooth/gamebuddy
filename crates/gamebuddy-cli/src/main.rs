@@ -295,6 +295,9 @@ fn main() -> Result<()> {
             if let Some(planning) = &settings.planning {
                 planning.validate()?;
             }
+            if let Some(speech) = &settings.prepared_speech {
+                speech.validate()?;
+            }
             store.put("settings", &settings)?;
             println!("Model configuration saved");
         }

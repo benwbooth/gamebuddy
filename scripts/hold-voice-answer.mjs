@@ -16,13 +16,17 @@ try {
   });
   const noiseDelay = process.env.GAMEBUDDY_TEST_NOISE ? 1000 + 1000 * Number(execFileSync('ffprobe', ['-v','error','-show_entries','format=duration','-of','csv=p=0',process.env.GAMEBUDDY_TEST_VOICE_WAV], {encoding:'utf8'})) : null;
   const expression = `(() => {
-    const original = gamebuddyVoice.queueSpeech;
-    gamebuddyVoice.queueSpeech = text => {
-      gamebuddyVoice.queueSpeech = original;
+    const originals = {queueSpeech:gamebuddyVoice.queueSpeech,queuePrepared:gamebuddyVoice.queuePrepared};
+    const held=[];let waiting=false;
+    for(const name of Object.keys(originals))gamebuddyVoice[name] = (...args) => {
+      held.push({name,args});
+      if(waiting)return;
+      waiting=true;
       console.info('GAMEBUDDY_VOICE ' + JSON.stringify({type:'test-answer-held',value:true,at:Date.now()}));
       setTimeout(() => {
+        Object.assign(gamebuddyVoice,originals);
         console.info('GAMEBUDDY_VOICE ' + JSON.stringify({type:'test-answer-released',value:true,at:Date.now()}));
-        original(text);
+        for(const item of held)originals[item.name](...item.args);
       }, 35000);
     };
     if(${JSON.stringify(noiseDelay)}!==null)setTimeout(() => {

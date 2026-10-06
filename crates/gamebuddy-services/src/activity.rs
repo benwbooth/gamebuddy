@@ -309,6 +309,9 @@ static JOBS: OnceLock<Mutex<HashMap<PathBuf, Job>>> = OnceLock::new();
 /// Progress reasoning runs independently of capture and the small local scene
 /// describer. A slow review must not stall either of those or voice input.
 pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
+    if crate::voice::priority::active(&store.root) {
+        return;
+    }
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     if job.running

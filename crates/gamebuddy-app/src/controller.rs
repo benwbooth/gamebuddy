@@ -415,7 +415,7 @@ impl ffi::Buddy {
                     })
                     .and_then(|p| url::Url::from_file_path(p).ok())
                     .map(|u| u.to_string());
-                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"screen":services::screen::status(&store)?,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
             })();
             if std::env::args().any(|a| a == "--ui-trace") {
                 eprintln!(
@@ -831,17 +831,28 @@ impl ffi::Buddy {
                         services::screen::now_ms().saturating_sub(captured_done)
                     );
                 }
-                if let Some(guide) = &guide
-                    && let Ok(snapshot) = services::screen::snapshot(&store)
-                {
-                    services::activity::schedule(&store, guide, snapshot.clone());
-                    services::spatial::schedule_notifying(
+                if let Ok(snapshot) = services::screen::snapshot(&store) {
+                    services::fast_perception::schedule(
                         &store,
-                        guide,
-                        snapshot,
-                        sync.progress.epoch,
-                        spatial_notify,
+                        snapshot.clone(),
+                        spatial_notify.clone(),
                     );
+                    services::telemetry::schedule(
+                        &store,
+                        snapshot.clone(),
+                        sync.progress.epoch,
+                        spatial_notify.clone(),
+                    );
+                    if let Some(guide) = &guide {
+                        services::activity::schedule(&store, guide, snapshot.clone());
+                        services::spatial::schedule_notifying(
+                            &store,
+                            guide,
+                            snapshot,
+                            sync.progress.epoch,
+                            spatial_notify,
+                        );
+                    }
                 }
                 let matching = if let Some(guide) = &guide {
                     if services::spatial::load_cached(&store, guide)?
@@ -1247,6 +1258,9 @@ impl ffi::Buddy {
             s.vision.validate()?;
             if let Some(planning) = &s.planning {
                 planning.validate()?;
+            }
+            if let Some(speech) = &s.prepared_speech {
+                speech.validate()?;
             }
             Store::open(&self.rust().root)?.put("settings", &s)?;
             Ok(s)

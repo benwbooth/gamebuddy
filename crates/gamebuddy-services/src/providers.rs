@@ -41,6 +41,8 @@ impl Default for ProviderConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub prepared_speech: Option<crate::voice::speech::Config>,
     /// Slow source planning runs separately from interactive voice.
     #[serde(default)]
     pub planning: Option<ProviderConfig>,
@@ -62,6 +64,7 @@ fn ducking_enabled() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            prepared_speech: None,
             planning: None,
             reasoning: ProviderConfig::default(),
             vision: ProviderConfig::default(),

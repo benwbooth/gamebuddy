@@ -11,6 +11,8 @@ use x11rb::rust_connection::RustConnection;
 
 #[path = "progress_probe.rs"]
 mod progress_probe;
+#[path = "responsiveness_probe.rs"]
+mod responsiveness_probe;
 #[path = "work_progress_probe.rs"]
 mod work_progress_probe;
 
@@ -23,6 +25,15 @@ fn pactl(args: &[&str]) -> Result<String> {
     );
     Ok(String::from_utf8(output.stdout)?)
 }
+// Volume-control applications open peak-meter streams on every source. They
+// carry level samples, not microphone audio, and outlive the application capture.
+fn records_source(stream: &serde_json::Value, source_index: u64) -> bool {
+    stream["source"].as_u64() == Some(source_index)
+        && stream["corked"] == false
+        && stream["resample_method"] != "peaks"
+        && stream["properties"]["resample.peaks"] != "true"
+}
+
 fn wait(label: &str, mut check: impl FnMut() -> Result<bool>) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(35);
     while !check()? {
@@ -80,7 +91,7 @@ pub fn run(
             .as_array()
             .context("capture list")?
             .iter()
-            .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
+            .any(|s| records_source(s, source_index)))
     };
     ensure!(!capturing()?, "Mic captured before an unmute gesture");
     pactl(&["set-source-mute", &source, "0"])?;
@@ -321,7 +332,7 @@ fn realtime(
             .as_array()
             .context("source outputs")?
             .iter()
-            .any(|s| s["source"].as_u64() == Some(source_index) && s["corked"] == false))
+            .any(|s| records_source(s, source_index)))
     };
     let store = gamebuddy_services::Store::open(std::env::var("GAMEBUDDY_TEST_DATA")?)?;
     let quiet = || -> Result<()> {
@@ -329,26 +340,27 @@ fn realtime(
         loop {
             wait("voice returns to waiting for player speech", || {
                 let text = std::fs::read_to_string(&log)?;
-                Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-                > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                // A new request no longer opens playback before approval.
-                // A stop can therefore finish while it is already closed,
-                // without another playback-allowed transition to false.
-                && text
-                    .lines()
-                    .rev()
-                    .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
-                    .is_some_and(|line| line.ends_with("Live voice · speak naturally")))
+                Ok(
+                    // A new request no longer opens playback before approval.
+                    // A stop can therefore finish while it is already closed,
+                    // without another playback-allowed transition to false.
+                    text.lines()
+                        .rev()
+                        .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
+                        .is_some_and(|line| line.ends_with("Live voice · speak naturally")),
+                )
             })?;
             let before = std::fs::read_to_string(&log)?;
             let permits = before
                 .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                .count();
+                .count()
+                + before.matches("\"type\":\"prepared-start\"").count();
             thread::sleep(Duration::from_secs(15));
             let after = std::fs::read_to_string(&log)?;
             let next = after
                 .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                .count();
+                .count()
+                + after.matches("\"type\":\"prepared-start\"").count();
             if next == permits {
                 break;
             }
@@ -381,7 +393,7 @@ fn realtime(
     wait("automatic spoken introduction", || {
         let text = std::fs::read_to_string(&log)?;
         Ok(text.contains("GAMEBUDDY_NARRATION")
-            && text.contains("GAMEBUDDY_REALTIME_TRANSCRIPT role=assistant"))
+            && text.contains("GAMEBUDDY_VOICE_PLAYBACK started"))
     })?;
     wait(
         "already-unmuted microphone opens automatically at launch",
@@ -396,6 +408,73 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_FAST_EVENT").is_some() {
+        let before = std::fs::read_to_string(&log)?.len();
+        play_player(&std::env::var("GAMEBUDDY_TEST_STORY_WAV")?)?;
+        wait("reasoning begins before the new urgent event", || {
+            Ok(std::fs::read_to_string(&log)?[before..].contains("GAMEBUDDY_VOICE_DISPATCH "))
+        })?;
+        let event_at = gamebuddy_services::screen::now_ms();
+        draw_detector_text(conn, game)?;
+        wait("local OCR confirms the changed screen", || {
+            Ok(std::fs::read_to_string(&log)?[before..]
+                .contains("GAMEBUDDY_FAST_EVENT event=death"))
+        })?;
+        wait("urgent screen event reaches playback", || {
+            let text = std::fs::read_to_string(&log)?;
+            Ok(text[before..].contains("The screen says game over.")
+                && text[before..].contains("GAMEBUDDY_VOICE_PLAYBACK started"))
+        })?;
+        let text = std::fs::read_to_string(&log)?;
+        let at = text[before..]
+            .lines()
+            .filter_map(|l| {
+                l.split_once("GAMEBUDDY_VOICE_PLAYBACK started at_ms=")
+                    .and_then(|(_, v)| v.parse::<u64>().ok())
+            })
+            .find(|at| *at >= event_at)
+            .context("Urgent audio onset")?;
+        println!(
+            "GAMEBUDDY_FAST_EVENT_PASS displayed_ms={event_at} playback_ms={at} elapsed_ms={}",
+            at - event_at
+        );
+        thread::sleep(Duration::from_secs(12));
+        let text = std::fs::read_to_string(&log)?;
+        ensure!(
+            !text[before..].contains("silver lantern glows"),
+            "Superseded story played after the urgent event"
+        );
+        ensure!(capturing()?, "Urgent interruption closed the microphone");
+        screenshot("fast-game-over.png")?;
+        return Ok(());
+    }
+    if std::env::var_os("GAMEBUDDY_TEST_ROUTINE").is_some() {
+        responsiveness_probe::run(&store, &log)?;
+        if std::env::var_os("GAMEBUDDY_TEST_EVENT_IMAGE").is_some() {
+            let before = std::fs::read_to_string(&log)?.len();
+            play_player(&std::env::var("GAMEBUDDY_TEST_ROUTINE_WAV")?)?;
+            wait("instruction starts before a scene change", || {
+                Ok(std::fs::read_to_string(&log)?[before..]
+                    .contains("GAMEBUDDY_VOICE_PLAYBACK started"))
+            })?;
+            let changed = gamebuddy_services::screen::now_ms();
+            draw_detector_text(conn, game)?;
+            wait("changed view cancels playing advice", || {
+                Ok(std::fs::read_to_string(&log)?[before..]
+                    .contains("GAMEBUDDY_VOICE_SCOPE_EXPIRED"))
+            })?;
+            ensure!(
+                gamebuddy_services::screen::now_ms() - changed < 1500,
+                "Stale speech was not promptly cancelled"
+            );
+            ensure!(capturing()?, "Cancelling stale advice stopped capture");
+            println!(
+                "GAMEBUDDY_PLAYBACK_SCOPE_PASS elapsed_ms={}",
+                gamebuddy_services::screen::now_ms() - changed
+            );
+        }
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_WORKING").is_some() {
         work_progress_probe::run(&store, &log, quiet, capturing)?;
         let before = std::fs::read_to_string(&log)?.len();
@@ -659,7 +738,14 @@ fn realtime(
         Ok(std::fs::read_to_string(&log)?
             .contains("GAMEBUDDY_REALTIME_STATUS Guide voice ready · mic off"))
     })?;
-    wait("mute closes the WebRTC microphone", || Ok(!capturing()?))?;
+    wait("mute closes the WebRTC microphone", || Ok(!capturing()?)).with_context(|| {
+        let streams = pactl(&["-f", "json", "list", "source-outputs"])
+            .ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let remaining: Vec<_> = streams.as_ref().and_then(|s| s.as_array()).into_iter().flatten()
+            .filter(|s| s["source"].as_u64() == Some(source_index))
+            .map(|s| serde_json::json!({"index":s["index"],"corked":s["corked"],"application":s["properties"]["application.name"],"pid":s["properties"]["application.process.id"]})).collect();
+        format!("Remaining test-microphone streams: {remaining:?}")
+    })?;
     if std::env::var_os("GAMEBUDDY_TEST_SCREEN").is_some() {
         let before = std::fs::read_to_string(&log)?
             .matches("GAMEBUDDY_NARRATION")
@@ -702,6 +788,17 @@ fn realtime(
     Ok(())
 }
 
+// The two speech backends share reply-pending and actual output-meter events.
+// Native playback permission alone says nothing about local prepared audio.
+fn reply_start(text: &str) -> Option<usize> {
+    text.rfind("\"type\":\"speech-ready\"")
+        .max(text.rfind("\"type\":\"prepared-start\""))
+}
+fn reply_open(text: &str) -> bool {
+    text.rfind("\"type\":\"reply-pending\",\"value\":true")
+        > text.rfind("\"type\":\"reply-pending\",\"value\":false")
+}
+
 /// Speak into the same echo-looped virtual microphone while a long reply is
 /// playing, then let a second long reply finish. No direct transport shortcuts.
 fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
@@ -714,7 +811,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
         loop {
             let text = std::fs::read_to_string(log)?;
             let tail = &text[before..];
-            if tail.find("\"type\":\"speech-ready\"").is_some_and(|ready| {
+            if reply_start(tail).is_some_and(|ready| {
                 tail.rfind("GAMEBUDDY_VOICE_PLAYBACK started")
                     .is_some_and(|at| at > ready)
             }) {
@@ -739,8 +836,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     thread::sleep(Duration::from_secs(6));
     let text = std::fs::read_to_string(log)?;
     ensure!(
-        text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
-            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false"),
+        reply_open(&text),
         "The story ended before the interruption test"
     );
     let interrupt_before = std::fs::read_to_string(log)?.len();
@@ -767,11 +863,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     wait("interrupted answer finishes", || {
         let text = std::fs::read_to_string(log)?;
         let tail = &text[interrupt_before..];
-        Ok(tail.find("\"type\":\"speech-ready\"").is_some_and(|ready| {
-            tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-                .is_some_and(|closed| closed > ready)
-        }) && tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-            > tail.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+        Ok(reply_start(tail).is_some() && !reply_open(tail))
     })?;
     let before = std::fs::read_to_string(log)?.len();
     let last_message = store
@@ -791,6 +883,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
             .conversation_messages("Faxanadu", "silver lantern glows", None, 10)?
             .iter()
             .any(|m| m.id > last_message && m.role == "assistant")
+            && !reply_open(&std::fs::read_to_string(log)?)
         {
             break;
         }
@@ -810,8 +903,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     );
     wait("long reply audio drains", || {
         let text = std::fs::read_to_string(log)?;
-        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+        Ok(!reply_open(&text))
     })?;
     let before = std::fs::read_to_string(log)?.len();
     play_player(&story)?;
@@ -830,8 +922,7 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
                 .matches("\"type\":\"input-active\",\"value\":true")
                 .count()
                 > prior_input
-                && text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-                    > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true")
+                && !reply_open(&text)
                 && text.rfind("GAMEBUDDY_REALTIME_STATUS Live voice · speak naturally")
                     > text.rfind("GAMEBUDDY_REALTIME_STATUS Listening…"))
         },
@@ -969,6 +1060,43 @@ fn draw_game_over(conn: &RustConnection, window: u32) -> Result<()> {
         }
     }
     conn.poly_fill_rectangle(window, gc, &pixels)?.check()?;
+    conn.free_gc(gc)?.check()?;
+    conn.flush()?;
+    Ok(())
+}
+
+/// A readable text fixture for the local OCR path. The existing block-font
+/// game-over fixture remains a separate general-vision fallback regression.
+fn draw_detector_text(conn: &RustConnection, window: u32) -> Result<()> {
+    use x11rb::{connection::Connection, protocol::xproto::*};
+    let image = image::open(std::env::var("GAMEBUDDY_TEST_EVENT_IMAGE")?)?;
+    let geometry = conn.get_geometry(window)?.reply()?;
+    let image = image
+        .resize_exact(
+            geometry.width.into(),
+            geometry.height.into(),
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgb8();
+    let gc = conn.generate_id()?;
+    conn.create_gc(gc, window, &CreateGCAux::new())?.check()?;
+    let pixels: Vec<u8> = image.pixels().flat_map(|p| [p[2], p[1], p[0], 0]).collect();
+    let stride = geometry.width as usize * 4;
+    for (row, bytes) in pixels.chunks(stride * 16).enumerate() {
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            window,
+            gc,
+            geometry.width,
+            (bytes.len() / stride) as u16,
+            0,
+            (row * 16) as i16,
+            0,
+            geometry.depth,
+            bytes,
+        )?
+        .check()?;
+    }
     conn.free_gc(gc)?.check()?;
     conn.flush()?;
     Ok(())

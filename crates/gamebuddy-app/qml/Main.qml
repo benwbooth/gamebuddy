@@ -224,7 +224,7 @@ ApplicationWindow {
         }
     }
     Timer {
-        interval: 250
+        interval: 100
         repeat: true
         running: root.autoSync && (compositor.active || capture.active || replay.playbackState === MediaPlayer.PlayingState)
         onTriggered: root.grabFrame()

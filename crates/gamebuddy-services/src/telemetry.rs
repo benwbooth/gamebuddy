@@ -256,6 +256,60 @@ pub fn context(store: &Store, session: &Value, epoch: u64) -> Result<Option<Valu
     }))
 }
 
+/// Read verified emulator evidence independently of visual model warm-up.
+/// One worker and one replaceable latest frame bound network and CPU work.
+pub fn schedule(
+    store: &Store,
+    snapshot: screen::Snapshot,
+    epoch: u64,
+    notify: std::sync::Arc<dyn Fn() + Send + Sync>,
+) {
+    use std::sync::{Mutex, OnceLock};
+    type Pending = (
+        screen::Snapshot,
+        u64,
+        std::sync::Arc<dyn Fn() + Send + Sync>,
+    );
+    static QUEUE: OnceLock<Mutex<std::collections::HashMap<PathBuf, Option<Pending>>>> =
+        OnceLock::new();
+    if !store
+        .get::<Config>("emulator-adapter")
+        .is_ok_and(|c| c.is_some())
+    {
+        return;
+    }
+    let queue = QUEUE.get_or_init(Default::default);
+    let mut jobs = queue.lock().unwrap();
+    let root = store.root.clone();
+    let running = jobs.contains_key(&root);
+    jobs.insert(root.clone(), Some((snapshot, epoch, notify)));
+    if running {
+        return;
+    }
+    drop(jobs);
+    std::thread::spawn(move || {
+        loop {
+            let job = {
+                let mut jobs = queue.lock().unwrap();
+                let job = jobs.get_mut(&root).and_then(Option::take);
+                if job.is_none() {
+                    jobs.remove(&root);
+                }
+                job
+            };
+            let Some((snapshot, epoch, notify)) = job else {
+                return;
+            };
+            if let Ok(store) = Store::open(&root) {
+                if let Err(error) = observe(&store, &snapshot, epoch) {
+                    let _ = store.put("emulator-error", &error.to_string());
+                }
+                notify();
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,9 +22,23 @@ pub mod ffi {
         #[qinvokable]
         fn speak(self: Pin<&mut RealtimeVoice>, text: QString);
         #[qinvokable]
+        fn speak_prepared(self: Pin<&mut RealtimeVoice>, text: QString, visual: bool) -> bool;
+        #[qinvokable]
+        fn prepare_speech(self: Pin<&mut RealtimeVoice>, texts: QString);
+        #[qinvokable]
+        fn cancel_speech(self: Pin<&mut RealtimeVoice>);
+        #[qinvokable]
+        fn check_speech(self: Pin<&mut RealtimeVoice>);
+        #[qinvokable]
+        fn interrupt_reasoning(self: Pin<&mut RealtimeVoice>);
+        #[qinvokable]
+        fn record_prepared(self: Pin<&mut RealtimeVoice>, text: QString);
+        #[qinvokable]
         fn trace_event(self: Pin<&mut RealtimeVoice>, kind: QString, value: QString);
         #[qinvokable]
         fn next_narration(self: Pin<&mut RealtimeVoice>, context: QString) -> QString;
+        #[qinvokable]
+        fn advice_spoken(self: Pin<&mut RealtimeVoice>, context: QString);
         #[qinvokable]
         fn detect_speech(self: Pin<&mut RealtimeVoice>, samples: QString) -> bool;
         #[qinvokable]
@@ -58,8 +72,15 @@ pub struct RealtimeVoiceRust {
     page_server: Option<std::sync::Arc<()>>,
     activity: gamebuddy_services::voice::Segmenter,
     input: std::sync::Arc<std::sync::Mutex<gamebuddy_services::voice::input::PlayerInput>>,
+    prepared_speech: Option<gamebuddy_services::voice::speech::Speech>,
+    speech_sequence: u64,
+    root: Option<std::path::PathBuf>,
+    speech_scope: Option<std::sync::Arc<gamebuddy_services::voice::prepared::PlaybackGuard>>,
+    speech_check_running: bool,
 }
 enum Command {
+    Urgent,
+    Spoken(String),
     Speech(String),
     Diagnostic(String, Value),
 }
@@ -92,6 +113,98 @@ impl ffi::RealtimeVoice {
             .lock()
             .unwrap()
             .activity(active, Instant::now());
+    }
+    pub fn record_prepared(self: Pin<&mut Self>, text: QString) {
+        if let Some(tx) = &self.rust().commands {
+            let _ = tx.send(Command::Spoken(text.to_string()));
+        }
+    }
+    pub fn interrupt_reasoning(self: Pin<&mut Self>) {
+        if let Some(tx) = &self.rust().commands {
+            let _ = tx.send(Command::Urgent);
+        }
+    }
+    pub fn cancel_speech(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().speech_sequence += 1;
+        self.as_mut().rust_mut().speech_scope = None;
+        if let Some(speech) = &self.rust().prepared_speech {
+            speech.cancel();
+        }
+    }
+    pub fn check_speech(mut self: Pin<&mut Self>) {
+        if self.rust().speech_check_running {
+            return;
+        }
+        let Some(scope) = self.rust().speech_scope.clone() else {
+            return;
+        };
+        let Some(root) = self.rust().root.clone() else {
+            return;
+        };
+        let sequence = self.rust().speech_sequence;
+        let generation = self.rust().generation;
+        self.as_mut().rust_mut().speech_check_running = true;
+        let ui = self.qt_thread();
+        std::thread::spawn(move || {
+            let current = Store::open(root).is_ok_and(|store| scope.current(&store));
+            let _ = ui.queue(move |mut object| {
+                if object.rust().generation != generation {
+                    return;
+                }
+                object.as_mut().rust_mut().speech_check_running = false;
+                if object.rust().speech_sequence == sequence && !current {
+                    object.as_mut().rust_mut().speech_scope = None;
+                    object.as_mut().set_event_json(QString::from(
+                        json!({"method":"gamebuddy/speech-expired","params":{}}).to_string(),
+                    ));
+                }
+            });
+        });
+    }
+    pub fn prepare_speech(self: Pin<&mut Self>, texts: QString) {
+        if let Some(speech) = &self.rust().prepared_speech
+            && let Ok(texts) = serde_json::from_str::<Vec<String>>(&texts.to_string())
+        {
+            speech.prepare(texts);
+        }
+    }
+    pub fn speak_prepared(mut self: Pin<&mut Self>, text: QString, visual: bool) -> bool {
+        self.as_mut().rust_mut().speech_sequence += 1;
+        let sequence = self.rust().speech_sequence;
+        let generation = self.rust().generation;
+        let ui = self.qt_thread();
+        let root = self.rust().root.clone();
+        let guard = root
+            .as_ref()
+            .and_then(|root| Store::open(root).ok())
+            .and_then(|store| {
+                gamebuddy_services::voice::prepared::PlaybackGuard::capture(&store, visual).ok()
+            })
+            .map(std::sync::Arc::new);
+        self.as_mut().rust_mut().speech_scope = guard.clone();
+        if guard.is_none() {
+            self.as_mut().set_event_json(QString::from(
+                json!({"method":"gamebuddy/speech-expired","params":{}}).to_string(),
+            ));
+            return true;
+        }
+        if self.rust().prepared_speech.is_none() {
+            return false;
+        }
+        let text = text.to_string();
+        self.rust().prepared_speech.as_ref().unwrap().speak(text.clone(), std::sync::Arc::new(move |index,result| {
+            let fresh=guard.as_ref().is_some_and(|guard|root.as_ref().and_then(|root|Store::open(root).ok()).is_some_and(|store|guard.current(&store)));
+            let event = if !fresh {json!({"method":"gamebuddy/speech-expired","params":{}})} else {match result {
+                Ok(chunk) => json!({"method":"gamebuddy/local-speech","params":{"key":chunk.key,"text":chunk.text,"index":chunk.index,"last":chunk.last,"answer":chunk.answer,"request":format!("{generation}:{sequence}")}}),
+                Err(error) => json!({"method":"gamebuddy/local-speech-error","params":{"text":text,"index":index,"error":error.to_string()}}),
+            }}.to_string();
+            let _ = ui.queue(move |mut object| {
+                if object.rust().generation == generation && object.rust().speech_sequence == sequence {
+                    object.as_mut().set_event_json(QString::from(event));
+                }
+            });
+        }));
+        true
     }
     pub fn recognize_input(self: Pin<&mut Self>, text: QString, complete: bool) {
         let text = text.to_string();
@@ -152,6 +265,16 @@ impl ffi::RealtimeVoice {
                             .with_header(
                                 tiny_http::Header::from_bytes("Cache-Control", "no-store").unwrap(),
                             )
+                    } else if request.method() == &tiny_http::Method::Get
+                        && let Some(key) = request
+                            .url()
+                            .strip_prefix("/speech/")
+                            .and_then(|s| s.strip_suffix(".wav"))
+                        && let Some(wav) = gamebuddy_services::voice::speech::cached(key)
+                    {
+                        tiny_http::Response::from_data(wav.as_ref().clone()).with_header(
+                            tiny_http::Header::from_bytes("Content-Type", "audio/wav").unwrap(),
+                        )
                     } else {
                         tiny_http::Response::from_string("Not found").with_status_code(404)
                     };
@@ -163,12 +286,25 @@ impl ffi::RealtimeVoice {
     }
     pub fn disconnect(mut self: Pin<&mut Self>) {
         self.as_mut().rust_mut().commands = None;
+        self.as_mut().rust_mut().prepared_speech = None;
+        self.as_mut().rust_mut().root = None;
+        self.as_mut().rust_mut().speech_scope = None;
+        self.as_mut().rust_mut().speech_check_running = false;
+        self.as_mut().rust_mut().speech_sequence += 1;
         self.as_mut().rust_mut().generation += 1;
         self.set_status(QString::from("Voice disconnected"));
     }
     pub fn speak(self: Pin<&mut Self>, text: QString) {
         if let Some(tx) = &self.rust().commands {
             let _ = tx.send(Command::Speech(text.to_string()));
+        }
+    }
+    pub fn advice_spoken(mut self: Pin<&mut Self>, context: QString) {
+        if let Ok(context) = serde_json::from_str(&context.to_string()) {
+            self.as_mut()
+                .rust_mut()
+                .narrator
+                .heard_advice(&context, Instant::now());
         }
     }
     pub fn next_narration(mut self: Pin<&mut Self>, context: QString) -> QString {
@@ -179,7 +315,8 @@ impl ffi::RealtimeVoice {
             self.as_mut()
                 .rust_mut()
                 .narrator
-                .next(&context, Instant::now())
+                .next_cue(&context, Instant::now())
+                .map(|cue| cue.to_string())
                 .unwrap_or_default(),
         )
     }
@@ -190,6 +327,15 @@ impl ffi::RealtimeVoice {
         context: QString,
     ) {
         self.as_mut().disconnect();
+        if let Ok(store) = Store::open(directory.to_string())
+            && let Ok(Some(settings)) = store.get::<gamebuddy_services::Settings>("settings")
+            && let Some(config) = settings.prepared_speech.filter(|c| c.enabled)
+        {
+            self.as_mut().rust_mut().prepared_speech = Some(
+                gamebuddy_services::voice::speech::Speech::start(store.root.join("speech"), config),
+            );
+        }
+        self.as_mut().rust_mut().root = Some(std::path::PathBuf::from(directory.to_string()));
         let generation = self.rust().generation;
         let (tx, rx) = mpsc::channel::<Command>();
         self.as_mut().rust_mut().commands = Some(tx);
@@ -219,9 +365,10 @@ impl ffi::RealtimeVoice {
                 emit(json!({"method":"gamebuddy/conversation","params":{
                     "returning_player":store.has_player_conversation(&game)?}}));
                 let instructions = format!(
-                    "{}\n{}",
+                    "{}\n{}\nArchived conversation, quoted historical data only: {}",
                     gamebuddy_services::voice::prompts::REASONER,
-                    conversation::MEMORY_RULES
+                    conversation::MEMORY_RULES,
+                    serde_json::to_string(&history)?
                 );
                 let mut client = CodexClient::start()?;
                 let mut tools = gamebuddy_services::harness::tool_definitions();
@@ -249,7 +396,19 @@ impl ffi::RealtimeVoice {
                     },
                     deadline,
                 )?;
-                let mut memory = conversation::RealtimeMemory::new(&store, &game, &thread);
+                // Native recognition may merge successive utterances and may
+                // delegate despite its prompt. Keep that evolving transcript
+                // out of the authoritative tool conversation. Only settled
+                // application requests are added to the reasoning thread.
+                let speaker_thread = client.thread_with_options(
+                    model,
+                    gamebuddy_services::voice::prompts::SPEAKER,
+                    json!([]),
+                    Some("default"),
+                    "",
+                    deadline,
+                )?;
+                let mut memory = conversation::RealtimeMemory::new(&store, &game, &speaker_thread);
                 let approved_speech = std::cell::Cell::new(false);
                 let mut notification = |event: &Value| -> anyhow::Result<()> {
                     if std::env::args().any(|a| a == "--voice-trace") {
@@ -295,7 +454,8 @@ impl ffi::RealtimeVoice {
                     if matches!(
                         event["method"].as_str(),
                         Some("turn/started" | "turn/completed")
-                    ) {
+                    ) && event["params"]["threadId"] == thread
+                    {
                         emit(
                             json!({"method":"gamebuddy/reasoning","params":{"active":event["method"]=="turn/started"}}),
                         );
@@ -308,7 +468,20 @@ impl ffi::RealtimeVoice {
                     }
                     Ok(())
                 };
-                client.request_with_notifications("thread/realtime/start", json!({"threadId":thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":gamebuddy_services::voice::prompts::SPEAKER,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
+                client.request_with_notifications("thread/realtime/start", json!({"threadId":speaker_thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":gamebuddy_services::voice::prompts::SPEAKER,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
+                let mut decision_settings = settings.clone();
+                decision_settings.reasoning.model = model.into();
+                if settings.reasoning.kind != gamebuddy_services::ProviderKind::Codex {
+                    decision_settings.reasoning.reasoning_effort.clear();
+                }
+                let mut decision =
+                    gamebuddy_services::voice::decision::Lane::start(decision_settings);
+                let mut decision_ready: Option<gamebuddy_services::voice::decision::Proposal> =
+                    None;
+                let mut decision_foreground: Option<(u64, String)> = None;
+                let mut decision_bypass: Option<(u64, String)> = None;
+                let mut speculation_budget = (0u64, 0u8);
+                let mut last_speculation = Instant::now();
                 let mut sequence = 1000;
                 let mut context_requests = std::collections::HashSet::new();
                 let mut start_requests = std::collections::HashMap::new();
@@ -321,20 +494,53 @@ impl ffi::RealtimeVoice {
                 let mut reasoning_since: Option<Instant> = None;
                 let mut interrupt_requests = std::collections::HashMap::new();
                 let mut context_turn = None;
-                let mut reasoning_turn = None;
+                let mut reasoning_turn: Option<Value> = None;
                 let mut reasoning_input = None;
                 let mut supplied_request = String::new();
                 let mut final_answer = String::new();
                 let mut supplied_frame = None;
                 let mut last_frame_check = Instant::now();
                 let mut refreshed_view = false;
+                let mut spatial_advice = false;
+                let mut stale_retries = (0u64, 0u8);
                 let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
+                let mut response_step: Option<(u64, String)> = None;
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
                         Ok(command) => {
                             sequence += 1;
                             let (method, params) = match command {
+                                Command::Spoken(text) => {
+                                    store.append_conversation(
+                                        &game,
+                                        &thread,
+                                        &format!("local-{sequence}"),
+                                        "assistant",
+                                        &text,
+                                    )?;
+                                    continue;
+                                }
+                                Command::Urgent => {
+                                    decision.cancel();
+                                    decision_ready = None;
+                                    decision_foreground = None;
+                                    delivery.abandon(input.lock().unwrap().utterance());
+                                    if let Some(turn_id) = reasoning_turn.take() {
+                                        interrupt_requests.insert(sequence, turn_id.clone());
+                                        client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
+                                    }
+                                    reasoning_input = None;
+                                    reasoning_since = None;
+                                    context_turn = None;
+                                    for (tool, _) in pending_tools.drain(..) {
+                                        client.send(json!({"id":tool["id"],"result":{"success":false,"contentItems":[{"type":"inputText","text":"A new urgent screen event superseded this action; it was not executed."}]}}))?;
+                                    }
+                                    emit(
+                                        json!({"method":"gamebuddy/reasoning","params":{"active":false}}),
+                                    );
+                                    continue;
+                                }
                                 Command::Diagnostic(kind, value) => {
                                     diagnostics.record(&format!("browser/{kind}"), value);
                                     continue;
@@ -343,7 +549,7 @@ impl ffi::RealtimeVoice {
                                     approved_speech.set(true);
                                     (
                                         "thread/realtime/appendSpeech",
-                                        json!({"threadId":thread,"text":text}),
+                                        json!({"threadId":speaker_thread,"text":text}),
                                     )
                                 }
                             };
@@ -352,7 +558,7 @@ impl ffi::RealtimeVoice {
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
                             client.request_with_notifications(
                                 "thread/realtime/stop",
-                                json!({"threadId":thread}),
+                                json!({"threadId":speaker_thread}),
                                 Instant::now() + Duration::from_secs(3),
                                 &mut notification,
                             )?;
@@ -361,6 +567,20 @@ impl ffi::RealtimeVoice {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                     while let Some(event) = client.poll()? {
+                        if event["params"]["threadId"] == speaker_thread
+                            && !event["method"]
+                                .as_str()
+                                .is_some_and(|m| m.starts_with("thread/realtime/"))
+                        {
+                            if event["method"] == "turn/started" {
+                                sequence += 1;
+                                client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":speaker_thread,"turnId":event["params"]["turn"]["id"]}}))?;
+                            }
+                            if event.get("id").is_some() && event.get("method").is_some() {
+                                client.reject(&event)?;
+                            }
+                            continue;
+                        }
                         if event["method"] == "turn/started" {
                             let unsolicited = start_requests.is_empty()
                                 && !prepared_context
@@ -374,6 +594,7 @@ impl ffi::RealtimeVoice {
                             final_answer.clear();
                             supplied_frame = None;
                             refreshed_view = false;
+                            spatial_advice = false;
                             if unsolicited {
                                 // The live speaker can still delegate despite
                                 // its prompt, sometimes on the first few words.
@@ -420,7 +641,28 @@ impl ffi::RealtimeVoice {
                                 && reasoning_input == Some(utterance)
                                 && !final_answer.is_empty()
                             {
-                                delivery.complete(utterance, &supplied_request, &final_answer);
+                                if !spatial_advice
+                                    || supplied_frame.as_ref().is_none_or(|frame| {
+                                        gamebuddy_services::screen::still_current(&store, frame)
+                                            .unwrap_or(false)
+                                    })
+                                {
+                                    delivery.complete(utterance, &supplied_request, &final_answer);
+                                } else {
+                                    if stale_retries.0 != utterance {
+                                        stale_retries = (utterance, 0);
+                                    }
+                                    diagnostics.record(
+                                        "answer_view_changed",
+                                        json!({"utterance":utterance}),
+                                    );
+                                    if stale_retries.1 == 0 {
+                                        stale_retries.1 += 1;
+                                        delivery.retry(utterance);
+                                    } else {
+                                        delivery.complete(utterance,&supplied_request,"Your screen changed while I was checking. Pause briefly so I can give directions for where you are now.");
+                                    }
+                                }
                             } else if reasoning_input == Some(utterance)
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                             {
@@ -462,6 +704,12 @@ impl ffi::RealtimeVoice {
                                 );
                             } else if event.get("error").is_none() {
                                 let turn_id = event["result"]["turn"]["id"].clone();
+                                if delivery.finished(request_utterance) {
+                                    sequence += 1;
+                                    interrupt_requests.insert(sequence, turn_id.clone());
+                                    client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
+                                    continue;
+                                }
                                 if reasoning_turn.as_ref() == Some(&turn_id) {
                                     reasoning_input = Some(request_utterance);
                                     supplied_request = request;
@@ -515,6 +763,7 @@ impl ffi::RealtimeVoice {
                             let reject = interrupt_requests
                                 .values()
                                 .any(|id| *id == event["params"]["turnId"])
+                                || delivery.finished(input.lock().unwrap().utterance())
                                 || (!readonly && !input.lock().unwrap().settled(Instant::now()));
                             pending_tools.push_back((event, reject));
                         } else {
@@ -535,6 +784,77 @@ impl ffi::RealtimeVoice {
                         let now = Instant::now();
                         (input.settled(now), input.text(now), input.utterance())
                     };
+                    gamebuddy_services::voice::priority::update(
+                        &store.root,
+                        !quiet || reasoning_since.is_some() || decision_foreground.is_some(),
+                    );
+                    // Speculation is read-only and never shortens endpointing.
+                    // Any changed wording invalidates its result before effects.
+                    if decision
+                        .pending
+                        .as_ref()
+                        .is_some_and(|(u, q)| *u != utterance || q != &request)
+                    {
+                        decision.cancel();
+                        decision_ready = None;
+                        if decision_foreground.take().is_some() {
+                            delivery.retry(utterance);
+                            emit(json!({"method":"gamebuddy/reasoning","params":{"active":false}}));
+                        }
+                    }
+                    if let Some(proposal) = decision.poll() {
+                        decision_ready = Some(proposal);
+                    }
+                    if quiet
+                        && let Some(proposal) = decision_ready.take()
+                        && proposal.utterance == utterance
+                        && proposal.request == request
+                    {
+                        let elapsed = proposal.elapsed_ms;
+                        let selected = proposal
+                            .decision
+                            .as_ref()
+                            .ok()
+                            .and_then(|d| d.step_id.clone());
+                        let answer = proposal
+                            .decision
+                            .and_then(|d| proposal.evidence.apply(&store, d));
+                        diagnostics.record("decision_ready",json!({"utterance":utterance,"elapsed_ms":elapsed,"accepted":matches!(&answer,Ok(Some(_)))}));
+                        match answer {
+                            Ok(Some(answer)) => {
+                                response_step = selected.map(|id| (utterance, id));
+                                delivery.started(utterance);
+                                delivery.complete(utterance, &request, &answer);
+                                emit(json!({"method":"gamebuddy/state-changed","params":{}}));
+                            }
+                            _ => {
+                                decision_bypass = Some((utterance, request.clone()));
+                                delivery.retry(utterance);
+                            }
+                        }
+                        decision.cancel();
+                        decision_foreground = None;
+                        emit(json!({"method":"gamebuddy/reasoning","params":{"active":false}}));
+                    }
+                    if speculation_budget.0 != utterance {
+                        speculation_budget = (utterance, 0);
+                    }
+                    if !quiet
+                        && speculation_budget.1 < 2
+                        && last_speculation.elapsed() >= Duration::from_secs(1)
+                        && reasoning_since.is_none()
+                        && decision_foreground.is_none()
+                        && !delivery.finished(utterance)
+                        && let Some(preview) = input.lock().unwrap().preview(Instant::now())
+                        && gamebuddy_services::voice::decision::eligible_request(&preview)
+                        && decision.pending.is_none()
+                    {
+                        last_speculation = Instant::now();
+                        speculation_budget.1 += 1;
+                        if decision.propose(&store, &game, utterance, &preview).is_ok() {
+                            diagnostics.record("decision_preview", json!({"utterance":utterance}));
+                        }
+                    }
                     // A failed or missing completion must not strand subsequent
                     // requests. This bounds reasoning only, never speech playback.
                     if reasoning_since
@@ -558,7 +878,9 @@ impl ffi::RealtimeVoice {
                             "answer_ready",
                             json!({"utterance":utterance,"text_bytes":answer.len()}),
                         );
-                        emit(json!({"method":"gamebuddy/speech","params":{"text":answer}}));
+                        emit(
+                            json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id)}}),
+                        );
                     }
                     // A late handoff must not deliver the previous answer over
                     // a new question. Cancel as input begins, before its new
@@ -578,7 +900,12 @@ impl ffi::RealtimeVoice {
                         // the live model neither delegates nor answers. Waiting
                         // for an assistant transcript creates a deadlock when
                         // the speaker correctly stays silent for backend approval.
-                        if delivery.dispatch(utterance, &request, reasoning_since.is_some()) {
+                        if delivery.dispatch(
+                            utterance,
+                            &request,
+                            reasoning_since.is_some() || decision_foreground.is_some(),
+                        ) {
+                            response_step = None;
                             if let Some(action) =
                                 gamebuddy_services::voice::overlay_command(&request)
                             {
@@ -610,6 +937,17 @@ impl ffi::RealtimeVoice {
                                 continue;
                             }
                             if let Ok(Some(answer)) =
+                                gamebuddy_services::voice::prepared::reply(&store, &game, &request)
+                            {
+                                response_step = answer.step_id.map(|id| (utterance, id));
+                                delivery.complete(utterance, &request, &answer.text);
+                                diagnostics.record(
+                                    "prepared_reply",
+                                    json!({"utterance":utterance,"kind":answer.kind}),
+                                );
+                                continue;
+                            }
+                            if let Ok(Some(answer)) =
                                 gamebuddy_services::outcomes::quick_report(&store, &game, &request)
                             {
                                 emit(json!({"method":"gamebuddy/state-changed","params":{}}));
@@ -618,6 +956,20 @@ impl ffi::RealtimeVoice {
                                     .record("local_world_report", json!({"utterance":utterance}));
                                 continue;
                             }
+                            if gamebuddy_services::voice::decision::eligible_request(&request)
+                                && decision_bypass.as_ref() != Some(&(utterance, request.clone()))
+                                && decision.propose(&store, &game, utterance, &request).is_ok()
+                            {
+                                decision_foreground = Some((utterance, request.clone()));
+                                emit(
+                                    json!({"method":"gamebuddy/reasoning","params":{"active":true}}),
+                                );
+                                diagnostics
+                                    .record("decision_dispatched", json!({"utterance":utterance}));
+                                continue;
+                            }
+                            decision.cancel();
+                            decision_ready = None;
                             let context_started = Instant::now();
                             let frame = gamebuddy_services::screen::snapshot(&store).ok();
                             let evidence = gamebuddy_services::harness::call_tool_with_images(
@@ -734,6 +1086,16 @@ impl ffi::RealtimeVoice {
                         if let Some((event, reject)) = pending_tools.pop_front()
                             && answer_tool(&mut client, &store, &game, &event, &request, reject)?
                         {
+                            spatial_advice |= event["params"]["tool"] == "set_next_action";
+                            if event["params"]["tool"] == "set_next_action" {
+                                let args = event["params"]["arguments"]
+                                    .as_str()
+                                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                                    .unwrap_or_else(|| event["params"]["arguments"].clone());
+                                response_step = args["step_id"]
+                                    .as_str()
+                                    .map(|id| (utterance, id.to_owned()));
+                            }
                             emit(json!({"method":"gamebuddy/state-changed","params":{}}));
                         }
                     }

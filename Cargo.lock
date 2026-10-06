@@ -914,6 +914,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tiny_http",
+ "unicode-segmentation",
  "url",
  "uuid",
  "webrtc-vad",

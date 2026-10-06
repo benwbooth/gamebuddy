@@ -512,11 +512,22 @@ fn snapshot_at(store: &Store, now: u64) -> Result<Snapshot> {
 /// resembles the latest live image. Identical newer frames need no reanalysis.
 pub fn still_current(store: &Store, snapshot: &Snapshot) -> Result<bool> {
     let signature = frame_signature(&image::load_from_memory(&STANDARD.decode(&snapshot.jpeg)?)?);
+    matches_latest_view(store, &snapshot.ticket, &signature, FRESH_MS)
+}
+
+/// Pixel continuity for transient events, stricter than room continuity.
+pub(crate) fn matches_latest_view(
+    store: &Store,
+    ticket: &Ticket,
+    signature: &[u8],
+    max_age_ms: u64,
+) -> Result<bool> {
     Ok(store.get::<Capture>(KEY)?.is_some_and(|current| {
         current.enabled
-            && current.ticket == snapshot.ticket
-            && now_ms().saturating_sub(current.captured_at_ms) <= FRESH_MS
-            && same_scene(&current.frame_signature, &signature)
+            && current.error.is_empty()
+            && current.ticket == *ticket
+            && now_ms().saturating_sub(current.captured_at_ms) <= max_age_ms
+            && same_scene(&current.frame_signature, signature)
     }))
 }
 

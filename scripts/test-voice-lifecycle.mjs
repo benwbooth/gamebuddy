@@ -6,13 +6,14 @@ const html=readFileSync(new URL('../crates/gamebuddy-app/assets/voice.html',impo
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const pending=[],streams=[],messages=[],channels=[],peers=[],activity=[],analysers=[],processors=[],receiverElement={srcObject:null,muted:true,play:async()=>{}},timers=new Set();
 const node=()=>({connect(){},disconnect(){}});
-let now=1000;
+let now=1000;const localBuffers=[],fetches=[];
 const tick=(ms=100)=>{for(let i=0;i<ms/20;i++){now+=20;for(const fn of timers)fn()}};
 const stream=()=>{const track={stopped:false,stop(){this.stopped=true}};const value={getTracks:()=>[track],getAudioTracks:()=>[track],track};streams.push(value);return value};
 const context={window:{},Date:class extends Date{static now(){return now}},document:{getElementById:()=>receiverElement},console:{info(s){activity.push(JSON.parse(s.slice(16)))}},setTimeout,clearTimeout,TextEncoder,
   setInterval(fn){timers.add(fn);return fn},clearInterval(fn){timers.delete(fn)},
   navigator:{mediaDevices:{getUserMedia:()=>new Promise(resolve=>pending.push(resolve)),enumerateDevices:async()=>[{kind:'audioinput',label:'Test mic',deviceId:'test'}]}},
-  AudioContext:class{get currentTime(){return now/1000}outputLatency=0.04;sampleRate=48000;destination={};createMediaStreamSource(){return node()}createScriptProcessor(){const p={...node(),onaudioprocess:null};processors.push(p);return p}createGain(){return {...node(),gain:{value:1}}}createAnalyser(){const a={...node(),level:0,getFloatTimeDomainData(data){data.fill(this.level)}};analysers.push(a);return a}createMediaStreamDestination(){return {stream:{getAudioTracks:()=>[{stop(){}}]}}}createConstantSource(){return {offset:{value:0},connect(){},start(){}}}async resume(){}async close(){}},
+  fetch:url=>new Promise(resolve=>fetches.push({url,resolve})),
+  AudioContext:class{async decodeAudioData(){return {duration:2}}createBufferSource(){const source={...node(),started:false,stopped:false,start(){this.started=true},stop(){this.stopped=true}};localBuffers.push(source);return source}get currentTime(){return now/1000}outputLatency=0.04;sampleRate=48000;destination={};createMediaStreamSource(){return node()}createScriptProcessor(){const p={...node(),onaudioprocess:null};processors.push(p);return p}createGain(){return {...node(),gain:{value:1}}}createAnalyser(){const a={...node(),level:0,getFloatTimeDomainData(data){data.fill(this.level)}};analysers.push(a);return a}createMediaStreamDestination(){return {stream:{getAudioTracks:()=>[{stop(){}}]}}}createConstantSource(){return {offset:{value:0},connect(){},start(){}}}async resume(){}async close(){}},
   RTCPeerConnection:class{constructor(){peers.push(this)}iceGatheringState='complete';async getStats(){return new Map()}addTransceiver(){return {sender:{replaceTrack:async()=>{}}}}createDataChannel(){const channel={readyState:'connecting',send(text){messages.push(JSON.parse(text))}};channels.push(channel);return channel}async createOffer(){return {type:'offer',sdp:'test'}}async setLocalDescription(v){this.localDescription=v}close(){}}
 };
 runInNewContext(script,context);
@@ -214,5 +215,46 @@ wire({type:'turn.created',turn:{id:'late-created',role:'assistant'}});tick(600);
 assert(muted(),'the unapproved turn must finish before the chosen answer');
 wire({type:'turn.done',turn:{id:'late-created',role:'assistant'}});tick(600);
 assert.equal(activity.filter(e=>e.type==='speech-ready').at(-1).value,'The chosen answer.');
+voice.stop();
+// The prepared path bypasses remote audio-drain delays while retaining exact
+// approval, output activity, interruption and generation guards.
+assert(html.includes("connect-src 'self'"),'same-origin WAV requests must pass CSP');
+await voice.start('Test mic',false);voice.muteOutput(false);
+const prepared=voice.queuePrepared('key-one','Enter the door.');
+assert.equal(fetches.at(-1).url,'/speech/key-one.wav');
+assert.equal(localBuffers.length,0,'no playback before the WAV arrives');
+fetches.pop().resolve({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)});await prepared;
+assert(localBuffers.at(-1).started,'decoded prepared audio plays without a remote speech turn');
+analysers.at(-1).level=.1;tick(100);
+assert.equal(activity.filter(e=>e.type==='output-active').at(-1).value,true);
+assert.equal(activity.filter(e=>e.type==='caption').at(-1).value,'Enter the door.');
+voice.interruptOutput();assert(localBuffers.at(-1).stopped,'urgent replacement stops actual local audio');
+const obsolete=voice.queuePrepared('late','Old directions.');voice.interruptOutput();
+const count=localBuffers.length;fetches.pop().resolve({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)});await obsolete;
+assert.equal(localBuffers.length,count,'late downloads cannot play cancelled words');
+await voice.queuePrepared('key-one','Enter the door.');
+assert(localBuffers.at(-1).started,'prepared audio is cached');
+voice.muteOutput(true);assert(localBuffers.at(-1).stopped,'mute stops local audio');
+voice.muteOutput(false);tick();assert.equal(localBuffers.length,count+1,'unmute cannot replay old audio');
+// Cached later sentences can arrive before the first synthesis. Keep order,
+// captions and completion tied to the audio that is actually playing.
+const chunkCount=localBuffers.length;
+const later=voice.queuePrepared('last-chunk','Then leave.',{request:'ordered',index:1,last:true});
+fetches.pop().resolve({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)});await later;
+assert.equal(localBuffers.length,chunkCount,'later sentences wait for the first');
+await voice.queuePrepared('key-one','Enter the door.',{request:'ordered',index:0,last:false,answer:'Enter the door. Then leave.'});
+analysers.at(-1).level=.1;tick(100);
+assert.equal(activity.filter(e=>e.type==='caption').at(-1).value,'Enter the door.','future sentences cannot appear early');
+const firstChunk=localBuffers.at(-1);firstChunk.onended();
+assert.equal(localBuffers.length,chunkCount+2,'the second sentence starts after the first ends');
+assert.equal(activity.filter(e=>e.type==='reply-pending').at(-1).value,true,'a sentence boundary is not answer completion');
+localBuffers.at(-1).onended();
+assert.equal(activity.filter(e=>e.type==='reply-pending').at(-1).value,false,'only the final audio chunk completes the reply');
+const partial=voice.queuePrepared('slow-part','Cancelled.',{request:'cancelled-parts',index:0,last:false});
+voice.interruptOutput();
+fetches.pop().resolve({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)});await partial;
+const afterCancel=localBuffers.length;
+await voice.queuePrepared('key-one','Enter the door.',{request:'cancelled-parts',index:1,last:true});
+assert.equal(localBuffers.length,afterCancel,'late chunks cannot resurrect an interrupted request');
 voice.stop();
 console.log('Voice lifecycle passed: silent work feedback, final-answer priority, backend approval, playback-clock captions, interruption, quiet context and microphone cleanup.');

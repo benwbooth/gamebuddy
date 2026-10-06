@@ -19,6 +19,8 @@ ScrollView {
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : 0
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
+        preparedVoice.enabled=!!settings.prepared_speech
+        preparedVoice.checked=!!settings.prepared_speech && settings.prepared_speech.enabled!==false
         dirty = false; loaded = true
         if (visible) Qt.callLater(discover)
     }
@@ -34,6 +36,7 @@ ScrollView {
         settings.planning = automaticPlanning.checked ? null : planning.configuration()
         settings.speech = voice.currentIndex === 1 ? "codex_realtime" : "local"
         settings.fast_voice = fast.checked; settings.duck_game_audio = duck.checked
+        if(settings.prepared_speech)settings.prepared_speech.enabled=preparedVoice.checked
         backend.save_settings(JSON.stringify(settings))
     }
     Component.onCompleted:reload()
@@ -83,6 +86,8 @@ ScrollView {
         }
         Text { text:"Codex live voice uses a separate voice service. When Codex is selected for advice, its model and thinking also control voice reasoning. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1; Layout.leftMargin:24; onClicked:page.dirty=true }
+        CheckBox { id:preparedVoice; text:"Prepared neural speech · local voice"; visible:voice.currentIndex===1; Layout.leftMargin:24; onClicked:page.dirty=true }
+        Text { visible:voice.currentIndex===1; text:preparedVoice.enabled ? "Uses the installed local voice for faster replies and prepares upcoming instructions. Codex continues listening. Reconnect after changing this setting." : "Install a prepared speech voice to enable local audio preparation."; color:"#a3b4c7";font.pixelSize:12;wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24 }
         CheckBox { id:duck; text:"Lower game volume during conversations"; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { text:page.audioStatus; color:"#a3b4c7"; font.pixelSize:12; Layout.leftMargin:24; Layout.rightMargin:24; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         RowLayout {

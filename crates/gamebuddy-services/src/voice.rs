@@ -1,11 +1,15 @@
 //! Microphone activation and bounded, local speech turn detection.
+pub mod decision;
 pub mod delivery;
 pub mod diagnostics;
 pub mod duck;
 pub mod input;
 pub mod mute;
 pub mod narration;
+pub mod prepared;
+pub mod priority;
 pub mod prompts;
+pub mod speech;
 use std::{collections::VecDeque, path::Path};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
