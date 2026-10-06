@@ -158,6 +158,7 @@ pub struct BuddyRust {
     map_inflight: bool,
     refresh_inflight: bool,
     refresh_generation: u64,
+    capture_generation: u64,
     poll_inflight: bool,
 }
 impl Default for BuddyRust {
@@ -192,6 +193,7 @@ impl Default for BuddyRust {
             map_inflight: false,
             refresh_inflight: false,
             refresh_generation: 0,
+            capture_generation: 0,
             poll_inflight: false,
         }
     }
@@ -235,6 +237,35 @@ struct ViewSnapshot {
     vision_evidence: Option<services::VisionVerdict>,
     last_frame: Option<PathBuf>,
 }
+
+// Capture/telemetry notifications ask for another refresh; they do not make an
+// already completed view unusable. Only a changed selection or progress context
+// must prevent publishing that view. Otherwise continuous capture can starve
+// the display whenever constructing a snapshot takes longer than one frame.
+#[derive(PartialEq, Eq)]
+struct ViewKey {
+    root: PathBuf,
+    game: String,
+    guide: Option<(String, u64)>,
+    selected: String,
+    progress_epoch: u64,
+    screen_session: String,
+    capture_generation: u64,
+}
+impl BuddyRust {
+    fn view_key(&self) -> ViewKey {
+        ViewKey {
+            root: self.root.clone(),
+            game: self.game.clone(),
+            guide: self.guide.as_ref().map(|g| (g.id.clone(), g.revision)),
+            selected: self.selected.clone(),
+            progress_epoch: self.sync.progress.epoch,
+            screen_session: self.screen_session.clone(),
+            capture_generation: self.capture_generation,
+        }
+    }
+}
+
 impl ffi::Buddy {
     pub fn launch_arguments(&self) -> QString {
         q(serde_json::to_string(
@@ -328,6 +359,7 @@ impl ffi::Buddy {
         }
         self.as_mut().rust_mut().refresh_inflight = true;
         let generation = self.rust().refresh_generation;
+        let key = self.rust().view_key();
         let data = self.rust();
         let data = ViewSnapshot {
             root: data.root.clone(),
@@ -430,17 +462,23 @@ impl ffi::Buddy {
             }
             let _ = thread.queue(move |mut object| {
                 object.as_mut().rust_mut().refresh_inflight = false;
+                if object.rust().view_key() == key {
+                    match result {
+                        Ok(state) => {
+                            // Refresh the OSD without turning every new instruction into
+                            // a spoken answer. The narrator controls unsolicited speech.
+                            object.as_mut().set_state_json(q(state));
+                            if std::env::args().any(|a| a == "--ui-trace") {
+                                eprintln!("GAMEBUDDY_UI_PUBLISHED generation={generation} coalesced={} at_ms={}", object.rust().refresh_generation != generation, services::screen::now_ms());
+                            }
+                        }
+                        Err(e) => object
+                            .as_mut()
+                            .set_message(q(format!("Could not read library: {e:#}"))),
+                    }
+                }
                 if object.rust().refresh_generation != generation {
                     object.refresh();
-                    return;
-                }
-                match result {
-                    Ok(state) => {
-                        // Refresh the OSD without turning every new instruction into
-                        // a spoken answer. The narrator controls unsolicited speech.
-                        object.set_state_json(q(state));
-                    }
-                    Err(e) => object.set_message(q(format!("Could not read library: {e:#}"))),
                 }
             });
         });
@@ -683,6 +721,7 @@ impl ffi::Buddy {
         if self.rust().screen_session.is_empty() {
             return;
         }
+        self.as_mut().rust_mut().capture_generation += 1;
         let result = Store::open(&self.rust().root).and_then(|store| {
             services::screen::set_enabled(
                 &store,
@@ -734,6 +773,7 @@ impl ffi::Buddy {
         if let Err(e) = result {
             return q(format!("{e:#}"));
         }
+        self.as_mut().rust_mut().capture_generation += 1;
         let progress = self.rust().sync.progress.clone();
         self.as_mut().rust_mut().sync = Synchronizer::new(progress);
         self.as_mut().rust_mut().estimate = SyncEstimate::default();
@@ -1657,5 +1697,32 @@ impl ffi::Buddy {
             })
             .map(q)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn continuous_notifications_do_not_discard_a_completed_view() {
+        let mut buddy = BuddyRust::default();
+        let snapshot_key = buddy.view_key();
+        buddy.refresh_inflight = true;
+        for _ in 0..100 {
+            buddy.refresh_generation += 1;
+            buddy.last_frame = Some(PathBuf::from("new-frame.png"));
+            assert!(buddy.view_key() == snapshot_key);
+        }
+        // Progress/capture changes still bar an obsolete result, even when a
+        // background notification has already queued a replacement refresh.
+        buddy.sync.progress.epoch += 1;
+        assert!(buddy.view_key() != snapshot_key);
+        let snapshot_key = buddy.view_key();
+        buddy.capture_generation += 1;
+        assert!(buddy.view_key() != snapshot_key);
+        let snapshot_key = buddy.view_key();
+        buddy.selected = "another-step".into();
+        assert!(buddy.view_key() != snapshot_key);
     }
 }

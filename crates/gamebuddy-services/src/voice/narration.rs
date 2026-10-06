@@ -18,6 +18,7 @@ pub struct Narrator {
     pending_event: String,
     event_votes: u8,
     urgent: bool,
+    warned_hazard: String,
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -89,6 +90,15 @@ impl Narrator {
             && matches!(field(fast, "event"), "death" | "danger" | "victory")
             && event_available(field(fast, "event"), 30);
         let coaching = &context["coaching"];
+        let warning = &context["guidance"]["warning"];
+        let warning_id = field(warning, "id");
+        if warning_id.is_empty() {
+            self.warned_hazard.clear();
+        }
+        let upcoming_danger = live
+            && !warning_id.is_empty()
+            && self.warned_hazard != warning_id
+            && !field(warning, "text").is_empty();
         if field(coaching, "kind") == "in_progress" {
             self.acknowledged_actions
                 .insert(field(coaching, "step_id").into());
@@ -110,8 +120,8 @@ impl Narrator {
                 && scene["fresh"] == true
                 && scene["age_ms"].as_u64().unwrap_or(0) <= 3000
                 && event_available(field(scene, "event"), 30));
-        let can_interrupt =
-            context["player_speaking"] == false && (urgent_coaching || urgent_event);
+        let can_interrupt = context["player_speaking"] == false
+            && (urgent_coaching || urgent_event || upcoming_danger);
         if context["conversation_active"] == true && !can_interrupt {
             self.last_conversation = Some(now);
             return None;
@@ -177,6 +187,12 @@ impl Narrator {
                 self.urgent = matches!(event, "death" | "danger");
                 return Some(brief(feedback));
             }
+        }
+        if upcoming_danger && context["player_speaking"] != true {
+            self.warned_hazard = warning_id.into();
+            self.last_spoken = Some(now);
+            self.urgent = true;
+            return Some(field(warning, "text").to_owned());
         }
         if !self.introduced {
             self.introduced = true;
@@ -245,6 +261,31 @@ mod tests {
     use serde_json::json;
     fn action(id: &str) -> Value {
         json!({"game":"Game","screen":{"status":"live","session_id":"s","scene":{"fresh":true}},"location_status":"uncertain","guidance":{"status":"ready","now":{"id":id,"title":"Next task","instructions":format!("Walk right to {id}. Climb the ladder.")}}})
+    }
+    #[test]
+    fn route_warning_precedes_entry_without_scene_inference_and_waits_for_speech() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("entrance");
+        n.next(&c, t);
+        c["screen"]["scene"]["fresh"] = json!(false);
+        c["conversation_active"] = json!(true);
+        c["player_speaking"] = json!(true);
+        c["guidance"]["warning"] = json!({"id":"chamber", "text":"Danger ahead: a boss waits inside. The shield will not stop its fireballs."});
+        assert!(n.next_cue(&c, t + Duration::from_secs(1)).is_none());
+        c["player_speaking"] = json!(false);
+        c["screen"]["status"] = json!("paused");
+        assert!(n.next_cue(&c, t + Duration::from_secs(2)).is_none());
+        c["screen"]["status"] = json!("live");
+        let cue = n.next_cue(&c, t + Duration::from_secs(3)).unwrap();
+        assert_eq!(cue["text"], c["guidance"]["warning"]["text"]);
+        assert_eq!(cue["urgent"], true);
+        assert!(n.next_cue(&c, t + Duration::from_secs(120)).is_none());
+        c["guidance"]["warning"] = Value::Null;
+        n.next_cue(&c, t + Duration::from_secs(121));
+        c["guidance"]["warning"] =
+            json!({"id":"chamber", "text":"Danger ahead: a boss waits inside."});
+        assert!(n.next_cue(&c, t + Duration::from_secs(122)).is_some());
     }
     #[test]
     fn new_steps_speak_instructions_immediately_without_a_named_location() {

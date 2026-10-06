@@ -6,6 +6,8 @@ GameBuddy now separates work that can be selected from current state from work t
 
 Complete routine questions such as “What should I do next?” select the current source-backed instruction locally. “Repeat that” uses this path only when the preceding reply was that still-current instruction. Unknown location stays explicit. A why-question uses a locally available bypass explanation when one exists; other explanations use reasoning. Compound questions, arrival reports, route edits and widget requests retain their complete request and tools.
 
+“Now what?” uses the same local path, including recognized leading sigh/yawn annotations. Guide-only instructions no longer need an unchanged screenshot to finish; request identity, guide revision, progress and route eligibility still apply. Visual identification and immediate screen directions continue to require current image evidence.
+
 Navigation prepares a bounded frontier: the current instruction, nearby next instructions, the result of applying a current action's known effects to a **copy** of progress, and short urgent cues. Hypothetical progress is never saved. At most eight phrases are prepared, split into at most 32 background sentences. Preparation grants no permission to speak. Each actual request rechecks its guide revision, progress epoch and, for visual advice, current capture. A bounded asynchronous check revokes stale prepared audio during queued or active playback; it does not stop native conversation on ordinary screen changes.
 
 The native realtime voice is the default. Ordinary conversation uses microphone audio and native generated speech directly; game requests delegate to the tool backend. It preserves its word timestamps and finishes a reply across ordinary screen, navigation and progress updates. Player interruptions and explicit urgent cues can stop it. Unchanged automatic advice is not repeated merely because a progress counter changed.
@@ -38,9 +40,17 @@ Native conversation is speech-to-speech, with a separate reasoning and tool back
 
 ## Fast screen events
 
+The selected source route is also checked locally for imminent combat, traps and environmental hazards, looking no more than three route edges ahead. Compact encounter sections supply their combat substep's tactics before entry: attack targets, dodging advice and protection limits, rather than just the encounter's reward or destination. Completed, bypassed and disabled-source hazards are excluded. The Now card links the warning to the tactical source and gives it reading space; the narrator speaks it once per encounter, can interrupt pending reasoning, and waits while the player speaks. This is a warning about the planned route, not proof that an unseen enemy is currently present. Hazards or tactics absent from the source still depend on observed events or further reasoning.
+
 Game capture polls every 100 ms with one capture in flight. A separate bounded local detector uses Tesseract, one inference thread and a 700 ms process deadline. It recognizes high-confidence complete event lines such as “GAME OVER”, “YOU DIED” and “VICTORY”, and explicit numeric `HP: current / maximum` displays at or below 20%. Two distinct captures must agree. Identical images reuse their OCR result. Events expire after 1.5 seconds and lose permission when the capture changes or pauses.
 
 Death and low-health cues can interrupt ordinary advice or pending reasoning once the player stops speaking. The interrupted answer and its pending tools are cancelled. Repeated model-derived danger/death observations remain a fallback, with a stricter three-second freshness limit. These events do not mark game objectives complete. Pixel fonts, stylized meters and unlabeled icons are not covered by the generic text detector. The optional ROM-specific emulator adapter now polls independently of visual-model startup; its existing revision/process checks remain required, and unverified RAM semantics do not become inventory facts.
+
+## Continuous map updates
+
+Finished background views now publish even if another capture requested a refresh while they were being built. A queued refresh follows immediately. Changed games, guide revisions, progress, selections and capture settings still reject obsolete views. This avoids starving the visible map and voice context during continuous capture.
+
+The learned matcher caches at most 2,048 landmark comparisons keyed by model identity, exact image contents, geometry mode and atlas mode. Repeated captures reuse that computation while retaining separate capture timestamps, stability votes and freshness checks. Moving or changed images require new matching. Model startup still needs to load the graphics runtime and weights.
 
 ## Measurements and reproducible checks
 
@@ -72,6 +82,7 @@ The subsequent presence regression answered “Hello? Can you hear me?” in 1.3
 # Run inside nix develop. Native speech is the default in disposable test stores.
 GAMEBUDDY_TEST_NATIVE_CONVERSATION=1 scripts/test-realtime
 GAMEBUDDY_TEST_FOLLOWUPS=1 scripts/test-realtime
+GAMEBUDDY_TEST_DANGER=1 scripts/test-realtime
 GAMEBUDDY_TEST_RESPONSIVE=1 GAMEBUDDY_TEST_CAPTIONS=1 scripts/test-realtime
 scripts/test-narration
 

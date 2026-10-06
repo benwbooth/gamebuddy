@@ -98,8 +98,12 @@ def extract(path):
     return {"embedding": embedding, "learned_key": key, "model": identity, "device": device}
 
 
+@lru_cache(maxsize=2048)
 @torch.inference_mode()
 def register(query, reference, dimension, atlas=False):
+    # Keys include the model identity and exact image bytes. Repeated captures
+    # still receive fresh timestamps and pass Rust's stability/freshness checks,
+    # but need not rerun the same immutable landmark comparison on the GPU.
     a, b = features(query), features(reference)
     result = rbd(matcher({"image0": a, "image1": b}))
     pairs = result["matches"].cpu().numpy()

@@ -14,7 +14,7 @@ function walkthroughContext(content, sourceSteps=content.guide.steps) {
   const used=new Set([current]);
   const later=now?future.filter(s=>{if(used.has(s.id)||inherited(s.id,completed)||inherited(s.id,skipped))return false;used.add(s.id);return true}).slice(0,4).map(describe):[];
   return {guide:content.guide.id,now:now?{id:now.id,title:now.title,instructions:now.instructions}:null,path:path(byId.get(current)||now).join(' › '),earlier,later,
-    recoveryStatus:content.recovery?.status,laterLabel:preview.length?'Coming up':'Later in walkthrough',status:content.guidance?.status||'ready',reason:['pending','repairing','needs_information'].includes(content.recovery?.status)?(content.recovery.message||'Updating the walkthrough…'):(content.guidance?.reason||''),requirements:(content.guidance?.requirements||[]).map(s=>s.title),preparation:content.preparation?.message||''};
+    warning:content.guidance?.warning||null,recoveryStatus:content.recovery?.status,laterLabel:preview.length?'Coming up':'Later in walkthrough',status:content.guidance?.status||'ready',reason:['pending','repairing','needs_information'].includes(content.recovery?.status)?(content.recovery.message||'Updating the walkthrough…'):(content.guidance?.reason||''),requirements:(content.guidance?.requirements||[]).map(s=>s.title),preparation:content.preparation?.message||''};
 }
 
 function mountWalkthrough(body,initial) {
@@ -22,8 +22,9 @@ function mountWalkthrough(body,initial) {
   const path=text('div','','walkthrough-path'),before=text('section','','walkthrough-context earlier'),after=text('section','','walkthrough-context later');
   const focus=text('section','','outline-next'),label=text('div','','eyebrow'),title=text('strong','','walkthrough-title');
   const viewport=text('div','','walkthrough-copy'),copy=text('div','','instructions'),notice=text('div','','walkthrough-note');
+  const warning=text('div','','walkthrough-warning');warning.setAttribute('role','alert');warning.hidden=true;
   const progress=text('div','','walkthrough-reading'),bar=text('span','');progress.append(bar);progress.setAttribute('aria-hidden','true');
-  viewport.append(copy,notice);focus.append(label,title,viewport,progress);body.append(path,before,focus,after);
+  viewport.append(warning,copy,notice);focus.append(label,title,viewport,progress);body.append(path,before,focus,after);
   let contextKey='',readingKey='',neighborsKey='',model=null,priorRows=[],nextRows=[],layoutFrame=0,animationFrame=0,dwell=0,disposed=false;
   let lastTime=0,position=0,maximum=0;
   function stopScroll(){cancelAnimationFrame(animationFrame);clearTimeout(dwell);animationFrame=0;dwell=0}
@@ -43,11 +44,12 @@ function mountWalkthrough(body,initial) {
   function fit(){
     layoutFrame=0;if(disposed||!body.isConnected||!body.clientHeight){stopScroll();return}
     body.classList.toggle('compact',body.clientHeight<350);
+    before.hidden=!priorRows.length||!!model.warning;after.hidden=!nextRows.length||!!model.warning;
     // Start with the nearest neighbor on each side; spend spare height on
     // additional context only after leaving readable space for the instruction.
     priorRows.forEach((row,i)=>row.hidden=i!==priorRows.length-1);nextRows.forEach((row,i)=>row.hidden=i!==0);
     for(const row of [...priorRows,...nextRows])row.querySelector('.walkthrough-preview').hidden=true;
-    const contentHeight=copy.offsetHeight+notice.offsetHeight+(notice.hidden?0:10);
+    const contentHeight=copy.offsetHeight+notice.offsetHeight+(notice.hidden?0:10)+(warning.hidden?0:warning.offsetHeight+16);
     const readable=Math.min(contentHeight,Math.max(88,body.clientHeight*.48));
     const previous=[...priorRows].reverse(),candidates=[[nextRows,1],[previous,1],[nextRows,2],[previous,2],[nextRows,3]];
     for(const [rows,index] of candidates){const row=rows[index];if(!row||rows[index-1].hidden)continue;row.hidden=false;if(viewport.clientHeight<readable)row.hidden=true}
@@ -78,13 +80,15 @@ function mountWalkthrough(body,initial) {
     const next=walkthroughContext(content,latestState?.guide?.steps||content.guide.steps),key=JSON.stringify(next);
     if(key===contextKey)return;contextKey=key;model=next;
     path.textContent=model.path;path.title=model.path;path.hidden=!model.path;
-    const nextReading=JSON.stringify([model.guide,model.now,model.status,model.requirements,model.reason]);
+    const nextReading=JSON.stringify([model.guide,model.now,model.warning,model.status,model.requirements,model.reason]);
     if(nextReading!==readingKey){readingKey=nextReading;stopScroll();position=0;viewport.scrollTop=0;maximum=0}
     const status=['pending','repairing'].includes(model.recoveryStatus)?'Updating walkthrough':model.requirements.length?'Check prerequisite':({ready:'Now',plan:'Suggested next step',unlocated:'Location unconfirmed',blocked:'Plan needs attention',goals_complete:'Selected goal complete'})[model.status]||'Current step';
     label.textContent=status;title.textContent=model.now?.title||(!model.reason?'Preparing player actions…':'');title.hidden=!title.textContent;
     if(model.now){title.dataset.stepId=model.now.id;title.setAttribute('aria-current','step');evidence(title,'Step sources',()=>stepEvidence([model.now.id]));evidence(copy,'Step sources',()=>stepEvidence([model.now.id]))}
     else {delete title.dataset.stepId;title.removeAttribute('aria-current');delete title.dataset.evidence;delete copy.dataset.evidence}
     if(copy.textContent!==(model.now?.instructions||''))copy.textContent=model.now?.instructions||'';copy.hidden=!copy.textContent;
+    warning.textContent=model.warning?.text||'';warning.hidden=!warning.textContent;
+    if(model.warning?.source_step_id)evidence(warning,'Danger source',()=>stepEvidence([model.warning.source_step_id]));
     notice.textContent=[model.requirements.length?'Unconfirmed: '+model.requirements.join(' · '):'',model.reason,model.preparation].filter(Boolean).join('\n\n');notice.hidden=!notice.textContent;
     const nextNeighbors=JSON.stringify([model.earlier,model.later,model.laterLabel]);
     if(nextNeighbors!==neighborsKey){neighborsKey=nextNeighbors;priorRows=neighbors(before,'Earlier in walkthrough',model.earlier);nextRows=neighbors(after,model.laterLabel,model.later)}

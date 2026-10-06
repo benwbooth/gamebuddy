@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const TOOL: &str = "finish_voice_reply";
-pub const INSTRUCTIONS: &str = "For live voice, finish with finish_voice_reply as soon as the complete player request is satisfied. It delivers speech immediately. Copy request_id from the latest application request; a follow-up or corrected transcript replaces that ID. For a new gameplay instruction, include next_action in that same call instead of a separate set_next_action; its instructions will be the spoken text. Complete any other requested tool actions and check their successful results first. Do not batch this final tool with other actions. Set screen_grounded=true whenever the answer depends on the supplied screenshot. Use next_action=null for factual answers, clarifications, uncertainty or conversation. After success, end the turn without repeating the answer or calling more tools. On failure, correct only the reported problem and retry. Never claim an action succeeded before its tool succeeded.";
+pub const INSTRUCTIONS: &str = "For live voice, finish with finish_voice_reply as soon as the complete player request is satisfied. It delivers speech immediately. Copy request_id from the latest application request; a follow-up or corrected transcript replaces that ID. For a new gameplay instruction, include next_action in that same call instead of a separate set_next_action; its instructions will be the spoken text. Complete any other requested tool actions and check their successful results first. Do not batch this final tool with other actions. Set screen_grounded=true whenever the answer depends on the supplied screenshot, such as identifying this door or directing an immediate movement. Set it false for instructions or facts supported entirely by the guide and confirmed progress; ordinary screen movement does not invalidate those. Use next_action=null for factual answers, clarifications, uncertainty or conversation. After success, end the turn without repeating the answer or calling more tools. On failure, correct only the reported problem and retry. Never claim an action succeeded before its tool succeeded.";
 
 pub fn request_id(utterance: u64, request: &str) -> String {
     let mut hash = DefaultHasher::new();
@@ -25,6 +25,16 @@ pub struct Reply {
     pub screen_grounded: bool,
     /// New immediate advice only. Its instructions must match text exactly.
     pub next_action: Option<NextAction>,
+}
+
+impl Reply {
+    pub fn requires_current_screen(&self) -> bool {
+        self.screen_grounded
+            || self
+                .next_action
+                .as_ref()
+                .is_some_and(|a| a.screen_direction.is_some())
+    }
 }
 
 pub fn tools() -> Value {
@@ -49,7 +59,10 @@ pub fn apply(
         "This answer belongs to an older request. Complete the latest live_player_request using request_id {request_id} before finishing. Nothing was published or spoken."
     );
     ensure!(!reply.text.trim().is_empty(), "Spoken answer is empty");
-    if reply.screen_grounded || reply.next_action.is_some() {
+    // Source instructions remain valid while a menu opens or the camera moves.
+    // Only visual claims and immediate screen-relative directions require the
+    // original pixels. Revision/epoch/route eligibility are still checked below.
+    if reply.requires_current_screen() {
         ensure!(
             frame.is_some_and(|frame| screen::still_current(store, frame).unwrap_or(false)),
             "The supplied screen is no longer current. Read get_game_context and answer from its new image before finishing. No advice was published."
@@ -133,5 +146,29 @@ mod tests {
         assert!(apply(&store, reply.clone(), "request-1", None).is_ok());
         reply["screen_grounded"] = json!(true);
         assert!(apply(&store, reply, "request-1", None).is_err());
+    }
+
+    #[test]
+    fn source_advice_survives_camera_changes_but_visual_directions_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let guide = gamebuddy_core::import_markdown(
+            "Game",
+            "Guide",
+            "# Use the key\nUse the key to open the door.",
+        )
+        .unwrap();
+        store.save_guide(&guide).unwrap();
+        store.put("active_guide", &guide.id).unwrap();
+        let mut reply = json!({"request_id":"current","text":"Use the key to open the door.","screen_grounded":false,"next_action":{
+            "expected_revision":guide.revision,"epoch":0,"step_id":guide.steps[0].id,
+            "instructions":"Use the key to open the door.","screen_direction":null
+        }});
+        assert!(apply(&store, reply.clone(), "current", None).is_ok());
+        reply["screen_grounded"] = json!(true);
+        assert!(apply(&store, reply.clone(), "current", None).is_err());
+        reply["screen_grounded"] = json!(false);
+        reply["next_action"]["screen_direction"] = json!("right");
+        assert!(apply(&store, reply, "current", None).is_err());
     }
 }

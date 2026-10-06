@@ -1198,8 +1198,17 @@ impl ffi::RealtimeVoice {
                             if !supplied_request.is_empty() {
                                 for (event, reject) in &mut pending_tools {
                                     let name = event["params"]["tool"].as_str().unwrap_or_default();
+                                    let source_reply = name
+                                        == gamebuddy_services::voice::reply::TOOL
+                                        && serde_json::from_value::<
+                                            gamebuddy_services::voice::reply::Reply,
+                                        >(
+                                            event["params"]["arguments"].clone()
+                                        )
+                                        .is_ok_and(|r| !r.requires_current_screen());
                                     if !name.starts_with("get_")
                                         && !matches!(name, "search_guide" | "read_reference")
+                                        && (request != supplied_request || !source_reply)
                                     {
                                         *reject = true;
                                     }

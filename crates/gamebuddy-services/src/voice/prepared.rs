@@ -32,7 +32,19 @@ pub fn brief(text: &str) -> String {
 }
 
 fn query(text: &str) -> String {
-    let mut value = text.trim().to_lowercase().replace('’', "'");
+    let mut spoken = text.trim();
+    // Recognition can prefix a complete question with a breath annotation.
+    // Only known acoustic tags are ignored, never words or unknown directions.
+    while let Some(tag) = spoken.strip_prefix('[').and_then(|s| s.split_once(']')) {
+        if !matches!(
+            tag.0.to_ascii_lowercase().as_str(),
+            "sigh" | "sighs" | "yawn" | "yawns"
+        ) {
+            break;
+        }
+        spoken = tag.1.trim_start();
+    }
+    let mut value = spoken.to_lowercase().replace('’', "'");
     value = value.trim_end_matches(['.', '?', '!']).trim().to_owned();
     for prefix in ["hey gamebuddy, ", "gamebuddy, ", "please "] {
         if let Some(rest) = value.strip_prefix(prefix) {
@@ -47,6 +59,7 @@ fn query(text: &str) -> String {
 pub fn intent(text: &str) -> Option<&'static str> {
     match query(text).as_str() {
         "what now"
+        | "now what"
         | "what next"
         | "what's next"
         | "what do i do"
@@ -297,11 +310,13 @@ mod tests {
     #[test]
     fn complete_intents_do_not_swallow_corrections_or_extra_work() {
         assert_eq!(intent("What should I do next?"), Some("next"));
+        assert_eq!(intent("[yawn] [sigh] Now what?"), Some("next"));
         for q in [
             "What next? But I already have that.",
             "What next and show me a map",
             "I don't want to repeat that",
             "Where do I go if I have no key?",
+            "[turn left] Now what?",
         ] {
             assert_eq!(intent(q), None);
         }
@@ -316,6 +331,10 @@ mod tests {
                 .contains("haven't confirmed")
         );
         assert!(for_context(&c, "Where am I?").is_none());
+        assert_eq!(
+            for_context(&c, "Now what?").unwrap().text,
+            for_context(&c, "What next?").unwrap().text
+        );
         c["navigation"]["planning"] = json!({"goal_complete":true});
         assert!(
             for_context(&c, "What next?")

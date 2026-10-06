@@ -158,7 +158,27 @@ fn main() -> Result<()> {
             count += 1;
             ensure!(count <= 12, "Too many tool calls");
             if let Some((ticket, image)) = ticket.as_ref().zip(replay.as_ref()) {
-                screen::publish(&store, ticket, image, "recorded_test_frame")?;
+                let changed =
+                    std::env::var_os("GAMEBUDDY_PROBE_CHANGED_FRAME").map(std::path::PathBuf::from);
+                let path = if event["params"]["tool"] == gamebuddy_services::voice::reply::TOOL {
+                    changed.as_ref().unwrap_or(image)
+                } else {
+                    image
+                };
+                screen::publish(&store, ticket, path, "recorded_test_frame")?;
+                if changed.is_some()
+                    && event["params"]["tool"] == gamebuddy_services::voice::reply::TOOL
+                {
+                    ensure!(
+                        supplied_frame
+                            .as_ref()
+                            .is_some_and(
+                                |frame| !screen::still_current(&store, frame).unwrap_or(true)
+                            ),
+                        "Changed replay did not invalidate the supplied view"
+                    );
+                    println!("changed_screen_current=false");
+                }
             }
             let name = event["params"]["tool"].as_str().context("Tool name")?;
             println!("request={name} arguments={}", event["params"]["arguments"]);

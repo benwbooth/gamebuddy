@@ -9,6 +9,8 @@ use std::{
 };
 use x11rb::rust_connection::RustConnection;
 
+#[path = "danger_probe.rs"]
+mod danger_probe;
 #[path = "followup_probe.rs"]
 mod followup_probe;
 #[path = "inventory_probe.rs"]
@@ -428,6 +430,12 @@ fn realtime(
     if std::env::var_os("GAMEBUDDY_TEST_NATIVE_CONVERSATION").is_some() {
         native_conversation_probe::run(&store, &log)?;
         ensure!(capturing()?, "Native conversation closed its microphone");
+        return Ok(());
+    }
+    if std::env::var_os("GAMEBUDDY_TEST_DANGER").is_some() {
+        danger_probe::run(&store, &log)?;
+        ensure!(capturing()?, "Danger cue closed the microphone");
+        screenshot("realtime-danger.png")?;
         return Ok(());
     }
     if std::env::var_os("GAMEBUDDY_TEST_FAST_EVENT").is_some() {

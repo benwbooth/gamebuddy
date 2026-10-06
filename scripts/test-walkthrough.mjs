@@ -14,6 +14,7 @@ assert.deepEqual(model(content).later.map(s=>s.id),['action-7','action-8']);
 assert.equal(model(content).earlier[1].done,true);
 assert.equal(model(content).earlier[2].done,false,'Being earlier in the guide is not completion');
 assert.equal(model(content).now.instructions,content.guidance.now.instructions,'Use the published advice');
+assert.equal(model({...content,guidance:{...content.guidance,warning:{text:'Danger ahead',source_step_id:'action-13'}}}).warning.source_step_id,'action-13');
 assert.equal(model(content).later[1].path,'Forest','Keep context across chapter boundaries');
 const rerouted={...content,guidance:{...content.guidance,next:[step('action-9'),step('action-8'),step('action-10'),step('action-11')]},planning:{not_needed:[{step_id:'action-8'}]},progress:{...content.progress,completed:['action-10']}};
 assert.deepEqual(model(rerouted).later.map(s=>s.id),['action-9','action-11'],'Use route order and omit completed or unnecessary actions');
@@ -61,6 +62,13 @@ export async function walkthroughInputs({call,evaluate,until,screenshot}) {
   await readable();await screenshot('walkthrough-expanded');
   await evaluate(`walkthroughNode.style.width='300px';walkthroughNode.style.height='360px'`);
   await readable();await screenshot('walkthrough-compact');
+  const warning='Danger ahead: Defeat the tower guardian. Avoid its fireballs. The shield does not block magic.';
+  await evaluate(`testState.navigation.guidance.warning={id:'tower',text:${JSON.stringify(warning)},source_step_id:'action-13'};testRender(testState)`);
+  await until(()=>evaluate(`!document.querySelector('.walkthrough-warning').hidden&&document.querySelector('.walkthrough-warning').textContent===${JSON.stringify(warning)}`),'Danger warning did not appear');
+  assert(await evaluate(`(()=>{const n=document.querySelector('.walkthrough-warning'),r=n.getBoundingClientRect(),b=document.querySelector('.walkthrough').getBoundingClientRect();return r.top>=b.top&&r.bottom<=b.bottom&&n.scrollHeight<=n.clientHeight+1})()`),'Danger warning is clipped');
+  await screenshot('walkthrough-danger');
+  await evaluate(`delete testState.navigation.guidance.warning;testRender(testState)`);
+  assert(await evaluate(`document.querySelector('.walkthrough-warning').hidden`),'Departed danger did not clear');
   // No click, key, scroll or expansion event is needed to cross a chapter.
   await evaluate(`walkthroughNode.style.width='400px';walkthroughNode.style.height='550px';testState.progress.current_step='action-8';testState.progress.completed.push('action-6');testState.navigation.guidance.now=testState.guide.steps.find(s=>s.id==='action-8');testState.navigation.guidance.next=['action-9','action-10','action-11','action-12'].map(id=>testState.guide.steps.find(s=>s.id===id));testRender(testState)`);
   await until(()=>evaluate(`document.querySelector('[aria-current=step]').dataset.stepId==='action-8'&&document.querySelector('.walkthrough-path').textContent==='Forest'`),'Walkthrough did not follow into the next chapter');

@@ -47,6 +47,10 @@ if [[ -n "${GAMEBUDDY_TEST_ROUTINE:-}" ]]; then
   export GAMEBUDDY_TEST_ROUTINE_WAV="$runtime_dir/routine.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ROUTINE_WAV" 'What should I do next?'
 fi
+if [[ -n "${GAMEBUDDY_TEST_DANGER:-}" ]]; then
+  export GAMEBUDDY_TEST_ROUTINE_WAV="$runtime_dir/routine.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ROUTINE_WAV" 'Now what?'
+fi
 if [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
   export GAMEBUDDY_TEST_PRESENCE_WAV="$runtime_dir/presence.wav" GAMEBUDDY_TEST_COMMAND_WAV="$runtime_dir/command.wav"
@@ -162,6 +166,24 @@ PY
 elif [[ -n "${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
   rg -qi 'penguin' "$runtime_dir/heard.txt"
   rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_DANGER:-}" ]]; then
+  # Long initial silence can make whole-recording transcription omit a brief
+  # warning. Verify the warning's actual recorded interval independently.
+  read -r clip_start clip_duration < <(python3 - "$runtime_dir" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+match = re.search(r'GAMEBUDDY_ROUTE_DANGER_PASS .*start_ms=(\d+) end_ms=(\d+)', (root/'runtime.log').read_text())
+assert match, 'Missing danger interval'
+start, end = map(int, match.groups())
+print((start-int((root/'recording-start-ms').read_text()))/1000, (end-start)/1000)
+PY
+  )
+  ffmpeg -nostdin -hide_banner -loglevel error -y -ss "$clip_start" -i "$runtime_dir/response.wav" -t "$clip_duration" "$runtime_dir/danger.wav"
+  ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$runtime_dir/danger.wav" >"$runtime_dir/danger-heard.txt"
+  rg -qi 'guardian' "$runtime_dir/danger-heard.txt"
+  rg -qi 'shield' "$runtime_dir/danger-heard.txt"
+  rg -qi 'head' "$runtime_dir/danger-heard.txt"
+  rg -qi 'key' "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_FAST_EVENT:-}" ]]; then
   rg -qi "game.over" "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_ROUTINE:-}" ]]; then

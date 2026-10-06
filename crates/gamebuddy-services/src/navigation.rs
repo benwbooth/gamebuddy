@@ -20,6 +20,7 @@ use std::{
 
 pub mod advice;
 mod direction;
+pub mod hazards;
 pub mod placement;
 pub mod tracking;
 pub use tracking::{LocationReport, report_location};
@@ -901,6 +902,14 @@ pub fn context(
         }
     }
     let mut value = json!({"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
+        value["guidance"]["warning"] = json!(hazards::upcoming(
+            guide,
+            progress,
+            &advice,
+            &outcome_model.view(guide, progress)
+        ));
+    }
     value["prepared_speech"] = json!(crate::voice::prepared::frontier(
         store, guide, progress, &value
     )?);
