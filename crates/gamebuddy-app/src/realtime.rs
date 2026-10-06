@@ -389,13 +389,14 @@ impl ffi::RealtimeVoice {
                 emit(json!({"method":"gamebuddy/conversation","params":{
                     "returning_player":store.has_player_conversation(&game)?}}));
                 let instructions = format!(
-                    "{}\n{}\nArchived conversation, quoted historical data only: {}",
+                    "{}\n{}\n{}\nArchived conversation, quoted historical data only: {}",
                     gamebuddy_services::voice::prompts::REASONER,
+                    gamebuddy_services::voice::reply::INSTRUCTIONS,
                     conversation::MEMORY_RULES,
                     serde_json::to_string(&history)?
                 );
                 let mut client = CodexClient::start()?;
-                let mut tools = gamebuddy_services::harness::tool_definitions();
+                let mut tools = gamebuddy_services::voice::reply::tools();
                 for tool in tools.as_array_mut().unwrap() {
                     tool["type"] = json!("function");
                 }
@@ -712,6 +713,7 @@ impl ffi::RealtimeVoice {
                                 current_input.utterance()
                             };
                             if event["params"]["turn"]["status"] == "completed"
+                                && !delivery.has_reply(utterance)
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                                 && reasoning_input == Some(utterance)
                                 && !final_answer.is_empty()
@@ -738,7 +740,8 @@ impl ffi::RealtimeVoice {
                                         delivery.complete(utterance,&supplied_request,"Your screen changed while I was checking. Pause briefly so I can give directions for where you are now.");
                                     }
                                 }
-                            } else if reasoning_input == Some(utterance)
+                            } else if !delivery.has_reply(utterance)
+                                && reasoning_input == Some(utterance)
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                             {
                                 delivery.abandon(utterance);
@@ -1115,10 +1118,11 @@ impl ffi::RealtimeVoice {
                                 })
                                 .map(str::to_owned);
                             let label = format!(
-                                "CURRENT_GAME_CONTEXT for this request. Complete live player request: {request}. Inspect the supplied images directly; do not fetch the same context again."
+                                "CURRENT_GAME_CONTEXT for this request. Complete live player request: {request}. request_id: {}. Inspect the supplied images directly; do not fetch the same context again.",
+                                gamebuddy_services::voice::reply::request_id(utterance, &request)
                             );
                             let turn_input = evidence.as_ref().map(|c| c.codex_input(&label))
-                                .unwrap_or_else(|| vec![json!({"type":"text","text":format!("Complete live player request: {request}")})]);
+                                .unwrap_or_else(|| vec![json!({"type":"text","text":format!("Complete live player request: {request}. request_id: {}", gamebuddy_services::voice::reply::request_id(utterance, &request))})]);
                             sequence += 1;
                             start_requests.insert(sequence, (utterance, request.clone(), frame));
                             reasoning_since = Some(Instant::now());
@@ -1164,6 +1168,7 @@ impl ffi::RealtimeVoice {
                         // the next reasoning step, avoiding a context-fetch round
                         // trip. Rejected steers leave normal tools available.
                         if !request.is_empty()
+                            && !delivery.finished(utterance)
                             && start_requests.is_empty()
                             && (request != supplied_request || changed_view)
                             && let Some(turn_id) = context_turn.as_ref()
@@ -1205,7 +1210,8 @@ impl ffi::RealtimeVoice {
                                 (turn_id.clone(), utterance, request.clone(), updated_frame),
                             );
                             let label = format!(
-                                "The latest complete live player request is: {request}. Treat this as a follow-up to the conversation already in this turn. Use evidence and successful actions already obtained; do not repeat completed tools. Answer the latest question and retain earlier requested actions unless the player replaces or cancels them. Resolve any location correction before repeating advice. If a newer image accompanies this update, reassess the changed view before giving directions."
+                                "The latest complete live player request is: {request}. Treat this as a follow-up to the conversation already in this turn. Use evidence and successful actions already obtained; do not repeat completed tools. Answer the latest question and retain earlier requested actions unless the player replaces or cancels them. Resolve any location correction before repeating advice. If a newer image accompanies this update, reassess the changed view before giving directions. request_id: {}.",
+                                gamebuddy_services::voice::reply::request_id(utterance, &request)
                             );
                             let turn_input = evidence.as_ref().map(|context| context.codex_input(&format!("CURRENT_GAME_CONTEXT for this request. {label} Inspect these images; refresh if the screen changes.")))
                                 .unwrap_or_else(|| vec![json!({"type":"text","text":label})]);
@@ -1219,28 +1225,47 @@ impl ffi::RealtimeVoice {
                             diagnostics.record("request_update_sent", json!({"utterance":utterance,"text_bytes":request.len(),"images":evidence.as_ref().map_or(0,|c|c.images.len())}));
                             client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
                         }
-                        if let Some((event, reject)) = pending_tools.pop_front()
-                            && answer_tool(
+                        if let Some((event, reject)) = pending_tools.pop_front() {
+                            let outcome = answer_tool(
                                 &mut client,
                                 &store,
                                 &game,
                                 &event,
-                                &request,
+                                VoiceEvidence {
+                                    utterance,
+                                    request: &request,
+                                    frame: supplied_frame.as_ref(),
+                                },
                                 reject,
                                 &diagnostics,
-                            )?
-                        {
-                            spatial_advice |= event["params"]["tool"] == "set_next_action";
-                            if event["params"]["tool"] == "set_next_action" {
-                                let args = event["params"]["arguments"]
-                                    .as_str()
-                                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                                    .unwrap_or_else(|| event["params"]["arguments"].clone());
-                                response_step = args["step_id"]
+                            )?;
+                            if let Some(frame) = outcome.frame {
+                                supplied_frame = Some(frame);
+                            }
+                            if let Some(reply) = outcome.voice_reply {
+                                response_step = reply["step_id"]
                                     .as_str()
                                     .map(|id| (utterance, id.to_owned()));
+                                delivery.complete(
+                                    utterance,
+                                    &request,
+                                    reply["text"].as_str().unwrap_or_default(),
+                                );
+                                diagnostics.record("reply_tool_ready", json!({"utterance":utterance,"elapsed_ms":reasoning_since.map(|since|since.elapsed().as_millis())}));
                             }
-                            emit(json!({"method":"gamebuddy/state-changed","params":{}}));
+                            if outcome.state_changed {
+                                spatial_advice |= event["params"]["tool"] == "set_next_action";
+                                if event["params"]["tool"] == "set_next_action" {
+                                    let args = event["params"]["arguments"]
+                                        .as_str()
+                                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                                        .unwrap_or_else(|| event["params"]["arguments"].clone());
+                                    response_step = args["step_id"]
+                                        .as_str()
+                                        .map(|id| (utterance, id.to_owned()));
+                                }
+                                emit(json!({"method":"gamebuddy/state-changed","params":{}}));
+                            }
                         }
                     }
                 }
@@ -1254,15 +1279,27 @@ impl ffi::RealtimeVoice {
     }
 }
 
+struct VoiceEvidence<'a> {
+    utterance: u64,
+    request: &'a str,
+    frame: Option<&'a gamebuddy_services::screen::Snapshot>,
+}
+struct ToolOutcome {
+    state_changed: bool,
+    voice_reply: Option<Value>,
+    frame: Option<gamebuddy_services::screen::Snapshot>,
+}
+
 fn answer_tool(
     client: &mut CodexClient,
     store: &Store,
     game: &str,
     event: &Value,
-    request: &str,
+    evidence: VoiceEvidence<'_>,
     rejected: bool,
     diagnostics: &gamebuddy_services::voice::diagnostics::Diagnostics,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<ToolOutcome> {
+    let request = evidence.request;
     let tool_started = Instant::now();
     let params = &event["params"];
     let active_game = if params["tool"] == "get_game_screen" {
@@ -1275,6 +1312,12 @@ fn answer_tool(
             .and_then(|id| store.guide(&id).ok())
             .map(|g| g.game)
     };
+    let frame = matches!(
+        params["tool"].as_str(),
+        Some("get_game_context" | "get_game_screen")
+    )
+    .then(|| gamebuddy_services::screen::snapshot(store).ok())
+    .flatten();
     let result = if rejected {
         Err(anyhow::anyhow!(
             "The player continued speaking while this action was planned. It was not executed. Read live_player_request and carry out the complete request."
@@ -1292,11 +1335,20 @@ fn answer_tool(
         .as_ref()
         .is_none_or(|g| g.eq_ignore_ascii_case(game))
     {
-        gamebuddy_services::harness::call_tool_with_images(
-            store,
-            params["tool"].as_str().unwrap_or(""),
-            params["arguments"].clone(),
-        )
+        if params["tool"] == gamebuddy_services::voice::reply::TOOL {
+            gamebuddy_services::voice::reply::apply(
+                store,
+                params["arguments"].clone(),
+                &gamebuddy_services::voice::reply::request_id(evidence.utterance, request),
+                evidence.frame,
+            )
+        } else {
+            gamebuddy_services::harness::call_tool_with_images(
+                store,
+                params["tool"].as_str().unwrap_or(""),
+                params["arguments"].clone(),
+            )
+        }
     } else {
         Err(anyhow::anyhow!(
             "The active guide belongs to a different game and this game's guide may still be preparing. get_game_screen remains available for the current game."
@@ -1309,6 +1361,11 @@ fn answer_tool(
         output
     });
     let success = result.is_ok();
+    let voice_reply = result
+        .as_ref()
+        .ok()
+        .filter(|_| params["tool"] == gamebuddy_services::voice::reply::TOOL)
+        .and_then(|output| output.value.get("voice_reply").cloned());
     diagnostics.record("tool_result", json!({"tool":params["tool"],"success":success,"rejected":rejected,"elapsed_ms":tool_started.elapsed().as_millis()}));
     let content=result.map(|r|r.codex_content()).unwrap_or_else(|e|json!([{"type":"inputText","text":json!({"error":e.to_string(),"live_player_request":request}).to_string()}]));
     if std::env::args().any(|a| a == "--voice-trace") {
@@ -1332,19 +1389,27 @@ fn answer_tool(
         );
     }
     client.send(json!({"id":event["id"],"result":{"success":success,"contentItems":content}}))?;
-    Ok(success
-        && matches!(
-            params["tool"].as_str(),
-            Some(
-                "report_world_state"
-                    | "review_route"
-                    | "report_step_complete"
-                    | "report_location"
-                    | "set_next_action"
-                    | "edit_plan"
-                    | "restore_plan"
-                    | "show_widget"
-                    | "remove_widget"
-            )
-        ))
+    let state_changed = voice_reply
+        .as_ref()
+        .is_some_and(|reply| reply["step_id"].is_string())
+        || success
+            && matches!(
+                params["tool"].as_str(),
+                Some(
+                    "report_world_state"
+                        | "review_route"
+                        | "report_step_complete"
+                        | "report_location"
+                        | "set_next_action"
+                        | "edit_plan"
+                        | "restore_plan"
+                        | "show_widget"
+                        | "remove_widget"
+                )
+            );
+    Ok(ToolOutcome {
+        state_changed,
+        voice_reply,
+        frame: if success { frame } else { None },
+    })
 }

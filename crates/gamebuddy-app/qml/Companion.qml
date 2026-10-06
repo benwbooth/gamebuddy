@@ -30,7 +30,10 @@ Item {
     property bool realtimeEnabled: false
     property string realtimeStatus: ""
     property bool realtimeCapturing: false
+    property bool realtimeThinking: false
+    readonly property bool thinking: buddy.busy || voiceTurnPending || (realtimeEnabled && realtimeThinking)
     property bool capturing: recording || voice.listening || realtimeCapturing
+    onThinkingChanged: if (Qt.application.arguments.indexOf("--ui-trace") >= 0) console.warn("GAMEBUDDY_COMPANION_THINKING " + thinking)
     property var widgetCatalog: []
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
@@ -96,8 +99,8 @@ Item {
     Rectangle {
         id: orb
         x: 8; y: 8; width: 64; height: 64; radius: 32
-        color: companion.capturing ? "#bf665c" : "#162c35"
-        border { width: 2; color: companion.capturing ? "#ffc4b9" : "#86decb" }
+        color: companion.thinking ? "#614d2e" : companion.capturing ? "#bf665c" : "#162c35"
+        border { width: 2; color: companion.thinking ? "#efc783" : companion.capturing ? "#ffc4b9" : "#86decb" }
         Rectangle {
             anchors.centerIn: parent
             width: 45; height: 45; radius: 22
@@ -113,6 +116,29 @@ Item {
                         SequentialAnimation on opacity { running: companion.capturing || buddy.busy || buddy.preparing; loops: Animation.Infinite; NumberAnimation { to: 0.35; duration: 350 + index*90 } NumberAnimation { to: 1; duration: 350 + index*90 } }
                     }
                 }
+            }
+        }
+        Item {
+            id: thinkingSpinner
+            objectName: "companionThinkingSpinner"
+            anchors.centerIn: parent
+            width: 56; height: 56
+            visible: companion.thinking
+            Accessible.role: Accessible.Indicator
+            Accessible.name: "GameBuddy is thinking"
+            Repeater {
+                model: 10
+                Rectangle {
+                    required property int index
+                    width: 4; height: 4; radius: 2
+                    x: 26 + 26 * Math.sin(index * Math.PI / 5)
+                    y: 26 - 26 * Math.cos(index * Math.PI / 5)
+                    color: "#ffe2a8"; opacity: (index + 1) / 10
+                }
+            }
+            RotationAnimator on rotation {
+                from: 0; to: 360; duration: 900; loops: Animation.Infinite
+                running: thinkingSpinner.visible
             }
         }
         MouseArea {
@@ -142,7 +168,7 @@ Item {
             onReleased: { if (held) companion.stopTalking(); else if (!moved) companion.expanded = !companion.expanded }
             onCanceled: companion.stopTalking()
             ToolTip.visible: containsMouse && !pressed
-            ToolTip.text: voice.status + "\nClick to expand · Drag to move · Hold to talk"
+            ToolTip.text: (companion.thinking ? "Thinking…" : companion.realtimeEnabled ? companion.realtimeStatus : voice.status) + "\nClick to expand · Drag to move · Hold to talk"
         }
         Rectangle { visible: buddy.preparing; width: 10; height: 10; radius: 5; x: 49; y: 51; color: "#efc783"; border.color: "#132230"; border.width: 2 }
         Rectangle { visible: voice.active; width: 12; height: 12; radius: 6; x: 2; y: 49; color: voice.listening ? "#ffbdad" : "#efc783"; border.color: "#132230"; border.width: 2; Accessible.name: voice.status }

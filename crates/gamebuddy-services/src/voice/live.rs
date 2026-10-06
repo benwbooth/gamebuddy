@@ -98,7 +98,9 @@ impl Responsiveness {
             return None;
         }
         let presence = super::presence_reply(&text);
-        let delay = if presence.is_some() { 2 } else { 5 };
+        // Native replies normally start within a second. Recover a silent
+        // handoff after two seconds instead of adding five seconds of idle time.
+        let delay = 2;
         if now.saturating_duration_since(at) < Duration::from_secs(delay) {
             return None;
         }
@@ -274,11 +276,11 @@ mod tests {
         say(&mut input, "Which item can I clear for the boots?", now);
         assert!(
             watch
-                .poll(&input, 0, now + Duration::from_secs(4))
+                .poll(&input, 0, now + Duration::from_secs(1))
                 .is_none()
         );
         let Some(Recovery::Request { utterance, text }) =
-            watch.poll(&input, 0, now + Duration::from_secs(6))
+            watch.poll(&input, 0, now + Duration::from_millis(2200))
         else {
             panic!("silent question was not recovered")
         };

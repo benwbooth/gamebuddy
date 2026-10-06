@@ -158,7 +158,7 @@ PY
   rg -qi 'twenty.two hundred|two thousand two hundred|2,200|2200' "$runtime_dir/heard.txt"
   rg -qi '\bred\b' "$runtime_dir/heard.txt"
   rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
-  rg -qi 'hear you|listening|still here' "$runtime_dir/heard.txt"
+  rg -qi 'hear you|listening|still here|here with you' "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
   rg -qi 'penguin' "$runtime_dir/heard.txt"
   rg -qi '\bgreen\b' "$runtime_dir/heard.txt"

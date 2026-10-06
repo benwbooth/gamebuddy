@@ -11,6 +11,13 @@ impl Delivery {
     pub fn finished(&self, utterance: u64) -> bool {
         self.delivered == Some(utterance)
     }
+    pub fn has_reply(&self, utterance: u64) -> bool {
+        self.finished(utterance)
+            || self
+                .completed
+                .as_ref()
+                .is_some_and(|(id, ..)| *id == utterance)
+    }
     pub fn started(&mut self, utterance: u64) {
         self.started = Some(utterance);
     }
@@ -82,6 +89,22 @@ mod tests {
     use super::*;
     use crate::voice::input::PlayerInput;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn accepted_reply_is_ready_before_the_model_turn_ends_and_delivers_once() {
+        let mut delivery = Delivery::default();
+        assert!(delivery.dispatch(1, "Where next?", false));
+        delivery.complete(1, "Where next?", "Enter the door.");
+        assert!(delivery.has_reply(1));
+        assert!(!delivery.finished(1));
+        assert_eq!(
+            delivery.take_reply(1, "Where next?", true).as_deref(),
+            Some("Enter the door.")
+        );
+        delivery.complete(1, "Where next?", "Done.");
+        assert!(delivery.has_reply(1));
+        assert!(delivery.take_reply(1, "Where next?", true).is_none());
+    }
 
     #[test]
     fn silent_speaker_cannot_block_a_recognized_request_or_a_followup() {

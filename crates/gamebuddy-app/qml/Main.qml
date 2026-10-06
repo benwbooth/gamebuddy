@@ -183,6 +183,7 @@ ApplicationWindow {
         realtimeEnabled: root.realtimeEnabled
         realtimeStatus: realtimeVoice.status
         realtimeCapturing: realtimeVoice.capturing
+        realtimeThinking: realtimeVoice.started && (realtimeVoice.workPending || realtimeVoice.backendBusy || (realtimeVoice.waitingForReply && !realtimeVoice.assistantSpeaking && !realtimeVoice.userSpeaking))
         spokenReplies: root.appArguments.indexOf("--quiet") < 0
         widgetCatalog: root.widgetCatalog
         onWidgetVisibilityChanged: (id,shown) => { buddy.set_widget_visible(id,shown);if(shown){root.widgetsEnabled=true;companion.widgetsVisible=true} }

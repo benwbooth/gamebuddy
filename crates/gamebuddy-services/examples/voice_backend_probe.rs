@@ -94,21 +94,37 @@ fn main() -> Result<()> {
         None
     };
     let mut client = CodexClient::start()?;
-    let mut tools = harness::tool_definitions();
+    let immediate = std::env::var_os("GAMEBUDDY_PROBE_IMMEDIATE").is_some();
+    let mut tools = if immediate {
+        gamebuddy_services::voice::reply::tools()
+    } else {
+        harness::tool_definitions()
+    };
     for tool in tools.as_array_mut().unwrap() {
         tool["type"] = json!("function")
     }
     let deadline = Instant::now() + Duration::from_secs(90);
     let thread = client.voice_thread(
         &model,
-        prompts::REASONER,
+        &format!(
+            "{}\n{}",
+            prompts::REASONER,
+            if immediate {
+                gamebuddy_services::voice::reply::INSTRUCTIONS
+            } else {
+                ""
+            }
+        ),
         tools,
         std::env::var_os("GAMEBUDDY_PROBE_FAST").is_some(),
         &std::env::var("GAMEBUDDY_PROBE_EFFORT").unwrap_or_default(),
         deadline,
     )?;
     let started = Instant::now();
-    let mut input = vec![json!({"type":"text","text":question})];
+    let request_id = gamebuddy_services::voice::reply::request_id(1, &question);
+    let mut input =
+        vec![json!({"type":"text","text":format!("{question}\nrequest_id: {request_id}")})];
+    let mut supplied_frame = screen::snapshot(&store).ok();
     if std::env::var_os("GAMEBUDDY_PROBE_PREFETCH").is_some() {
         if let Some((ticket, image)) = ticket.as_ref().zip(replay.as_ref()) {
             screen::publish(&store, ticket, image, "recorded_test_frame")?;
@@ -146,11 +162,29 @@ fn main() -> Result<()> {
             }
             let name = event["params"]["tool"].as_str().context("Tool name")?;
             println!("request={name} arguments={}", event["params"]["arguments"]);
-            let output =
-                harness::call_tool_with_images(&store, name, event["params"]["arguments"].clone());
+            if matches!(name, "get_game_context" | "get_game_screen") {
+                supplied_frame = screen::snapshot(&store).ok();
+            }
+            let output = if name == gamebuddy_services::voice::reply::TOOL {
+                gamebuddy_services::voice::reply::apply(
+                    &store,
+                    event["params"]["arguments"].clone(),
+                    &request_id,
+                    supplied_frame.as_ref(),
+                )
+            } else {
+                harness::call_tool_with_images(&store, name, event["params"]["arguments"].clone())
+            };
             let success = output.is_ok();
             let content = match output {
                 Ok(output) => {
+                    if let Some(reply) = output.value.get("voice_reply") {
+                        println!(
+                            "reply_ready_ms={} reply={}",
+                            started.elapsed().as_millis(),
+                            reply["text"]
+                        );
+                    }
                     println!(
                         "tool={name} elapsed_ms={} text_bytes={} images={}",
                         started.elapsed().as_millis(),

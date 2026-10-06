@@ -10,6 +10,7 @@ pub mod narration;
 pub mod prepared;
 pub mod priority;
 pub mod prompts;
+pub mod reply;
 pub mod speech;
 use std::{collections::VecDeque, path::Path};
 use webrtc_vad::{SampleRate, Vad, VadMode};

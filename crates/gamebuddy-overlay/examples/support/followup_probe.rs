@@ -97,7 +97,16 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
             .unwrap_or_default()
             .contains("\"held\""))
     })?;
+    ensure!(
+        std::fs::read_to_string(log)?
+            .lines()
+            .rev()
+            .find(|line| line.contains("GAMEBUDDY_COMPANION_THINKING "))
+            .is_some_and(|line| line.ends_with("true")),
+        "Compact thinking indicator is missing during backend work"
+    );
     let presence_before = std::fs::read_to_string(log)?.len();
+    let presence_start = gamebuddy_services::screen::now_ms();
     play_player(&std::env::var("GAMEBUDDY_TEST_PRESENCE_WAV")?)?;
     let presence_end = gamebuddy_services::screen::now_ms();
     wait(
@@ -105,10 +114,20 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
         || {
             let text = std::fs::read_to_string(log)?;
             let tail = text[presence_before..].to_lowercase();
+            let captions = text[presence_before..]
+                .lines()
+                .filter_map(|line| {
+                    let (_, json) = line.split_once("GAMEBUDDY_VOICE_EVENT ")?;
+                    let event: serde_json::Value = serde_json::from_str(json).ok()?;
+                    (event["type"] == "caption")
+                        .then(|| event["value"].as_str().unwrap_or_default().to_lowercase())
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
             Ok(tail.contains("gamebuddy_voice_playback started")
                 && ["here", "hear you", "listening", "with you"]
                     .iter()
-                    .any(|word| tail.contains(word)))
+                    .any(|word| captions.contains(word)))
         },
     )?;
     let text = std::fs::read_to_string(log)?;
@@ -120,7 +139,7 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
         })
         .context("presence playback")?;
     ensure!(
-        onset >= presence_end && onset - presence_end < 4000,
+        onset >= presence_start && onset.saturating_sub(presence_end) < 4000,
         "Hello waited behind the pending tool"
     );
     ensure!(
@@ -176,6 +195,13 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
             .count()
             == 2,
         "Follow-up replayed or omitted a widget action"
+    );
+    ensure!(
+        text.lines()
+            .rev()
+            .find(|line| line.contains("GAMEBUDDY_COMPANION_THINKING "))
+            .is_some_and(|line| line.ends_with("false")),
+        "Compact thinking indicator did not clear after the reply"
     );
     println!(
         "GAMEBUDDY_NATIVE_CONTINUATION_PASS elapsed_seconds={:.1} one_backend_turn=true two_distinct_widgets=true",
