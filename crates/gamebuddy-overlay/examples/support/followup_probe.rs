@@ -9,12 +9,28 @@ use std::{
 };
 
 fn quiet(log: &str) -> Result<()> {
+    let mut unchanged = Instant::now();
+    let mut previous = String::new();
     wait("native follow-up finishes speaking", || {
-        Ok(std::fs::read_to_string(log)?
+        let text = std::fs::read_to_string(log)?;
+        let activity = text
             .lines()
             .rev()
-            .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
-            .is_some_and(|line| line.ends_with("Live voice · speak naturally")))
+            .find(|line| {
+                line.contains("GAMEBUDDY_VOICE_PLAYBACK started")
+                    || line.contains("\"type\":\"caption\"")
+            })
+            .unwrap_or_default();
+        if activity != previous {
+            previous = activity.to_owned();
+            unchanged = Instant::now();
+        }
+        Ok(unchanged.elapsed() >= Duration::from_secs(2)
+            && text
+                .lines()
+                .rev()
+                .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
+                .is_some_and(|line| line.ends_with("Live voice · speak naturally")))
     })
 }
 
@@ -52,6 +68,7 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
                 .and_then(|(_, s)| s.parse::<u64>().ok())
         })
         .context("clarification playback")?;
+    ensure!(played >= end, "Clarification overlapped the preceding cue");
     ensure!(
         tail.contains("twenty-two hundred")
             || tail.contains("twenty two hundred")
@@ -80,6 +97,41 @@ pub fn run(store: &Store, log: &str) -> Result<()> {
             .unwrap_or_default()
             .contains("\"held\""))
     })?;
+    let presence_before = std::fs::read_to_string(log)?.len();
+    play_player(&std::env::var("GAMEBUDDY_TEST_PRESENCE_WAV")?)?;
+    let presence_end = gamebuddy_services::screen::now_ms();
+    wait(
+        "hello is answered while the original tool is still pending",
+        || {
+            let text = std::fs::read_to_string(log)?;
+            let tail = text[presence_before..].to_lowercase();
+            Ok(tail.contains("gamebuddy_voice_playback started")
+                && ["here", "hear you", "listening", "with you"]
+                    .iter()
+                    .any(|word| tail.contains(word)))
+        },
+    )?;
+    let text = std::fs::read_to_string(log)?;
+    let onset = text[presence_before..]
+        .lines()
+        .find_map(|line| {
+            line.split_once("GAMEBUDDY_VOICE_PLAYBACK started at_ms=")
+                .and_then(|(_, s)| s.parse::<u64>().ok())
+        })
+        .context("presence playback")?;
+    ensure!(
+        onset >= presence_end && onset - presence_end < 4000,
+        "Hello waited behind the pending tool"
+    );
+    ensure!(
+        !std::fs::read_to_string(&gate)?.contains("\"released\""),
+        "Presence was only answered after the tool completed"
+    );
+    println!(
+        "GAMEBUDDY_NATIVE_PRESENCE_PASS latency_ms={} original_tool_pending=true",
+        onset as i64 - presence_end as i64
+    );
+    thread::sleep(Duration::from_secs(2));
     play_player(&std::env::var("GAMEBUDDY_TEST_FOLLOWUP_WAV")?)?;
     let end = Instant::now();
     let guide = store.guide(&store.get::<String>("active_guide")?.context("guide")?)?;

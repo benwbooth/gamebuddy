@@ -8,6 +8,7 @@ pub struct Narrator {
     session: String,
     introduced: bool,
     spoken_actions: HashSet<String>,
+    acknowledged_actions: HashSet<String>,
     spoken_events: HashMap<String, Instant>,
     last_conversation: Option<Instant>,
     last_spoken: Option<Instant>,
@@ -27,6 +28,7 @@ impl Narrator {
     pub fn heard_advice(&mut self, context: &Value, now: Instant) {
         let action = &context["guidance"]["now"];
         if !field(action, "id").is_empty() {
+            self.acknowledged_actions.insert(field(action, "id").into());
             self.spoken_actions
                 .insert(format!("{}:{}", field(action, "id"), cue(context)));
             self.last_spoken = Some(now);
@@ -87,10 +89,14 @@ impl Narrator {
             && matches!(field(fast, "event"), "death" | "danger" | "victory")
             && event_available(field(fast, "event"), 30);
         let coaching = &context["coaching"];
+        if field(coaching, "kind") == "in_progress" {
+            self.acknowledged_actions
+                .insert(field(coaching, "step_id").into());
+        }
         let urgent = matches!(field(coaching, "kind"), "danger" | "recovery");
         let coach_id = field(coaching, "id");
         let can_coach = live
-            && field(coaching, "kind") != "next_action"
+            && !matches!(field(coaching, "kind"), "next_action" | "in_progress")
             && !coach_id.is_empty()
             && !field(coaching, "text").is_empty()
             && !self.spoken_coaching.contains(coach_id)
@@ -119,7 +125,10 @@ impl Narrator {
         }
         let guidance = &context["guidance"];
         let live = context["screen"]["status"] == "live";
-        let ready = matches!(guidance["status"].as_str(), Some("ready" | "unlocated"))
+        let ready = !self
+            .acknowledged_actions
+            .contains(field(&guidance["now"], "id"))
+            && matches!(guidance["status"].as_str(), Some("ready" | "unlocated"))
             && live
             && (context["screen"]["scene"]["fresh"] == true
                 || context["spatial"]["tracker"]["status"] == "tracked"
@@ -417,5 +426,38 @@ mod tests {
                 .unwrap()
                 .contains("died")
         );
+    }
+
+    #[test]
+    fn ongoing_action_and_conversational_acknowledgment_suppress_reworded_reminders() {
+        for observed in [true, false] {
+            let mut n = Narrator::default();
+            let now = Instant::now();
+            let mut c = action("farm");
+            n.next(&c, now);
+            if observed {
+                c["coaching"] = json!({"id":"seen-working","kind":"in_progress","step_id":"farm","text":"The player is already farming."});
+            } else {
+                n.heard_advice(&c, now + Duration::from_secs(1));
+            }
+            c["guidance"]["now"]["instructions"] =
+                json!("Keep farming until you have enough gold.");
+            assert!(n.next(&c, now + Duration::from_secs(10)).is_none());
+            c["coaching"] = Value::Null;
+            c["guidance"]["now"]["instructions"] = json!("Fight here for the replacement boots.");
+            assert!(n.next(&c, now + Duration::from_secs(40)).is_none());
+            let mut danger = c.clone();
+            danger["fast_event"] =
+                json!({"fresh":true,"event":"danger","text":"Your health is low."});
+            assert_eq!(
+                n.next(&danger, now + Duration::from_secs(41)).as_deref(),
+                Some("Your health is low.")
+            );
+            assert!(
+                n.next(&action("buy"), now + Duration::from_secs(42))
+                    .unwrap()
+                    .contains("buy")
+            );
+        }
     }
 }

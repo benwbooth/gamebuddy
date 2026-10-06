@@ -11,6 +11,8 @@ use x11rb::rust_connection::RustConnection;
 
 #[path = "followup_probe.rs"]
 mod followup_probe;
+#[path = "inventory_probe.rs"]
+mod inventory_probe;
 #[path = "native_conversation_probe.rs"]
 mod native_conversation_probe;
 #[path = "progress_probe.rs"]
@@ -409,6 +411,12 @@ fn realtime(
     if std::env::var_os("GAMEBUDDY_TEST_FOLLOWUPS").is_some() {
         followup_probe::run(&store, &log)?;
         ensure!(capturing()?, "Follow-ups closed the microphone");
+        return Ok(());
+    }
+    if std::env::var_os("GAMEBUDDY_TEST_INVENTORY").is_some() {
+        inventory_probe::run(&log, quiet)?;
+        ensure!(capturing()?, "Inventory answer closed the microphone");
+        screenshot("realtime-inventory.png")?;
         return Ok(());
     }
     if std::env::var_os("GAMEBUDDY_TEST_NATIVE_CONVERSATION").is_some() {

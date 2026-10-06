@@ -56,7 +56,10 @@
   function resetCaptions(){captionParts=[];captionText='';captionFirstMs=null;captionAudioStart=null;captionPending=[];captionGeneration++;emit('caption','')}
   function clearWork(){if(workPending)emit('work-pending',false);workPending=false}
   function beginWork(){if(!workPending&&!workAnswered){workPending=true;emit('work-pending',true)}}
-  function queueSpeech(text,delegationId=null){clearWork();workAnswered=true;emit('reply-pending',true);if(conversational){nativeStopped=false;appendContext(text,'speakable',delegationId);updatePlayback();return}queuedSpeech=text;queuedSpeechAt=Date.now()}
+  function queueSpeech(text,delegationId=null){clearWork();workAnswered=true;emit('reply-pending',true);if(conversational){nativeStopped=false;cueWaitingAt=Date.now();cueRetried=true;replyUntil=Date.now()+90000;appendContext(text,'speakable',delegationId);updatePlayback();return}queuedSpeech=text;queuedSpeechAt=Date.now()}
+  // An explicit "hello?" is independent of a pending game question. It must
+  // neither complete its handoff nor reset or cancel the backend's work.
+  function queueAside(text){if(conversational&&!nativeStopped)appendContext(text,'speakable')}
   function approveSpeech(){approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
   function captionsAt(sample,playbackTime){
     if(captionFirstMs===null||captionAudioStart===null)return;
@@ -213,8 +216,9 @@
     // Some new sessions acknowledge an app cue without generating a turn.
     // Retry that exact cue once, only before any speech starts. Never repeat
     // a player request or tool action, or replace an answer already in flight.
-    if(cueWaitingAt&&!backendBusy&&!playerSpeaking){
-      if(now-cueWaitingAt>=12000){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);}
+    if(cueWaitingAt&&(backendBusy||playerSpeaking))cueWaitingAt=now;
+    if(cueWaitingAt&&!backendBusy&&!playerSpeaking&&!outputMuted){
+      if(now-cueWaitingAt>=(conversational?6000:12000)){cueWaitingAt=0;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);}
       else if(now-cueWaitingAt>=6000&&!cueRetried&&!assistantTurns.size){cueRetried=true;emit('cue-retry',true)}
     }
     if(replyUntil&&(now>=replyUntil||(!backendBusy&&!awaitingAnswer&&!playerSpeaking&&!assistantTurns.size&&assistantDoneAt&&(lastReplyAudio||outputMuted)&&now-assistantDoneAt>=500&&now-lastReplyAudio>=500))){replyUntil=0;emit('reply-pending',false)}
@@ -289,7 +293,7 @@
   function finishLocalRequest(){clearWork();workAnswered=true;backendBusy=false;awaitingAnswer=false;replyUntil=0;emit('reply-pending',false);updatePlayback()}
   function interruptOutput(){cancelPrepared();if(conversational)return;approved=false;queuedSpeech=null;replyUntil=0;outputMeter?.clear();resetCaptions();updatePlayback()}
   function setConversationMode(value){conversational=!!value;nativeStopped=false;nativeOutput=false;updatePlayback()}
-  window.gamebuddyVoice={setConversationMode,interruptOutput,queuePrepared,cancelPrepared,finishLocalRequest,requestFailed,stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
+  window.gamebuddyVoice={setConversationMode,interruptOutput,queuePrepared,cancelPrepared,finishLocalRequest,requestFailed,stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,queueAside,playerSpeech,setBackendBusy,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {

@@ -183,7 +183,11 @@ WebEngineView {
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
-            else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "",false,!!p.step_id,p.step_id||"",p.delegation_id||null)
+            else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "",false,!!p.step_id,p.step_id||p.discussed_step_id||"",p.delegation_id||null)
+            else if(event.method==="gamebuddy/presence"){
+                if(panel.backendBusy || panel.workPending)panel.runJavaScript("gamebuddyVoice.queueAside("+JSON.stringify(p.text)+")")
+                else panel.speakApproved(p.text)
+            }
             else if(event.method==="gamebuddy/local-speech")panel.runJavaScript("gamebuddyVoice.queuePrepared("+JSON.stringify(p.key)+","+JSON.stringify(p.text)+","+JSON.stringify(p)+")")
             else if(event.method==="gamebuddy/speech-expired"){if(panel.trace)console.warn("GAMEBUDDY_VOICE_SCOPE_EXPIRED at_ms="+Date.now());panel.pendingCue="";transport.cancel_speech();panel.answer("The view or plan changed, so I stopped the previous instruction.");panel.runJavaScript("gamebuddyVoice.interruptOutput();gamebuddyVoice.finishLocalRequest()");panel.buddy.poll_widgets()}
             else if(event.method==="gamebuddy/local-speech-error"){
@@ -261,7 +265,7 @@ WebEngineView {
             if(trace)console.warn("GAMEBUDDY_CAPTION_UPDATE characters="+captionText.length+" playback=true")
         }
         else if(event.type==="output-active"){
-            if(event.value){pendingCue="";if(!assistantSpeaking && activeAdviceStep.length)transport.advice_spoken(context())}
+            if(event.value){pendingCue="";if(!assistantSpeaking && activeAdviceStep.length && activeAdviceStep===session.navigation?.guidance?.now?.id)transport.advice_spoken(context())}
             if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started at_ms="+Date.now())
             outputAt=Date.now();assistantSpeaking=event.value
             // Waiting for tools is independent of speech. Let the last words

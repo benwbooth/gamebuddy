@@ -189,12 +189,24 @@ pub fn overlay_command(text: &str) -> Option<i32> {
 /// reasoning round trip. Exact whole requests only; compound questions go to
 /// the backend so this never swallows a gameplay question or requested action.
 pub fn quick_reply(text: &str) -> Option<&'static str> {
+    if let Some(reply) = presence_reply(text) {
+        return Some(reply);
+    }
+    match command_words(text).as_str() {
+        "thanks" | "thank you" => Some("You're welcome."),
+        _ => None,
+    }
+}
+
+pub fn presence_reply(text: &str) -> Option<&'static str> {
     match command_words(text).as_str() {
         "hello" | "hi" | "hey" => Some("Hi. I'm listening."),
-        "are you there" | "are you still there" | "can you hear me" => {
-            Some("I'm here. I can hear you.")
-        }
-        "thanks" | "thank you" => Some("You're welcome."),
+        "are you there"
+        | "are you still there"
+        | "can you hear me"
+        | "hello are you there"
+        | "hello are you still there"
+        | "hello can you hear me" => Some("I'm here. I can hear you."),
         _ => None,
     }
 }

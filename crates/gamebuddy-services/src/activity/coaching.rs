@@ -6,6 +6,7 @@ use gamebuddy_core::navigation::direction::ScreenDirection;
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     NextAction,
+    InProgress,
     Strategy,
     Danger,
     Recovery,
@@ -157,6 +158,35 @@ pub fn current_coaching(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ongoing_work_is_quiet_context_without_completion_or_new_advice() -> Result<()> {
+        let (_dir, store, observation, _) = super::super::tests::fixture()?;
+        let review = Review {
+            completions: vec![],
+            coaching: Some(Coaching {
+                kind: Kind::InProgress,
+                step_id: "step-1".into(),
+                text: "The player is already performing this action.".into(),
+                evidence: "The sequence shows the advised action underway, but not its completion."
+                    .into(),
+                confidence: 0.98,
+                screen_direction: None,
+            }),
+        };
+        assert_eq!(save_review(&store, &observation, &review)?, 0);
+        let progress = store.progress(&observation.guide)?;
+        assert!(progress.completed.is_empty());
+        assert!(
+            store
+                .get::<Value>(&format!("next-action:{}", observation.guide.id))?
+                .is_none()
+        );
+        assert_eq!(
+            current_coaching(&store, &observation.guide, &progress)?.unwrap()["kind"],
+            "in_progress"
+        );
+        Ok(())
+    }
     #[test]
     fn current_strategy_reaches_navigation_without_completing_steps() -> Result<()> {
         let (_dir, store, observation, _) = super::super::tests::fixture()?;

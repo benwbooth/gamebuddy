@@ -35,6 +35,9 @@ impl PlayerInput {
     pub fn utterance(&self) -> u64 {
         self.utterance
     }
+    pub fn last_words_at(&self) -> Option<Instant> {
+        self.chunks.back().map(|(at, _)| *at)
+    }
     pub fn append(&mut self, text: &str, now: Instant) {
         self.partial_start.get_or_insert(now);
         self.push(text.to_owned(), now);

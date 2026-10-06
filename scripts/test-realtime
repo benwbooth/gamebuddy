@@ -58,6 +58,10 @@ if [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   export GAMEBUDDY_TEST_GATE_WAV="$runtime_dir/gate.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_GATE_WAV" 'Look at the game. I am stuck against the wall at the far right edge of town. What should I do here?'
 fi
+if [[ -n "${GAMEBUDDY_TEST_INVENTORY:-}" ]]; then
+  export GAMEBUDDY_TEST_INVENTORY_WAV="$runtime_dir/inventory.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_INVENTORY_WAV" 'What should I clear out of my inventory to make room for Wing Boots?'
+fi
 if [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
   export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:9345"
   export GAMEBUDDY_TEST_PROGRESS_WAV="$runtime_dir/progress.wav" GAMEBUDDY_TEST_COMPLETION_WAV="$runtime_dir/completion.wav" GAMEBUDDY_TEST_RECOVERY_WAV="$runtime_dir/recovery.wav"
@@ -87,9 +91,11 @@ fi
 if [[ -n "${GAMEBUDDY_TEST_FOLLOWUPS:-}" ]]; then
   export QTWEBENGINE_REMOTE_DEBUGGING="127.0.0.1:$((20000+RANDOM))"
   export GAMEBUDDY_TEST_EXPERIENCE_WAV="$runtime_dir/experience.wav" GAMEBUDDY_TEST_FOLLOWUP_WAV="$runtime_dir/followup.wav"
+  export GAMEBUDDY_TEST_PRESENCE_WAV="$runtime_dir/presence.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_EXPERIENCE_WAV" 'How much experience do I need to collect?'
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please inspect the actual screenshot and put the color of the tall rectangle in a text widget titled Passage Check. Then tell me the answer.'
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_FOLLOWUP_WAV" 'And what color is the square? Put that in a text widget titled Followup Works too.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_PRESENCE_WAV" 'Hello? Can you hear me?'
   export GAMEBUDDY_TEST_REAL_CODEX="$(command -v codex)"
   mkdir "$runtime_dir/bin"
   ln -s "$PWD/scripts/delay-voice-tool.py" "$runtime_dir/bin/codex"
@@ -152,6 +158,7 @@ PY
   rg -qi 'twenty.two hundred|two thousand two hundred|2,200|2200' "$runtime_dir/heard.txt"
   rg -qi '\bred\b' "$runtime_dir/heard.txt"
   rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+  rg -qi 'hear you|listening|still here' "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
   rg -qi 'penguin' "$runtime_dir/heard.txt"
   rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
@@ -171,6 +178,10 @@ elif [[ -n "${GAMEBUDDY_TEST_WORKING:-}" ]]; then
   node scripts/test-work-progress-audio.mjs "$runtime_dir"
 elif [[ -n "${GAMEBUDDY_TEST_PROGRESS:-}" ]]; then
   rg -qi 'ready to help' "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_INVENTORY:-}" ]]; then
+  rg -qi 'red potion' "$runtime_dir/heard.txt"
+  rg -qi 'key' "$runtime_dir/heard.txt"
+  rg -qi 'sell|selling' "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_SCENE:-}" ]]; then
   rg -qi '\bkey\b' "$runtime_dir/heard.txt"
 else

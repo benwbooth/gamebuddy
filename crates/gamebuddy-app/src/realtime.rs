@@ -546,7 +546,9 @@ impl ffi::RealtimeVoice {
                 let mut stale_retries = (0u64, 0u8);
                 let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
                 let mut response_step: Option<(u64, String)> = None;
+                let mut discussed_step: Option<String> = None;
                 let mut live_requests = gamebuddy_services::voice::live::Requests::default();
+                let mut responsiveness = gamebuddy_services::voice::live::Responsiveness::default();
                 let mut listener_interrupts = std::collections::HashSet::new();
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
@@ -598,6 +600,9 @@ impl ffi::RealtimeVoice {
                                     continue;
                                 }
                                 Command::Diagnostic(kind, value) => {
+                                    if kind == "output-active" && value == true {
+                                        responsiveness.output(Instant::now());
+                                    }
                                     diagnostics.record(&format!("browser/{kind}"), value);
                                     continue;
                                 }
@@ -874,6 +879,30 @@ impl ffi::RealtimeVoice {
                             }
                         }
                     }
+                    if conversational {
+                        let recovery = responsiveness.poll(
+                            &input.lock().unwrap(),
+                            live_requests.utterance(),
+                            Instant::now(),
+                        );
+                        match recovery {
+                            Some(gamebuddy_services::voice::live::Recovery::Presence(text)) => {
+                                diagnostics.record("presence_recovery", json!({}));
+                                emit(json!({"method":"gamebuddy/presence","params":{"text":text}}));
+                            }
+                            Some(gamebuddy_services::voice::live::Recovery::Request {
+                                utterance,
+                                text,
+                            }) => {
+                                diagnostics.record(
+                                    "request_recovered",
+                                    json!({"utterance":utterance,"text_bytes":text.len()}),
+                                );
+                                live_requests.recover(utterance, text);
+                            }
+                            None => {}
+                        }
+                    }
                     let (quiet, request, utterance) = {
                         let input = input.lock().unwrap();
                         let now = Instant::now();
@@ -965,13 +994,18 @@ impl ffi::RealtimeVoice {
                             json!({"method":"gamebuddy/reply-error","params":{"text":"That request took too long. You can still speak to me; please try again."}}),
                         );
                     }
-                    if let Some(answer) = delivery.take_reply(utterance, &request, quiet) {
+                    // Native speech owns audible turn-taking. Return verified
+                    // results immediately even during a backchannel, before a
+                    // subsequent handoff can orphan a completed answer.
+                    if let Some(answer) =
+                        delivery.take_reply(utterance, &request, conversational || quiet)
+                    {
                         diagnostics.record(
                             "answer_ready",
                             json!({"utterance":utterance,"text_bytes":answer.len()}),
                         );
                         emit(
-                            json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id),"delegation_id":if conversational {live_requests.delegation_id()} else {None}}}),
+                            json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id),"discussed_step_id":discussed_step,"delegation_id":if conversational {live_requests.delegation_id()} else {None}}}),
                         );
                     }
                     // Native follow-ups revise the active turn below, keeping
@@ -1010,6 +1044,7 @@ impl ffi::RealtimeVoice {
                             decision.cancel();
                             decision_ready = None;
                             response_step = None;
+                            discussed_step = None;
                             if let Some(action) =
                                 gamebuddy_services::voice::overlay_command(&request)
                             {
@@ -1073,6 +1108,12 @@ impl ffi::RealtimeVoice {
                                     .as_str()
                                     .is_some_and(|g| g.eq_ignore_ascii_case(&game))
                             });
+                            discussed_step = evidence
+                                .as_ref()
+                                .and_then(|c| {
+                                    c.value["navigation"]["guidance"]["now"]["id"].as_str()
+                                })
+                                .map(str::to_owned);
                             let label = format!(
                                 "CURRENT_GAME_CONTEXT for this request. Complete live player request: {request}. Inspect the supplied images directly; do not fetch the same context again."
                             );
