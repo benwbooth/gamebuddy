@@ -8,6 +8,7 @@
   let backendBusy=false,playerSpeaking=false,localSpeech=false,pendingOverlapUntil=0,playbackAllowed=false,sessionReady=false;
   let cueWaitingAt=0,cueRetried=false,playedMs=0,replaceQueuedTurn=false,approved=false,approvedTurn=null,queuedSpeech=null,queuedSpeechAt=0,lastIncomingAudio=0;
   let workPending=false,workAnswered=false,workInput='';
+  let conversational=false,nativeStopped=false,nativeOutput=false;const nativeDelegations=new Set();
   let localSerial=0,localSource=null,localAnalyser=null,localCaption='';
   let localRequest=null,localNext=0,localLast=null,localQueue=new Map();
   const preparedAudio=new Map(),cancelledRequests=new Set();let preparedBytes=0;
@@ -55,7 +56,7 @@
   function resetCaptions(){captionParts=[];captionText='';captionFirstMs=null;captionAudioStart=null;captionPending=[];captionGeneration++;emit('caption','')}
   function clearWork(){if(workPending)emit('work-pending',false);workPending=false}
   function beginWork(){if(!workPending&&!workAnswered){workPending=true;emit('work-pending',true)}}
-  function queueSpeech(text){clearWork();workAnswered=true;queuedSpeech=text;queuedSpeechAt=Date.now();emit('reply-pending',true)}
+  function queueSpeech(text,delegationId=null){clearWork();workAnswered=true;emit('reply-pending',true);if(conversational){nativeStopped=false;appendContext(text,'speakable',delegationId);updatePlayback();return}queuedSpeech=text;queuedSpeechAt=Date.now()}
   function approveSpeech(){approved=true;approvedTurn=null;outputMeter?.clear();resetCaptions();allowReply('cue')}
   function captionsAt(sample,playbackTime){
     if(captionFirstMs===null||captionAudioStart===null)return;
@@ -68,7 +69,7 @@
   const assistantTurns=new Set();
   const emit=(type,value)=>console.info('GAMEBUDDY_VOICE '+JSON.stringify({type,value,at:Date.now()}));
   function updatePlayback(){
-    const allowed=approved&&!outputMuted&&!playerSpeaking&&replyUntil>Date.now();
+    const allowed=!outputMuted&&(conversational?sessionReady&&!nativeStopped:approved&&!playerSpeaking&&replyUntil>Date.now());
     if(allowed!==playbackAllowed){playbackAllowed=allowed;emit('playback-allowed',allowed)}
     return allowed;
   }
@@ -91,6 +92,14 @@
     if(active&&!recognized&&!playerSpeaking){pendingOverlapUntil=Date.now()+2500;return}
     if(!active&&!playerSpeaking)return;
     if(active)pendingOverlapUntil=0;
+    if(conversational){
+      // The native audio model owns turn-taking, including backchannels. Local
+      // recognition observes the request without hard-muting a conversational
+      // pause or replaying buffered speech after the player finishes.
+      if(active&&!playerSpeaking){nativeStopped=false;workInput='';emit('reply-pending',true)}
+      if(active!==playerSpeaking)emit('input-active',active);
+      playerSpeaking=active;updatePlayback();return;
+    }
     if(active&&!playerSpeaking){cancelPrepared();clearWork();workAnswered=false;workInput='';queuedSpeech=null;approved=false;outputMeter?.clear();resetCaptions();replaceQueuedTurn=Date.now()-lastReplyAudio<1000&&playedMs>=400;allowReply('player',!replaceQueuedTurn);playedMs=0}
     if(active!==playerSpeaking)emit('input-active',active);
     playerSpeaking=active;
@@ -114,12 +123,17 @@
     if(v.type==='session.started'){
       sessionReady=true;if(pendingContext)updateContext(pendingContext);emit('ready',true);
     }
+    if(conversational&&v.type==='delegation.created'&&v.item?.type==='delegation'&&v.item.target==='client'&&!nativeDelegations.has(v.item.id)){
+      nativeDelegations.add(v.item.id);while(nativeDelegations.size>64)nativeDelegations.delete(nativeDelegations.values().next().value);
+      workAnswered=false;beginWork();emit('delegation',{id:v.item.id,text:(v.item.content||[]).filter(c=>c.type==='input_text').map(c=>c.text||'').join('')});
+      appendContext('The application is handling this request using the game tools. Wait for its verified result; do not delegate the same task again. Continue ordinary conversation while it works.','commentary',v.item.id);
+    }
     // Only the application's reasoning thread owns backend work. A native
     // listener delegation is cancelled and cannot hold approved speech busy.
     // Text can announce unapproved speech before turn.created and its RTP
     // packets arrive. Include it in the drain window so a fast local answer
     // cannot accidentally unmute the model's earlier acknowledgment.
-    if(!approved&&(v.type==='output_transcript.added'||(v.type==='turn.created'&&v.turn?.role==='assistant')))lastIncomingAudio=Date.now();
+    if(!conversational&&!approved&&(v.type==='output_transcript.added'||(v.type==='turn.created'&&v.turn?.role==='assistant')))lastIncomingAudio=Date.now();
     if(v.type==='input_transcript.added'&&mic&&v.item?.text?.trim()){
       if(replyUntil)assistantDoneAt=0; // continued words supersede an earlier acknowledgment
       // A short "stop" can end before its transcript arrives. Preserve that
@@ -132,10 +146,13 @@
       // A short stop may be recognized well before its final turn event.
       workInput=(workInput+v.item.text).slice(-8000);
       if(/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(workInput.trim()))clearWork();
-      else beginWork();
+      else if(!conversational)beginWork();
+    }
+    if(conversational&&!nativeOutput&&(v.type==='output_transcript.added'||(v.type==='turn.created'&&v.turn?.role==='assistant'))){
+      nativeOutput=true;resetCaptions();assistantDoneAt=0;replyUntil=Date.now()+90000;emit('native-output',true);
     }
     if(v.type==='turn.created'&&v.turn?.role==='assistant'){
-      if(approved&&approvedTurn!==null&&approvedTurn!==v.turn.id){
+      if(!conversational&&approved&&approvedTurn!==null&&approvedTurn!==v.turn.id){
         approved=false;outputMeter?.clear();emit('reply-pending',false);updatePlayback();
       }
       if(approved)approvedTurn=v.turn.id;
@@ -144,7 +161,7 @@
     }
     // Audio/text can start before turn.created. A prior backchannel's done
     // event must not close playback in that interval.
-    if(v.type==='output_transcript.added'&&approved&&replyUntil){
+    if(v.type==='output_transcript.added'&&(conversational||approved)&&replyUntil){
       assistantDoneAt=0;awaitingAnswer=false;replyUntil=Date.now()+90000;
       if(typeof v.item?.text==='string'&&Number.isFinite(v.start_ms)){
         if(outputMuted){cueWaitingAt=0;captionText+=v.item.text;emit('caption',captionText)}
@@ -154,13 +171,14 @@
     if(v.type==='turn.done'&&v.turn?.role==='assistant'){
       // Completion of a turn interrupted by a newer request must not close
       // that newer request's playback permission.
-      if(assistantTurns.delete(v.turn.id))assistantDoneAt=Date.now();
+      if(assistantTurns.delete(v.turn.id)){assistantDoneAt=Date.now();if(conversational)nativeOutput=false}
     }
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&v.turn.transcript?.trim())emit('input-final',v.turn.transcript);
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
       cancelPrepared();clearWork();workAnswered=true;approved=false;queuedSpeech=null;outputMeter?.clear();resetCaptions();replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);
+      if(conversational)nativeStopped=true;
       updatePlayback();
     }
     if(v.type==='error')emit('error',v.error?.message||'Voice transport error');
@@ -187,7 +205,7 @@
       queuedSpeech=null;replyUntil=0;emit('reply-pending',false);emit('cue-timeout',true);
     }
     while(captionPending.length&&captionPending[0].at<=(audioContext?.currentTime||0)){
-      const part=captionPending.shift();if(part.generation===captionGeneration&&approved&&!outputMuted)emit('caption',part.text);
+      const part=captionPending.shift();if(part.generation===captionGeneration&&(conversational||approved)&&!outputMuted&&!nativeStopped)emit('caption',part.text);
     }
     if(localAnalyser){const data=new Float32Array(localAnalyser.fftSize);localAnalyser.getFloatTimeDomainData(data);for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length)}
     else if(outputMeter){outputMeter.analyser.getFloatTimeDomainData(outputMeter.data);for(const v of outputMeter.data)rms+=v*v;rms=Math.sqrt(rms/outputMeter.data.length)}
@@ -228,18 +246,22 @@
   }
   function closeMic(){captureGeneration++;pendingOverlapUntil=0;disconnectMeter(inputMeter);inputMeter=null;if(mic)mic.getTracks().forEach(t=>t.stop());mic=null;if(sender)sender.replaceTrack(silence).catch(()=>{});emit('capture',false)}
   function disconnectOutput(){if(outputMeter?.processor){outputMeter.processor.onaudioprocess=null;outputMeter.processor.disconnect()}disconnectMeter(outputMeter);outputMeter=null;receiver.srcObject=null}
-  function stop(){generation++;cancelPrepared();clearWork();queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
+  function stop(){generation++;nativeDelegations.clear();nativeStopped=false;nativeOutput=false;cancelPrepared();clearWork();queuedSpeech=null;lastIncomingAudio=0;approved=false;resetCaptions();clearInterval(meterTimer);meterTimer=null;closeMic();disconnectOutput();replyUntil=0;lastReplyAudio=0;playedMs=0;replaceQueuedTurn=false;assistantDoneAt=0;awaitingAnswer=false;cueWaitingAt=0;cueRetried=false;assistantTurns.clear();backendBusy=false;playerSpeaking=false;localSpeech=false;pendingOverlapUntil=0;updatePlayback();sessionReady=false;emit('output-active',false);if(peer)peer.close();peer=null;sender=null;events=null;pendingContext='';if(silence)silence.stop();silence=null;if(audioContext)audioContext.close().catch(()=>{});audioContext=null;receiver.srcObject=null}
   function updateContext(text){
     pendingContext=text;
     if(events?.readyState!=='open'||!sessionReady)return;
     // Frameless v3 appendText defaults to speakable even for developer messages.
     // Observations must use the quiet commentary channel on the same WebRTC session.
     // Match Codex's 500-byte context chunks without splitting a Unicode character.
-    const encoder=new TextEncoder();let chunk='',bytes=0;
-    const send=text=>events.send(JSON.stringify({type:'session.context.append',channel:'commentary',content:[{type:'input_text',text}]}));
-    for(const char of pendingContext){const size=encoder.encode(char).length;if(bytes+size>500){send(chunk);chunk='';bytes=0}chunk+=char;bytes+=size}
-    if(chunk)send(chunk);
+    appendContext(pendingContext,'commentary');
     pendingContext='';
+  }
+  function appendContext(text,channel,delegationId=null){
+    if(events?.readyState!=='open'||!sessionReady)return;
+    const encoder=new TextEncoder();let chunk='',bytes=0;
+    const send=text=>events.send(JSON.stringify({type:delegationId?'delegation.context.append':'session.context.append',...(delegationId?{delegation_item_id:delegationId}:{}),channel,content:[{type:'input_text',text}]}));
+    for(const char of text){const size=encoder.encode(char).length;if(bytes+size>500){send(chunk);chunk='';bytes=0}chunk+=char;bytes+=size}
+    if(chunk)send(chunk);
   }
   async function setMicrophone(enabled,deviceName){
     closeMic();if(!enabled||!peer)return;
@@ -265,8 +287,9 @@
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale()){closeMic();emit('microphone-error',e.name+': '+e.message)}}
   }
   function finishLocalRequest(){clearWork();workAnswered=true;backendBusy=false;awaitingAnswer=false;replyUntil=0;emit('reply-pending',false);updatePlayback()}
-  function interruptOutput(){cancelPrepared();approved=false;queuedSpeech=null;replyUntil=0;outputMeter?.clear();resetCaptions();updatePlayback()}
-  window.gamebuddyVoice={interruptOutput,queuePrepared,cancelPrepared,finishLocalRequest,requestFailed,stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
+  function interruptOutput(){cancelPrepared();if(conversational)return;approved=false;queuedSpeech=null;replyUntil=0;outputMeter?.clear();resetCaptions();updatePlayback()}
+  function setConversationMode(value){conversational=!!value;nativeStopped=false;nativeOutput=false;updatePlayback()}
+  window.gamebuddyVoice={setConversationMode,interruptOutput,queuePrepared,cancelPrepared,finishLocalRequest,requestFailed,stop,setMicrophone,updateContext,allowReply,approveSpeech,queueSpeech,playerSpeech,setBackendBusy,
     async start(deviceName,capture=false){
       stop();const own=generation;let stage='peer connection';
       try {
@@ -289,7 +312,7 @@
           const stream=e.streams[0]||new MediaStream([e.track]);disconnectOutput();
           // Retain the onset while the local speech detector releases its
           // final 200 ms; the queue also holds longer overlap with player speech.
-          if(e.receiver && 'jitterBufferTarget' in e.receiver){e.receiver.jitterBufferTarget=300;emit('playout-buffer',300)}
+          if(!conversational&&e.receiver && 'jitterBufferTarget' in e.receiver){e.receiver.jitterBufferTarget=300;emit('playout-buffer',300)}
           const source=audio.createMediaStreamSource(stream),processor=audio.createScriptProcessor(1024,1,1),analyser=audio.createAnalyser(),gain=audio.createGain();
           analyser.fftSize=4096;
           const samples=new Float32Array(audio.sampleRate*30),sampleTimes=new Float64Array(samples.length),preRoll=new Float32Array(Math.ceil(audio.sampleRate*0.2));
@@ -303,6 +326,13 @@
             let energy=0;for(const value of input)energy+=value*value;
             const speaking=energy/input.length>0.000004;
             if(speaking)lastIncomingAudio=Date.now();
+            if(conversational){
+              clear();
+              if(!updatePlayback())return;
+              if(speaking&&captionAudioStart===null)captionAudioStart=blockStart;
+              for(let i=0;i<output.length;i++){output[i]=input[i];captionsAt(blockStart+i,(event.playbackTime||audio.currentTime||0)+i/audio.sampleRate)}
+              return;
+            }
             if(!approved||outputMuted||replyUntil<=Date.now()){clear();return}
             if(speaking&&captionAudioStart===null)captionAudioStart=blockStart;
             // Do not queue seconds of transport silence/comfort noise while

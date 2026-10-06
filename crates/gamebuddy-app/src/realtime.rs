@@ -48,6 +48,8 @@ pub mod ffi {
         #[qinvokable]
         fn recognize_input(self: Pin<&mut RealtimeVoice>, text: QString, complete: bool);
         #[qinvokable]
+        fn delegate_request(self: Pin<&mut RealtimeVoice>, delegation: QString);
+        #[qinvokable]
         fn disconnect(self: Pin<&mut RealtimeVoice>);
     }
     impl cxx_qt::Threading for RealtimeVoice {}
@@ -83,6 +85,7 @@ enum Command {
     Spoken(String),
     Speech(String),
     Diagnostic(String, Value),
+    Delegate(String, u64, String),
 }
 
 impl ffi::RealtimeVoice {
@@ -169,6 +172,13 @@ impl ffi::RealtimeVoice {
         }
     }
     pub fn speak_prepared(mut self: Pin<&mut Self>, text: QString, visual: bool) -> bool {
+        // Native speech keeps its conversational delivery. Pixel changes and
+        // progress bookkeeping are not reasons to cut it off mid-sentence.
+        // The cache's strict evidence guard belongs only to prepared audio.
+        if self.rust().prepared_speech.is_none() {
+            self.as_mut().rust_mut().speech_scope = None;
+            return false;
+        }
         self.as_mut().rust_mut().speech_sequence += 1;
         let sequence = self.rust().speech_sequence;
         let generation = self.rust().generation;
@@ -187,9 +197,6 @@ impl ffi::RealtimeVoice {
                 json!({"method":"gamebuddy/speech-expired","params":{}}).to_string(),
             ));
             return true;
-        }
-        if self.rust().prepared_speech.is_none() {
-            return false;
         }
         let text = text.to_string();
         self.rust().prepared_speech.as_ref().unwrap().speak(text.clone(), std::sync::Arc::new(move |index,result| {
@@ -218,6 +225,22 @@ impl ffi::RealtimeVoice {
             let _ = tx.send(Command::Diagnostic(
                 "recognized-input".into(),
                 json!({"text_bytes":text.len(),"complete":complete,"utterance":input.utterance()}),
+            ));
+        }
+    }
+    pub fn delegate_request(self: Pin<&mut Self>, delegation: QString) {
+        let Ok(value) = serde_json::from_str::<Value>(&delegation.to_string()) else {
+            return;
+        };
+        let Some(id) = value["id"].as_str().filter(|id| !id.is_empty()) else {
+            return;
+        };
+        let input = self.rust().input.lock().unwrap();
+        if let Some(tx) = &self.rust().commands {
+            let _ = tx.send(Command::Delegate(
+                id.to_owned(),
+                input.utterance(),
+                input.text(Instant::now()),
             ));
         }
     }
@@ -336,6 +359,7 @@ impl ffi::RealtimeVoice {
             );
         }
         self.as_mut().rust_mut().root = Some(std::path::PathBuf::from(directory.to_string()));
+        let conversational = self.rust().prepared_speech.is_none();
         let generation = self.rust().generation;
         let (tx, rx) = mpsc::channel::<Command>();
         self.as_mut().rust_mut().commands = Some(tx);
@@ -402,7 +426,11 @@ impl ffi::RealtimeVoice {
                 // application requests are added to the reasoning thread.
                 let speaker_thread = client.thread_with_options(
                     model,
-                    gamebuddy_services::voice::prompts::SPEAKER,
+                    if conversational {
+                        gamebuddy_services::voice::prompts::CONVERSATIONAL_SPEAKER
+                    } else {
+                        gamebuddy_services::voice::prompts::SPEAKER
+                    },
                     json!([]),
                     Some("default"),
                     "",
@@ -439,7 +467,10 @@ impl ffi::RealtimeVoice {
                     }
                     // The model can generate an answer before delegation finishes.
                     // Locally discarded audio is not something the player heard.
-                    if event["params"]["role"] != "assistant" || approved_speech.get() {
+                    if conversational
+                        || event["params"]["role"] != "assistant"
+                        || approved_speech.get()
+                    {
                         memory.record(event)?;
                     }
                     if event["method"] == "thread/realtime/transcript/done"
@@ -468,7 +499,10 @@ impl ffi::RealtimeVoice {
                     }
                     Ok(())
                 };
-                client.request_with_notifications("thread/realtime/start", json!({"threadId":speaker_thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":gamebuddy_services::voice::prompts::SPEAKER,"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
+                emit(
+                    json!({"method":"gamebuddy/voice-mode","params":{"conversational":conversational}}),
+                );
+                client.request_with_notifications("thread/realtime/start", json!({"threadId":speaker_thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":if conversational {gamebuddy_services::voice::prompts::CONVERSATIONAL_SPEAKER} else {gamebuddy_services::voice::prompts::SPEAKER},"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
                 let mut decision_settings = settings.clone();
                 decision_settings.reasoning.model = model.into();
                 if settings.reasoning.kind != gamebuddy_services::ProviderKind::Codex {
@@ -478,8 +512,6 @@ impl ffi::RealtimeVoice {
                     gamebuddy_services::voice::decision::Lane::start(decision_settings);
                 let mut decision_ready: Option<gamebuddy_services::voice::decision::Proposal> =
                     None;
-                let mut decision_foreground: Option<(u64, String)> = None;
-                let mut decision_bypass: Option<(u64, String)> = None;
                 let mut speculation_budget = (0u64, 0u8);
                 let mut last_speculation = Instant::now();
                 let mut sequence = 1000;
@@ -505,12 +537,24 @@ impl ffi::RealtimeVoice {
                 let mut stale_retries = (0u64, 0u8);
                 let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
                 let mut response_step: Option<(u64, String)> = None;
+                let mut live_requests = gamebuddy_services::voice::live::Requests::default();
+                let mut listener_interrupts = std::collections::HashSet::new();
                 let mut pending_tools = std::collections::VecDeque::<(Value, bool)>::new();
                 loop {
                     match rx.recv_timeout(Duration::from_millis(20)) {
                         Ok(command) => {
                             sequence += 1;
                             let (method, params) = match command {
+                                Command::Delegate(id, utterance, request) => {
+                                    if conversational {
+                                        live_requests.delegate(id, utterance, request);
+                                        diagnostics.record(
+                                            "native_delegation",
+                                            json!({"utterance":utterance}),
+                                        );
+                                    }
+                                    continue;
+                                }
                                 Command::Spoken(text) => {
                                     store.append_conversation(
                                         &game,
@@ -524,8 +568,11 @@ impl ffi::RealtimeVoice {
                                 Command::Urgent => {
                                     decision.cancel();
                                     decision_ready = None;
-                                    decision_foreground = None;
-                                    delivery.abandon(input.lock().unwrap().utterance());
+                                    delivery.abandon(if conversational {
+                                        live_requests.utterance()
+                                    } else {
+                                        input.lock().unwrap().utterance()
+                                    });
                                     if let Some(turn_id) = reasoning_turn.take() {
                                         interrupt_requests.insert(sequence, turn_id.clone());
                                         client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn_id}}))?;
@@ -567,6 +614,14 @@ impl ffi::RealtimeVoice {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                     while let Some(event) = client.poll()? {
+                        if event["id"]
+                            .as_u64()
+                            .is_some_and(|id| listener_interrupts.remove(&id))
+                        {
+                            // A listener delegation can finish before its cancel
+                            // reaches Codex. That race must not end live voice.
+                            continue;
+                        }
                         if event["params"]["threadId"] == speaker_thread
                             && !event["method"]
                                 .as_str()
@@ -574,6 +629,7 @@ impl ffi::RealtimeVoice {
                         {
                             if event["method"] == "turn/started" {
                                 sequence += 1;
+                                listener_interrupts.insert(sequence);
                                 client.send(json!({"id":sequence,"method":"turn/interrupt","params":{"threadId":speaker_thread,"turnId":event["params"]["turn"]["id"]}}))?;
                             }
                             if event.get("id").is_some() && event.get("method").is_some() {
@@ -635,7 +691,11 @@ impl ffi::RealtimeVoice {
                         }
                         if event["method"] == "turn/completed" {
                             let current_input = input.lock().unwrap();
-                            let utterance = current_input.utterance();
+                            let utterance = if conversational {
+                                live_requests.snapshot(&current_input, Instant::now()).2
+                            } else {
+                                current_input.utterance()
+                            };
                             if event["params"]["turn"]["status"] == "completed"
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                                 && reasoning_input == Some(utterance)
@@ -763,7 +823,11 @@ impl ffi::RealtimeVoice {
                             let reject = interrupt_requests
                                 .values()
                                 .any(|id| *id == event["params"]["turnId"])
-                                || delivery.finished(input.lock().unwrap().utterance())
+                                || delivery.finished(if conversational {
+                                    live_requests.utterance()
+                                } else {
+                                    input.lock().unwrap().utterance()
+                                })
                                 || (!readonly && !input.lock().unwrap().settled(Instant::now()));
                             pending_tools.push_back((event, reject));
                         } else {
@@ -782,11 +846,15 @@ impl ffi::RealtimeVoice {
                     let (quiet, request, utterance) = {
                         let input = input.lock().unwrap();
                         let now = Instant::now();
-                        (input.settled(now), input.text(now), input.utterance())
+                        if conversational {
+                            live_requests.snapshot(&input, now)
+                        } else {
+                            (input.settled(now), input.text(now), input.utterance())
+                        }
                     };
                     gamebuddy_services::voice::priority::update(
                         &store.root,
-                        !quiet || reasoning_since.is_some() || decision_foreground.is_some(),
+                        !quiet || reasoning_since.is_some(),
                     );
                     // Speculation is read-only and never shortens endpointing.
                     // Any changed wording invalidates its result before effects.
@@ -797,10 +865,6 @@ impl ffi::RealtimeVoice {
                     {
                         decision.cancel();
                         decision_ready = None;
-                        if decision_foreground.take().is_some() {
-                            delivery.retry(utterance);
-                            emit(json!({"method":"gamebuddy/reasoning","params":{"active":false}}));
-                        }
                     }
                     if let Some(proposal) = decision.poll() {
                         decision_ready = Some(proposal);
@@ -828,22 +892,19 @@ impl ffi::RealtimeVoice {
                                 emit(json!({"method":"gamebuddy/state-changed","params":{}}));
                             }
                             _ => {
-                                decision_bypass = Some((utterance, request.clone()));
                                 delivery.retry(utterance);
                             }
                         }
                         decision.cancel();
-                        decision_foreground = None;
-                        emit(json!({"method":"gamebuddy/reasoning","params":{"active":false}}));
                     }
                     if speculation_budget.0 != utterance {
                         speculation_budget = (utterance, 0);
                     }
-                    if !quiet
+                    if !conversational
+                        && !quiet
                         && speculation_budget.1 < 2
                         && last_speculation.elapsed() >= Duration::from_secs(1)
                         && reasoning_since.is_none()
-                        && decision_foreground.is_none()
                         && !delivery.finished(utterance)
                         && let Some(preview) = input.lock().unwrap().preview(Instant::now())
                         && gamebuddy_services::voice::decision::eligible_request(&preview)
@@ -879,7 +940,7 @@ impl ffi::RealtimeVoice {
                             json!({"utterance":utterance,"text_bytes":answer.len()}),
                         );
                         emit(
-                            json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id)}}),
+                            json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id),"delegation_id":if conversational {live_requests.delegation_id()} else {None}}}),
                         );
                     }
                     // A late handoff must not deliver the previous answer over
@@ -900,11 +961,12 @@ impl ffi::RealtimeVoice {
                         // the live model neither delegates nor answers. Waiting
                         // for an assistant transcript creates a deadlock when
                         // the speaker correctly stays silent for backend approval.
-                        if delivery.dispatch(
-                            utterance,
-                            &request,
-                            reasoning_since.is_some() || decision_foreground.is_some(),
-                        ) {
+                        if delivery.dispatch(utterance, &request, reasoning_since.is_some()) {
+                            // A preview is an optimization only if it finished
+                            // before endpointing. Never wait for it and then
+                            // start a second model pass after a stale result.
+                            decision.cancel();
+                            decision_ready = None;
                             response_step = None;
                             if let Some(action) =
                                 gamebuddy_services::voice::overlay_command(&request)
@@ -956,20 +1018,6 @@ impl ffi::RealtimeVoice {
                                     .record("local_world_report", json!({"utterance":utterance}));
                                 continue;
                             }
-                            if gamebuddy_services::voice::decision::eligible_request(&request)
-                                && decision_bypass.as_ref() != Some(&(utterance, request.clone()))
-                                && decision.propose(&store, &game, utterance, &request).is_ok()
-                            {
-                                decision_foreground = Some((utterance, request.clone()));
-                                emit(
-                                    json!({"method":"gamebuddy/reasoning","params":{"active":true}}),
-                                );
-                                diagnostics
-                                    .record("decision_dispatched", json!({"utterance":utterance}));
-                                continue;
-                            }
-                            decision.cancel();
-                            decision_ready = None;
                             let context_started = Instant::now();
                             let frame = gamebuddy_services::screen::snapshot(&store).ok();
                             let evidence = gamebuddy_services::harness::call_tool_with_images(

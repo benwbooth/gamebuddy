@@ -20,12 +20,18 @@ parec --device="$PULSE_SINK.monitor" --file-format=wav "$narration_dir/speech.wa
     ./target/debug/examples/narration_probe --run "$narration_dir/data" > "$narration_dir/runtime.log" 2>&1
 kill -INT "$narration_recorder"; wait "$narration_recorder" || true; narration_recorder=""
 rg -q 'NARRATION_FIXTURE_FINISHED' "$narration_dir/runtime.log"
+rg -q 'NARRATION_FIXTURE_CHANGED_DURING_SPEECH' "$narration_dir/runtime.log"
+if rg -q 'GAMEBUDDY_VOICE_SCOPE_EXPIRED' "$narration_dir/runtime.log"; then
+    printf 'Native speech was cancelled by an ordinary gameplay update\n' >&2
+    exit 1
+fi
 ffmpeg -nostdin -hide_banner -loglevel error -y -i "$narration_dir/speech.wav" -f segment -segment_time 35 "$narration_dir/chunk-%03d.wav"
 : > "$narration_dir/heard.txt"
 for chunk in "$narration_dir"/chunk-*.wav; do
     ./target/debug/gamebuddy-cli --data-dir "$narration_dir/data" transcribe "$chunk" >> "$narration_dir/heard.txt"
 done
 rg -qi 'blue platform' "$narration_dir/heard.txt"
+rg -qi 'climb the ladder' "$narration_dir/heard.txt"
 rg -qi 'green door' "$narration_dir/heard.txt"
 rg -qi 'running start' "$narration_dir/heard.txt"
 cat "$narration_dir/heard.txt"

@@ -4,6 +4,7 @@ pub mod delivery;
 pub mod diagnostics;
 pub mod duck;
 pub mod input;
+pub mod live;
 pub mod mute;
 pub mod narration;
 pub mod prepared;

@@ -17,7 +17,6 @@ pub struct Narrator {
     pending_event: String,
     event_votes: u8,
     urgent: bool,
-    progress_epoch: Option<u64>,
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -53,12 +52,6 @@ impl Narrator {
                 session,
                 ..Self::default()
             };
-        }
-        let epoch = context["progress_epoch"].as_u64();
-        if self.progress_epoch != epoch {
-            self.spoken_actions.clear();
-            self.spoken_coaching.clear();
-            self.progress_epoch = epoch;
         }
         let scene = &context["screen"]["scene"];
         if context["screen"]["status"] == "live"
@@ -276,6 +269,21 @@ mod tests {
                 .contains("right to c")
         );
         assert!(n.next(&action("c"), t + Duration::from_secs(4)).is_none());
+    }
+    #[test]
+    fn progress_updates_do_not_repeat_unchanged_advice() {
+        let mut n = Narrator::default();
+        let t = Instant::now();
+        let mut c = action("a");
+        c["progress_epoch"] = json!(1);
+        assert!(n.next(&c, t).is_some());
+        c["progress_epoch"] = json!(2);
+        assert!(n.next(&c, t + Duration::from_secs(2)).is_none());
+        c["guidance"]["now"]["instructions"] = json!("Use the other door.");
+        assert_eq!(
+            n.next(&c, t + Duration::from_secs(3)).as_deref(),
+            Some("Use the other door.")
+        );
     }
     #[test]
     fn fresh_geometry_can_speak_before_the_slow_scene_description() {

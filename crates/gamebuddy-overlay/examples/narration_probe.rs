@@ -82,7 +82,37 @@ fn main() -> anyhow::Result<()> {
     let guide = store.guide(&store.get::<String>("active_guide")?.context("guide")?)?;
     let start = Instant::now();
     let mut phase = 0;
+    let mut changed_during_speech = false;
     while start.elapsed() < Duration::from_secs(46) {
+        if !changed_during_speech
+            && store
+                .get::<Vec<serde_json::Value>>("voice-diagnostics")?
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .find(|event| event["kind"] == "browser/output-active")
+                .is_some_and(|event| event["value"] == true)
+        {
+            // Ordinary gameplay changes the picture and bookkeeping while
+            // Buddy is talking. Neither should cut off the native voice.
+            conn.change_window_attributes(
+                window,
+                &ChangeWindowAttributesAux::new().background_pixel(0x805014),
+            )?
+            .check()?;
+            conn.clear_area(false, window, 0, 0, 0, 0)?.check()?;
+            conn.flush()?;
+            let mut progress = store.progress(&guide)?;
+            progress.epoch += 1;
+            // This private fixture needs a single bookkeeping update, without
+            // a read-to-write transaction racing the capture/diagnostic writers.
+            store.put(
+                &format!("progress:{}:{}", guide.id, guide.revision),
+                &progress,
+            )?;
+            changed_during_speech = true;
+            println!("NARRATION_FIXTURE_CHANGED_DURING_SPEECH");
+        }
         if let Ok(snapshot) = screen::snapshot(&store) {
             let scene = serde_json::from_value(
                 json!({"captured_at_ms":snapshot.captured_at_ms,"summary":"A solid blue native test window.","visible_text":[],"event":"none","confidence":1.0,"feedback":"","uncertainties":[]}),
@@ -120,6 +150,10 @@ fn main() -> anyhow::Result<()> {
         thread::sleep(Duration::from_millis(200));
     }
     ensure!(phase == 3, "No live capture in fixture");
+    ensure!(
+        changed_during_speech,
+        "No audible speech for the continuity check"
+    );
     println!("NARRATION_FIXTURE_FINISHED");
     Ok(())
 }

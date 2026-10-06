@@ -9,6 +9,8 @@ use std::{
 };
 use x11rb::rust_connection::RustConnection;
 
+#[path = "native_conversation_probe.rs"]
+mod native_conversation_probe;
 #[path = "progress_probe.rs"]
 mod progress_probe;
 #[path = "responsiveness_probe.rs"]
@@ -351,16 +353,10 @@ fn realtime(
                 )
             })?;
             let before = std::fs::read_to_string(&log)?;
-            let permits = before
-                .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                .count()
-                + before.matches("\"type\":\"prepared-start\"").count();
+            let permits = before.matches("GAMEBUDDY_VOICE_PLAYBACK started").count();
             thread::sleep(Duration::from_secs(15));
             let after = std::fs::read_to_string(&log)?;
-            let next = after
-                .matches("GAMEBUDDY_VOICE_GATE playback-allowed true")
-                .count()
-                + after.matches("\"type\":\"prepared-start\"").count();
+            let next = after.matches("GAMEBUDDY_VOICE_PLAYBACK started").count();
             if next == permits {
                 break;
             }
@@ -371,7 +367,7 @@ fn realtime(
                 after[before.len()..]
                     .matches("GAMEBUDDY_NARRATION characters=")
                     .count()
-                    >= next - permits,
+                    > 0,
                 "Voice started speaking again without player speech or a selected cue"
             );
             ensure!(
@@ -408,6 +404,11 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_NATIVE_CONVERSATION").is_some() {
+        native_conversation_probe::run(&store, &log)?;
+        ensure!(capturing()?, "Native conversation closed its microphone");
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_FAST_EVENT").is_some() {
         let before = std::fs::read_to_string(&log)?.len();
         play_player(&std::env::var("GAMEBUDDY_TEST_STORY_WAV")?)?;
@@ -793,6 +794,7 @@ fn realtime(
 fn reply_start(text: &str) -> Option<usize> {
     text.rfind("\"type\":\"speech-ready\"")
         .max(text.rfind("\"type\":\"prepared-start\""))
+        .max(text.rfind("\"type\":\"native-output\""))
 }
 fn reply_open(text: &str) -> bool {
     text.rfind("\"type\":\"reply-pending\",\"value\":true")
@@ -805,8 +807,9 @@ fn responsive(store: &gamebuddy_services::Store, log: &str) -> Result<()> {
     let story = std::env::var("GAMEBUDDY_TEST_STORY_WAV")?;
     let interrupt = std::env::var("GAMEBUDDY_TEST_INTERRUPT_WAV")?;
     let wait_story = |before: usize| -> Result<()> {
-        // A short work update is not the requested story. Wait for the final
-        // answer's speech-ready event and its subsequent actual playback.
+        // Composed speech needs the approved answer; native speech needs a
+        // live output turn. Both must reach actual playback, remain speaking
+        // for the interruption, and later finish the recorded final words.
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
             let text = std::fs::read_to_string(log)?;

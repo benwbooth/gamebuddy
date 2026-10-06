@@ -6,9 +6,11 @@ GameBuddy now separates work that can be selected from current state from work t
 
 Complete routine questions such as “What should I do next?” select the current source-backed instruction locally. “Repeat that” uses this path only when the preceding reply was that still-current instruction. Unknown location stays explicit. A why-question uses a locally available bypass explanation when one exists; other explanations use reasoning. Compound questions, arrival reports, route edits and widget requests retain their complete request and tools.
 
-Navigation prepares a bounded frontier: the current instruction, nearby next instructions, the result of applying a current action's known effects to a **copy** of progress, and short urgent cues. Hypothetical progress is never saved. At most eight phrases are prepared, split into at most 32 background sentences. Preparation grants no permission to speak. Each actual request rechecks its guide revision, progress epoch and, for visual advice, current capture. A bounded asynchronous check also revokes stale advice during queued or active playback.
+Navigation prepares a bounded frontier: the current instruction, nearby next instructions, the result of applying a current action's known effects to a **copy** of progress, and short urgent cues. Hypothetical progress is never saved. At most eight phrases are prepared, split into at most 32 background sentences. Preparation grants no permission to speak. Each actual request rechecks its guide revision, progress epoch and, for visual advice, current capture. A bounded asynchronous check revokes stale prepared audio during queued or active playback; it does not stop native conversation on ordinary screen changes.
 
-Optional Piper speech runs on the CPU in a persistent worker with two inference threads. A foreground request replaces queued old speech and takes priority over background preparation. Sentences play as they become ready, in order; later cached sentences cannot overtake an earlier uncached one. Captions show the sentence whose audio has started. Native realtime speech retains its word timestamps. Interruption, mute, disconnection and expired advice discard pending audio and captions together. The live WebRTC microphone remains available during either speech path.
+The native realtime voice is the default. Ordinary conversation uses microphone audio and native generated speech directly; game requests delegate to the tool backend. It preserves its word timestamps and finishes a reply across ordinary screen, navigation and progress updates. Player interruptions and explicit urgent cues can stop it. Unchanged automatic advice is not repeated merely because a progress counter changed.
+
+Optional Piper speech runs on the CPU in a persistent worker with two inference threads. A foreground request replaces queued old speech and takes priority over background preparation. Sentences play as they become ready, in order; later cached sentences cannot overtake an earlier uncached one. Captions show the sentence whose audio has started. Prepared audio uses the strict playback freshness guard described above. The live WebRTC microphone remains available during either speech path. Piper changes the voice and prosody; the timing measurements below do not establish better conversational quality or representative gameplay latency. It should only be enabled deliberately.
 
 Install and enable prepared speech after building the CLI:
 
@@ -24,9 +26,11 @@ The helper uses the project's pinned Nix runtime, or `uv` and Piper 1.8.0 withou
 
 Short eligible questions can use a read-only Codex proposal with compact current evidence and the actual screenshot. Its constrained result contains only an answer, an optional eligible action ID and an optional supported screen direction. Local validation publishes the same instruction that will be spoken. It cannot complete steps, change inventory or edit goals.
 
-The listener and tool reasoner use separate provider conversations. Only the application's settled request enters the tool conversation; merged native transcripts and unsolicited listener delegations cannot replay previous tool actions.
+The live voice and tool reasoner use separate provider conversations. Native delegation requests are identified individually; only the complete player request enters the authoritative tool conversation. Repeated handoffs and unrelated backchannels must not replay or replace that task. Verified results return through the matching delegation, while automatic coaching uses a session-level spoken update. The official installed Codex client continues to own authentication; no subscription credentials are extracted and no API-key provider is substituted.
 
-Stable partial recognition may start a proposal while the player is speaking. There are at most two attempts per utterance, at least one second apart. Changed wording cancels the candidate. Only an exact match to the final settled request can be applied; endpointing is not shortened. Changed captures, revisions or progress reject proposals. Requests requiring other tools go to the general reasoner. Proposals have a twelve-second deadline and a single replaceable pending job. Background action review yields new work while a foreground voice request is active.
+In the optional composed/Piper path, stable partial recognition may start a proposal while the player is speaking. There are at most two attempts per utterance, at least one second apart. Changed wording cancels the candidate. Only an exact match already ready when the request settles can be applied; endpointing is not shortened. Changed captures, revisions or progress reject proposals. Any unfinished preview is cancelled at dispatch, and the complete request goes directly to the general reasoner. A preview cannot impose a serial wait before the normal answer path. Background action review yields new work while a foreground voice request is active.
+
+Native conversation is speech-to-speech, with a separate reasoning and tool backend for grounded game work. Piper is the optional speech-recognition → text reasoning → speech-synthesis path. The two modes have different turn-taking and voice characteristics.
 
 ## Fast screen events
 
@@ -36,12 +40,12 @@ Death and low-health cues can interrupt ordinary advice or pending reasoning onc
 
 ## Measurements and reproducible checks
 
-Measurements use the production Qt/Gamescope application, subscription recognition, a private virtual microphone, an echo-looped output sink and recorded output. They are development-machine measurements, not universal latency guarantees. “Playback” below means the output meter detected actual speech; recorded audio was also transcribed independently.
+Measurements use the production Qt/Gamescope application, subscription recognition, a private virtual microphone, an echo-looped output sink and recorded output. They are development-machine measurements, not universal latency guarantees. “Playback” below means the output meter detected actual speech; recorded audio was also transcribed independently. The following table records the earlier **optional Piper/composed path**, except for the standalone model-proposal benchmark; it does not measure the current native conversation mode.
 
 | Check | Result on 2026-10-05 |
 | --- | --- |
 | Eight routine “What should I do next?” requests | 1.253–1.475 s from the request WAV ending to speech; median 1.403 s; no full reasoning calls or progress mutations |
-| Changed screen during a playing instruction | Playback permission revoked in 263 ms; microphone stayed open |
+| Changed screen during a playing Piper instruction | Playback permission revoked in 263 ms; microphone stayed open; this strict cutoff does not apply to native speech |
 | Readable Game Over during a pending answer | Warnings began in 539 ms and 641 ms across two covered-text runs; obsolete answers remained cancelled |
 | Retro block-font Game Over fixture | Not recognized confidently by OCR; the vision fallback took about 6.2 s |
 | Five source-backed Mattock-purpose proposals | 2.948–4.427 s for the model decision, before voice endpointing/playback |
@@ -50,10 +54,19 @@ Measurements use the production Qt/Gamescope application, subscription recogniti
 
 The repeated routine run includes sentence streaming and separate listener/reasoner conversations. Its maximum is below 1.5 seconds, but eight samples do not establish a population P95, and the proposed one-second median is not met. Native recognition sometimes provides a late partial instead of a final transcript; the existing 800 ms stability safeguard remains to preserve later clauses. General multi-tool or long-form requests still take seconds, sometimes substantially longer.
 
-A direct realtime WebSocket comparison was attempted with the installed Codex app-server schema. That transport rejected subscription authentication with `realtime conversation requires API key auth`; no API key was configured, so it did not produce a latency measurement. The existing subscription WebRTC transport works. This failure does not establish that all direct speech architectures are unavailable, and the app does not silently switch to paid API credentials.
+A direct realtime WebSocket comparison was attempted with the installed Codex app-server schema. That transport rejected subscription authentication with `realtime conversation requires API key auth`; no API key was configured, so it did not produce a latency measurement. The existing subscription WebRTC transport works and now carries the native conversation. Authentication and session setup use the official Codex client; no paid API credentials are added.
+
+The native-conversation fixture recorded a penguin joke and forest story with **zero text-backend requests**, then interrupted the story with a screenshot/widget request. “Mm-hmm, thanks” during that tool request did not replace it: exactly one backend dispatch completed the green-rectangle widget, and the recorded answer confirmed it. A one-word stop returned to waiting in 1.3 seconds. The joke began audibly 759 ms after its request WAV ended in that run; this single sample is not a latency distribution. A separate narration fixture changed both the screen and progress epoch during playback and independently transcribed the complete requested instructions.
+
+This uses the audio conversation plus delegated reasoning arrangement described in OpenAI's [live delegation guide](https://developers.openai.com/api/docs/guides/live-delegation). The installed Codex 0.160.0 protocol uses `delegation.created` and `delegation.context.append`; verified answers return on the matching delegation ID. Backchannels cannot rebind the original task, and duplicate delegation IDs cannot replay it.
 
 ```sh
-# Run inside nix develop. Prepared settings affect only disposable test stores.
+# Run inside nix develop. Native speech is the default in disposable test stores.
+GAMEBUDDY_TEST_NATIVE_CONVERSATION=1 scripts/test-realtime
+GAMEBUDDY_TEST_RESPONSIVE=1 GAMEBUDDY_TEST_CAPTIONS=1 scripts/test-realtime
+scripts/test-narration
+
+# To compare optional Piper speech in disposable test stores:
 export GAMEBUDDY_TEST_PREPARED_PYTHON="$HOME/.local/share/GameBuddy/models/piper/runtime/bin/python"
 export GAMEBUDDY_TEST_PREPARED_MODEL="$HOME/.local/share/GameBuddy/models/piper/en_US-ljspeech-medium.onnx"
 export GAMEBUDDY_TEST_VOICE_MODEL=gpt-6.1-sol

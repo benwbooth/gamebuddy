@@ -14,6 +14,7 @@ WebEngineView {
     property string lastContext: ""
     property bool started: false
     property bool connected: false
+    property bool conversational: false
     property bool capturing: false
     property bool failed: false
     property bool automaticSession: false
@@ -34,7 +35,6 @@ WebEngineView {
     property string voiceGame: ""
     property string pendingCue: ""
     property string activeAdviceStep: ""
-    property var activeAdviceEpoch: null
     property string lastNarrationState: ""
     property string recoveryCue: ""
     property int recoveryAttempts: 0
@@ -43,16 +43,16 @@ WebEngineView {
     property bool captionStreaming: false
     readonly property bool conversationActive: started && (userSpeaking || assistantSpeaking || waitingForReply || backendBusy)
     function clearActivity(){userSpeaking=false;detectedSpeech=false;assistantSpeaking=false;backendBusy=false;workPending=false;waitingForReply=false;pendingCue="";captionText="";captionStreaming=false;transport.reset_speech()}
-    function speakApproved(text, urgent=false, visual=false, stepId="") {
+    function speakApproved(text, urgent=false, visual=false, stepId="", delegationId=null) {
         if(!text.length || !connected)return
         // Show the completed answer immediately in the companion. Captions
         // have their own playback clock and must still wait for audible words.
         panel.answer(text)
         pendingCue=text
-        activeAdviceStep=stepId;activeAdviceEpoch=session.progress?.epoch
+        activeAdviceStep=stepId
         if(urgent){transport.interrupt_reasoning();transport.cancel_speech();runJavaScript("gamebuddyVoice.interruptOutput()") }
         if(transport.speak_prepared(text,visual||urgent))return
-        runJavaScript("gamebuddyVoice.queueSpeech("+JSON.stringify(text)+")")
+        runJavaScript("gamebuddyVoice.queueSpeech("+JSON.stringify(text)+","+JSON.stringify(delegationId)+")")
     }
     function recoverSpeech(text) {
         if(recoveryAttempts>=1 || reconnecting || proactivePaused || !spokenReplies || !text.length)return false
@@ -120,7 +120,7 @@ WebEngineView {
             screen:{status:value.screen?.status,captured_at_ms:value.screen?.captured_at_ms,
                 scene_captured_at_ms:scene?.captured_at_ms,scene_fresh:scene?.fresh===true,
                 summary:scene?.fresh?(scene.summary||'').slice(0,600):null},
-            instruction:"Background reference only. Do not answer gameplay questions from cached advice or this summary. The application forwards the complete request and location correction to the reasoning backend; remain silent until it supplies the answer. Never speak the player's side of a conversation."})
+            instruction:"Background reference only. Do not infer gameplay advice from this summary. Delegate requests needing current game evidence or application actions to the backend. You can handle ordinary conversation directly. Never speak the player's side of a conversation."})
     }
     function fail(message) {
         failed=true
@@ -172,6 +172,10 @@ WebEngineView {
             const event=JSON.parse(event_json), p=event.params || {}
             if(panel.trace && event.method==="thread/realtime/transcript/done")console.warn("GAMEBUDDY_REALTIME_TRANSCRIPT role="+p.role+" characters="+(p.text||"").length)
             if(event.method==="gamebuddy/conversation")panel.returningPlayer=p.returning_player===true
+            else if(event.method==="gamebuddy/voice-mode"){
+                panel.conversational=p.conversational===true
+                panel.runJavaScript("gamebuddyVoice.setConversationMode("+panel.conversational+")")
+            }
             else if(event.method==="gamebuddy/reasoning"){
                 panel.backendBusy=p.active===true
                 panel.runJavaScript("gamebuddyVoice.setBackendBusy("+panel.backendBusy+")")
@@ -179,7 +183,7 @@ WebEngineView {
             else if(event.method==="thread/realtime/sdp")panel.runJavaScript("gamebuddyVoice.answer("+JSON.stringify(p.sdp)+")")
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
-            else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "",false,!!p.step_id,p.step_id||"")
+            else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "",false,!!p.step_id,p.step_id||"",p.delegation_id||null)
             else if(event.method==="gamebuddy/local-speech")panel.runJavaScript("gamebuddyVoice.queuePrepared("+JSON.stringify(p.key)+","+JSON.stringify(p.text)+","+JSON.stringify(p)+")")
             else if(event.method==="gamebuddy/speech-expired"){if(panel.trace)console.warn("GAMEBUDDY_VOICE_SCOPE_EXPIRED at_ms="+Date.now());panel.pendingCue="";transport.cancel_speech();panel.answer("The view or plan changed, so I stopped the previous instruction.");panel.runJavaScript("gamebuddyVoice.interruptOutput();gamebuddyVoice.finishLocalRequest()");panel.buddy.poll_widgets()}
             else if(event.method==="gamebuddy/local-speech-error"){
@@ -201,6 +205,7 @@ WebEngineView {
             }
             else if(event.method==="thread/realtime/transcript/done") {
                 if(p.role==="user")panel.transcript(p.text)
+                else if(p.role==="assistant" && panel.conversational && p.text?.length)panel.answer(p.text)
             }
         }
     }
@@ -242,6 +247,7 @@ WebEngineView {
             transport.player_speech(userSpeaking)
         }
         else if(event.type==="input-text" || event.type==="input-final")transport.recognize_input(event.value,event.type==="input-final")
+        else if(event.type==="delegation")transport.delegate_request(JSON.stringify(event.value))
         else if(event.type==="speech-ready")transport.speak(event.value)
         else if(event.type==="prepared-start" || event.type==="prepared-text")transport.record_prepared(event.value)
         else if(event.type==="prepared-error"){
@@ -293,10 +299,9 @@ WebEngineView {
         if(wasStarted && panel.started)panel.runJavaScript("gamebuddyVoice.setMicrophone("+panel.voice.active+","+JSON.stringify(panel.voice.device_name)+")")
     } }
     onSessionChanged: {
-        if(activeAdviceStep.length && (activeAdviceStep!==session.navigation?.guidance?.now?.id || activeAdviceEpoch!==session.progress?.epoch)) {
-            activeAdviceStep="";pendingCue="";transport.cancel_speech()
-            runJavaScript("gamebuddyVoice.interruptOutput();gamebuddyVoice.finishLocalRequest()")
-        }
+        // Routine navigation updates wait for the current reply to finish.
+        // Player interruptions and explicit urgent cues still stop it promptly.
+        if(activeAdviceStep!==session.navigation?.guidance?.now?.id)activeAdviceStep=""
         if(started)transport.prepare_speech(JSON.stringify(session.navigation?.prepared_speech || []))
         if(automaticSession)Qt.callLater(panel.narrate)
 

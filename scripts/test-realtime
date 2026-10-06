@@ -73,11 +73,16 @@ if [[ -n "${GAMEBUDDY_TEST_CAPTIONS:-}" ]]; then
   export GAMEBUDDY_TEST_ONSET_WAV="$runtime_dir/onset.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_ONSET_WAV" 'Please say this exact sentence once: Purple elephants dance in the sunshine, and blue rivers wind through quiet valleys beneath the morning sun.'
 fi
-if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_RESPONSIVE:-}${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
   export GAMEBUDDY_TEST_STORY_WAV="$runtime_dir/story.wav" GAMEBUDDY_TEST_INTERRUPT_WAV="$runtime_dir/interrupt.wav" GAMEBUDDY_TEST_STOP_WAV="$runtime_dir/stop.wav"
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STORY_WAV" 'Tell me a five paragraph forest adventure at least two hundred and fifty words long ending with the exact words the silver lantern glows.'
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_INTERRUPT_WAV" 'Stop the story. What color is the tall rectangle on my screen? Put the answer in a text widget titled Interruption Works, then tell me briefly.'
   nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_STOP_WAV" 'Stop.'
+fi
+if [[ -n "${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
+  export GAMEBUDDY_TEST_SOCIAL_WAV="$runtime_dir/social.wav" GAMEBUDDY_TEST_BACKCHANNEL_WAV="$runtime_dir/backchannel.wav"
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_SOCIAL_WAV" 'Hi GameBuddy! Tell me a short joke about penguins.'
+  nix run nixpkgs#espeak-ng -- -v en-us -s 145 -w "$GAMEBUDDY_TEST_BACKCHANNEL_WAV" 'Mm hmm. Thanks.'
 fi
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
 if [[ -n "${GAMEBUDDY_TEST_STORE:-}" ]]; then
@@ -119,7 +124,10 @@ ffmpeg -nostdin -hide_banner -loglevel error -y -i "$runtime_dir/response.wav" -
 for chunk in "$runtime_dir"/heard-*.wav; do
   ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" transcribe "$chunk" >>"$runtime_dir/heard.txt"
 done
-if [[ -n "${GAMEBUDDY_TEST_FAST_EVENT:-}" ]]; then
+if [[ -n "${GAMEBUDDY_TEST_NATIVE_CONVERSATION:-}" ]]; then
+  rg -qi 'penguin' "$runtime_dir/heard.txt"
+  rg -qi '\bgreen\b' "$runtime_dir/heard.txt"
+elif [[ -n "${GAMEBUDDY_TEST_FAST_EVENT:-}" ]]; then
   rg -qi "game.over" "$runtime_dir/heard.txt"
 elif [[ -n "${GAMEBUDDY_TEST_ROUTINE:-}" ]]; then
   rg -qi "restoration|vendor|street" "$runtime_dir/heard.txt"
