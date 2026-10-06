@@ -18,6 +18,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cache", type=Path, required=True)
 parser.add_argument("--model", default="facebook/dinov2-small")
 parser.add_argument("--device", default="auto")
+parser.add_argument("--recompute-features", action="store_true",
+                    help="Benchmark extraction even when this image is already cached")
 args = parser.parse_args()
 args.cache.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("HF_HOME", str(args.cache / "weights"))
@@ -81,7 +83,7 @@ def extract(path):
     raw = Path(path).read_bytes()
     key = hashlib.sha256(identity.encode() + raw).hexdigest()
     dest = args.cache / (key + ".npz")
-    if dest.exists():
+    if dest.exists() and not args.recompute_features:
         with np.load(dest, allow_pickle=False) as data:
             embedding = data["embedding"].tolist()
     else:

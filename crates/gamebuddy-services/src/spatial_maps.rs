@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+pub mod retrieval_benchmark;
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Tile {
     map_id: String,
@@ -207,6 +209,29 @@ pub fn locate(
         "Map feature model changed; prepare map pixels again"
     );
     let atlas = navigation::atlas(store, guide)?;
+    let file = tempfile::NamedTempFile::with_suffix(".png")?;
+    let query = extract_query(&mut engine, world, image, file.path())?;
+    let mut ranked: Vec<_> = index
+        .tiles
+        .iter()
+        .filter(|t| atlas.maps.iter().any(|m| m.id == t.map_id && m.enabled))
+        .map(|t| (t, spatial::retrieval(&query, &t.features)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    register_candidates(
+        &mut engine,
+        &query,
+        &atlas.maps,
+        &ranked[..ranked.len().min(12)],
+    )
+}
+
+fn extract_query(
+    engine: &mut Engine,
+    world: &World,
+    image: &image::DynamicImage,
+    path: &std::path::Path,
+) -> Result<Features> {
     let color = world
         .profile
         .background
@@ -218,20 +243,20 @@ pub fn locate(
         )
         .to_rgb8();
     let gray = spatial::normalize(&image::DynamicImage::ImageRgb8(color.clone()));
-    let file = tempfile::NamedTempFile::with_suffix(".png")?;
-    color.save(file.path())?;
-    let query = engine.extract(&gray, file.path())?;
-    let mut ranked: Vec<_> = index
-        .tiles
-        .iter()
-        .filter(|t| atlas.maps.iter().any(|m| m.id == t.map_id && m.enabled))
-        .map(|t| (t, spatial::retrieval(&query, &t.features)))
-        .collect();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    color.save(path)?;
+    engine.extract(&gray, path)
+}
+
+fn register_candidates(
+    engine: &mut Engine,
+    query: &Features,
+    maps: &[gamebuddy_core::MapAsset],
+    ranked: &[(&Tile, f32)],
+) -> Result<Option<Value>> {
     let trace = std::env::var_os("GAMEBUDDY_MAP_TRACE").is_some();
     let mut matches = vec![];
-    for (tile, retrieval) in ranked.into_iter().take(12) {
-        let registration = engine.register_map(&query, &tile.features)?;
+    for &(tile, retrieval) in ranked {
+        let registration = engine.register_map(query, &tile.features)?;
         if trace {
             eprintln!(
                 "GAMEBUDDY_MAP_RETRIEVAL {}",
@@ -303,7 +328,7 @@ pub fn locate(
     if maxx <= minx || maxy <= miny {
         return Ok(None);
     }
-    let map = atlas.maps.iter().find(|m| m.id == tile.map_id).unwrap();
+    let map = maps.iter().find(|m| m.id == tile.map_id).unwrap();
     Ok(Some(
         json!({"map_id":tile.map_id,"polygon":polygon,"region":{"x":minx,"y":miny,"width":maxx-minx,"height":maxy-miny},"precision":"camera_footprint","inliers":r.inliers,"residual":r.residual,"evidence":format!("{} local landmarks agree geometrically with atlas pixels; mean residual {:.2} px. This marks the visible camera area, not the player's exact position.",r.inliers,r.residual),"source_url":map.source_url,"credit":map.credit}),
     ))

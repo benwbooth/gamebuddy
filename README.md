@@ -95,6 +95,8 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input scripts
 
 The selected Faxanadu source is now U Can Beat Video Games’ [Ultimate Guide](https://www.youtube.com/watch?v=8vEyiAs-fbY). GameBuddy reviewed all 53 video sections into 824 outline nodes (549 leaf actions), exported 578 screenshots, and indexed 3,112 dense visual references. The original RetroNate guide remains preserved. Source review is not proof of complete game correctness; [localization validation](docs/localization-validation.md) separates independent capture evidence from source coverage.
 
+The [map retrieval benchmark](docs/map-retrieval-benchmark.md) compares local EmbeddingGemma 2 and DINO candidate selection through the same production geometry checks, using independently labelled gameplay and an isolated store.
+
 The local 4B/9B planning trials also exposed unreliable tool use and goal interpretation. The validated tools reject malformed/stale edits, but the conversational agent is not yet a dependable autonomous guide. See [validation results and remaining gates](docs/validation.md).
 
 The [initial research](docs/initial-research-2026-09-27.md) predates the Rust/CXX-Qt decision. [Provider contracts](docs/provider-contracts.md) describe the intended model boundaries.
