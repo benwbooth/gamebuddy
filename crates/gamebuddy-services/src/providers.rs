@@ -189,8 +189,9 @@ pub struct HttpProvider {
     pub config: ProviderConfig,
     client: Client,
     // A coaching answer can make several tool rounds. Keep its transport alive
-    // across those rounds while retaining a fresh, isolated thread per request.
+    // across those rounds. Only interactive coaching opts into saved sessions.
     codex: std::sync::Mutex<Option<crate::subscription::CodexClient>>,
+    conversation: Option<(std::path::PathBuf, String)>,
 }
 impl HttpProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
@@ -202,7 +203,21 @@ impl HttpProvider {
                 .connect_timeout(Duration::from_secs(15))
                 .build()?,
             codex: std::sync::Mutex::new(None),
+            conversation: None,
         })
+    }
+    pub fn for_conversation(
+        config: ProviderConfig,
+        store: &crate::Store,
+        game: &str,
+    ) -> Result<Self> {
+        ensure!(
+            !game.trim().is_empty(),
+            "Load a game before starting a conversation"
+        );
+        let mut provider = Self::new(config)?;
+        provider.conversation = Some((store.root.clone(), game.to_owned()));
+        Ok(provider)
     }
     fn key(&self) -> Result<Option<String>> {
         if self.config.api_key_env.is_empty() {
@@ -237,11 +252,12 @@ impl HttpProvider {
                 if client.is_none() {
                     *client = Some(crate::subscription::CodexClient::start()?);
                 }
-                let result = crate::subscription::codex_complete(
+                let result = crate::subscription::codex_complete_scoped(
                     client.as_mut().unwrap(),
                     &self.config.model,
                     &self.config.reasoning_effort,
                     r,
+                    self.conversation.as_ref(),
                 );
                 if result.is_err() {
                     *client = None;

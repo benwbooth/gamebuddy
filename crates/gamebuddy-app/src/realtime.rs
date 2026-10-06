@@ -409,34 +409,52 @@ impl ffi::RealtimeVoice {
                 } else {
                     ""
                 };
-                let thread = client.voice_thread(
-                    model,
-                    &instructions,
-                    tools,
-                    settings.fast_voice,
-                    if settings.reasoning.kind == gamebuddy_services::ProviderKind::Codex {
-                        &settings.reasoning.reasoning_effort
-                    } else {
-                        ""
+                use gamebuddy_services::subscription::session::{Options, Role};
+                let tier = client.voice_tier(model, settings.fast_voice, deadline);
+                let session = client.saved_thread(
+                    &store,
+                    &game,
+                    Role::Reasoner,
+                    Options {
+                        model,
+                        instructions: &instructions,
+                        tools,
+                        tier: Some(tier),
+                        effort: if settings.reasoning.kind
+                            == gamebuddy_services::ProviderKind::Codex
+                        {
+                            &settings.reasoning.reasoning_effort
+                        } else {
+                            ""
+                        },
                     },
                     deadline,
                 )?;
+                diagnostics.record("llm_session", json!({"role":"reasoner","thread_id":session.id,"resumed":session.resumed,"replacement":session.replacement}));
+                let thread = session.id;
                 // Native recognition may merge successive utterances and may
                 // delegate despite its prompt. Keep that evolving transcript
                 // out of the authoritative tool conversation. Only settled
                 // application requests are added to the reasoning thread.
-                let speaker_thread = client.thread_with_options(
-                    model,
-                    if conversational {
-                        gamebuddy_services::voice::prompts::CONVERSATIONAL_SPEAKER
-                    } else {
-                        gamebuddy_services::voice::prompts::SPEAKER
+                let speaker = client.saved_thread(
+                    &store,
+                    &game,
+                    Role::Speaker,
+                    Options {
+                        model,
+                        instructions: if conversational {
+                            gamebuddy_services::voice::prompts::CONVERSATIONAL_SPEAKER
+                        } else {
+                            gamebuddy_services::voice::prompts::SPEAKER
+                        },
+                        tools: json!([]),
+                        tier: Some("default"),
+                        effort: "",
                     },
-                    json!([]),
-                    Some("default"),
-                    "",
                     deadline,
                 )?;
+                diagnostics.record("llm_session", json!({"role":"speaker","thread_id":speaker.id,"resumed":speaker.resumed,"replacement":speaker.replacement}));
+                let speaker_thread = speaker.id;
                 let mut memory = conversation::RealtimeMemory::new(&store, &game, &speaker_thread);
                 let approved_speech = std::cell::Cell::new(false);
                 let mut notification = |event: &Value| -> anyhow::Result<()> {

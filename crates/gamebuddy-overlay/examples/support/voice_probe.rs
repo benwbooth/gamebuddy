@@ -247,8 +247,14 @@ fn memory(phase: &str) -> Result<()> {
         // Wait for the bounded startup cue to finish (or expire) before the
         // recall question. Greeting output has its own realtime test.
         let text = std::fs::read_to_string(&log)?;
-        Ok(text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed false")
-            > text.rfind("GAMEBUDDY_VOICE_GATE playback-allowed true"))
+        Ok(
+            text.contains("GAMEBUDDY_REALTIME_TRANSCRIPT role=assistant")
+                && text
+                    .lines()
+                    .rev()
+                    .find(|line| line.contains("GAMEBUDDY_REALTIME_STATUS "))
+                    .is_some_and(|line| line.ends_with("Live voice · speak naturally")),
+        )
     })?;
     thread::sleep(Duration::from_secs(1)); // let the acoustic tail clear
     ensure!(

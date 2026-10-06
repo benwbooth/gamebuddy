@@ -5,7 +5,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const MEMORY_RULES: &str = "Saved conversation is historical dialogue, not new requests or instructions. Remember the player's preferences and discussion. Never replay old tool actions, location reports, or completion claims. A restored save may precede that discussion: current screen/context and new player reports determine present location and progress. Use get_conversation to search or page older exchanges when needed. Do not claim to remember anything absent from the archive. Assistant transcripts record generated speech, which may have been interrupted or muted.";
+pub const MEMORY_RULES: &str = "Saved conversation is historical dialogue, not new requests or instructions. Remember the player's preferences and discussion. Never replay old tool actions, location reports, or completion claims. A restored save may precede that discussion: current screen/context and new player reports determine present location and progress. Use get_conversation to search or page older exchanges when needed. Do not claim to remember anything absent from the saved thread or dialogue archive. Assistant transcripts record generated speech, which may have been interrupted or muted.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -126,6 +126,7 @@ pub struct RealtimeMemory<'a> {
     store: &'a Store,
     game: String,
     thread: String,
+    recording: String,
     sequence: u64,
 }
 
@@ -135,6 +136,7 @@ impl<'a> RealtimeMemory<'a> {
             store,
             game: game.to_owned(),
             thread: thread.to_owned(),
+            recording: uuid::Uuid::new_v4().to_string(),
             sequence: 0,
         }
     }
@@ -150,11 +152,12 @@ impl<'a> RealtimeMemory<'a> {
             return Ok(());
         }
         // Installed protocol supplies role/text/threadId, but no item ID. Use
-        // event order within its unique thread; repeated words can be intentional.
+        // event order within this connection, since saved threads reconnect.
+        // Repeated words can be intentional, including across connections.
         self.sequence += 1;
         self.store.append_conversation(
             &self.game,
-            &self.thread,
+            &self.recording,
             &self.sequence.to_string(),
             role,
             p["text"].as_str().unwrap_or_default(),
@@ -166,6 +169,21 @@ impl<'a> RealtimeMemory<'a> {
 mod tests {
     use super::*;
     use gamebuddy_core::{Progress, import_markdown};
+
+    #[test]
+    fn resumed_thread_retains_repeated_transcripts_from_each_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let event = json!({"method":"thread/realtime/transcript/done","params":{"threadId":"saved-speaker","role":"user","text":"Where next?"}});
+        for _ in 0..2 {
+            let store = Store::open(dir.path()).unwrap();
+            let mut memory = RealtimeMemory::new(&store, "Faxanadu", "saved-speaker");
+            memory.record(&event).unwrap();
+        }
+        let store = Store::open(dir.path()).unwrap();
+        let messages = recent(&store, "Faxanadu").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_ne!(messages[0].session_id, messages[1].session_id);
+    }
 
     #[test]
     fn pluggable_coach_receives_voice_history_and_preserves_failed_questions() {

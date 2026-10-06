@@ -10,6 +10,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod session;
+
+#[derive(Debug)]
+struct RpcError {
+    method: String,
+    error: Value,
+}
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Codex {}: {}", self.method, self.error)
+    }
+}
+impl std::error::Error for RpcError {}
+
 /// Interactive coaching must not inherit a heavyweight coding model from the CLI.
 pub const DEFAULT_CODEX_MODEL: &str = "gpt-6-luna";
 
@@ -38,6 +52,8 @@ pub struct CodexClient {
     next_id: u64,
     _directory: tempfile::TempDir,
     pub resolved_model: String,
+    // Process is dropped first, before releasing the saved-thread leases.
+    sessions: std::collections::HashMap<std::path::PathBuf, session::Lease>,
 }
 impl CodexClient {
     pub fn start() -> Result<Self> {
@@ -89,6 +105,7 @@ impl CodexClient {
             next_id: 1,
             _directory: directory,
             resolved_model: String::new(),
+            sessions: Default::default(),
         };
         let deadline = Instant::now() + Duration::from_secs(20);
         client.request("initialize", json!({"clientInfo":{"name":"gamebuddy","title":"GameBuddy","version":"0.1.0"},"capabilities":{"experimentalApi":true}}), deadline)?;
@@ -146,7 +163,11 @@ impl CodexClient {
             self.reject(&value)?;
             if value["id"] == id {
                 if let Some(error) = value.get("error") {
-                    bail!("Codex {method}: {error}");
+                    return Err(RpcError {
+                        method: method.into(),
+                        error: error.clone(),
+                    }
+                    .into());
                 }
                 return Ok(value["result"].clone());
             }
@@ -176,6 +197,10 @@ impl CodexClient {
         effort: &str,
         deadline: Instant,
     ) -> Result<String> {
+        let tier = self.voice_tier(model, fast, deadline);
+        self.thread_with_options(model, instructions, tools, Some(tier), effort, deadline)
+    }
+    pub fn voice_tier(&mut self, model: &str, fast: bool, deadline: Instant) -> &'static str {
         let model = codex_model(model);
         let priority = fast
             && self
@@ -193,16 +218,8 @@ impl CodexClient {
                         })
                 })
                 .unwrap_or(false);
-        self.thread_with_options(
-            model,
-            instructions,
-            tools,
-            // An explicit opt-out must also override a globally configured
-            // Codex Fast tier, rather than silently inheriting it.
-            Some(if priority { "priority" } else { "default" }),
-            effort,
-            deadline,
-        )
+        // Explicit opt-out also overrides a globally configured Fast tier.
+        if priority { "priority" } else { "default" }
     }
     pub fn thread_with_options(
         &mut self,
@@ -246,6 +263,16 @@ pub fn codex_complete(
     effort: &str,
     r: ModelRequest,
 ) -> Result<String> {
+    codex_complete_scoped(client, model, effort, r, None)
+}
+
+pub(crate) fn codex_complete_scoped(
+    client: &mut CodexClient,
+    model: &str,
+    effort: &str,
+    r: ModelRequest,
+    scope: Option<&(std::path::PathBuf, String)>,
+) -> Result<String> {
     let started = Instant::now();
     let trace = std::env::var_os("GAMEBUDDY_PROVIDER_TRACE").is_some();
     if trace {
@@ -256,7 +283,26 @@ pub fn codex_complete(
         );
     }
     let deadline = Instant::now() + Duration::from_secs(180);
-    let thread = client.thread_with_options(model, &r.system, json!([]), None, effort, deadline)?;
+    let thread = if let Some((root, game)) = scope {
+        let store = crate::Store::open(root)?;
+        client
+            .saved_thread(
+                &store,
+                game,
+                session::Role::Chat,
+                session::Options {
+                    model,
+                    instructions: &r.system,
+                    tools: json!([]),
+                    tier: None,
+                    effort,
+                },
+                deadline,
+            )?
+            .id
+    } else {
+        client.thread_with_options(model, &r.system, json!([]), None, effort, deadline)?
+    };
     let mut input = vec![json!({"type":"text","text":r.prompt})];
     input.extend(
         r.images

@@ -21,7 +21,7 @@ pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 0
 # This fixture launches paplay as a game child. Keep its synthetic microphone
 # out of game ducking; test-realtime covers ducking with an external player.
 cat >"$runtime_dir/settings.json" <<'JSON'
-{"reasoning":{"kind":"codex","endpoint":"","model":"","api_key_env":""},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime","duck_game_audio":false}
+{"reasoning":{"kind":"codex","endpoint":"","model":"gpt-6.1-sol","api_key_env":"","reasoning_effort":"low"},"vision":{"kind":"ollama","endpoint":"http://127.0.0.1:11434","model":"qwen3.5:4b","api_key_env":""},"speech":"codex_realtime","duck_game_audio":false}
 JSON
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
 for phase in save recall; do
@@ -29,7 +29,7 @@ for phase in save recall; do
   export GAMEBUDDY_TEST_VOICE_WAV="$runtime_dir/$phase.wav"
   export GAMEBUDDY_TEST_LOG="$runtime_dir/$phase.log"
   if [[ "$phase" == save ]]; then
-    utterance='Remember our route nickname: silver lantern. We want the cautious route. Please repeat the nickname.'
+    utterance='Remember our route nickname: silver lantern. Put it in a text widget titled Memory Saved and tell me.'
   else
     utterance='What route nickname did I ask you to remember in our last conversation? Put it in a text widget titled Memory Restored and tell me.'
   fi
@@ -38,4 +38,22 @@ for phase in save recall; do
     ./target/debug/examples/compositor_probe "$runtime_dir/$phase-proof" >"$GAMEBUDDY_TEST_LOG" 2>&1
   rg 'GAMEBUDDY_MEMORY_TEST_PASS' "$GAMEBUDDY_TEST_LOG"
 done
+node --input-type=module - "$runtime_dir" <<'JS'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const root = process.argv[2];
+const sessions = phase => [...fs.readFileSync(`${root}/${phase}.log`, 'utf8').matchAll(
+  /GAMEBUDDY_CODEX_SESSION role=(\w+) resumed=(\w+) replacement=(\w+) thread=([^\s]+)/g
+)].map(([, role, resumed, replacement, thread]) => ({role, resumed, replacement, thread}));
+const saved = sessions('save'), recalled = sessions('recall');
+for (const role of ['reasoner', 'speaker']) {
+  const a = saved.find(s => s.role === role), b = recalled.find(s => s.role === role);
+  assert.ok(a && b, `Missing ${role} session diagnostics`);
+  assert.equal(a.resumed, 'false');
+  assert.equal(b.resumed, 'true');
+  assert.equal(b.replacement, 'none');
+  assert.equal(a.thread, b.thread, `${role} thread was replaced on restart`);
+}
+console.log('GAMEBUDDY_NATIVE_SESSION_RESTORE_PASS reasoner=true speaker=true');
+JS
 printf 'Conversation restart evidence: %s\n' "$runtime_dir"

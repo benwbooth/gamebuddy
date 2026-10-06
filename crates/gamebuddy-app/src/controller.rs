@@ -1185,7 +1185,7 @@ impl ffi::Buddy {
                     let store = Store::open(root)?;
                     let settings = store.get::<Settings>("settings")?.unwrap_or_default();
                     services::harness::chat(
-                        &HttpProvider::new(settings.reasoning)?,
+                        &HttpProvider::for_conversation(settings.reasoning, &store, &game)?,
                         &store,
                         &game,
                         &question,
@@ -1388,7 +1388,7 @@ impl ffi::Buddy {
                 }
                 let store = Store::open(root)?;
                 let settings = store.get::<Settings>("settings")?.unwrap_or_default();
-                let provider = HttpProvider::new(settings.reasoning)?;
+                let provider = HttpProvider::for_conversation(settings.reasoning, &store, &game)?;
                 let answer = services::harness::chat(&provider, &store, &game, &transcript)?;
                 Ok(Outcome::Voice(transcript, answer))
             },

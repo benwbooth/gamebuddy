@@ -301,10 +301,14 @@ fn main() -> Result<()> {
             store.put("settings", &settings)?;
             println!("Model configuration saved");
         }
-        Action::Coach { question } => println!(
-            "{}",
-            harness::coach(&HttpProvider::new(settings.reasoning)?, &store, &question)?
-        ),
+        Action::Coach { question } => {
+            let guide: String = store
+                .get("active_guide")?
+                .context("Select a guide before asking for advice")?;
+            let game = store.guide(&guide)?.game;
+            let provider = HttpProvider::for_conversation(settings.reasoning, &store, &game)?;
+            println!("{}", harness::coach(&provider, &store, &question)?);
+        }
         Action::Transcribe { path } => println!("{}", speech::transcribe(&store.root, &path)?),
         Action::Tool { name, arguments } => println!(
             "{}",
