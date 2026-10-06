@@ -24,8 +24,8 @@ impl Diagnostics {
                 }
                 states.insert(kind, event["value"].clone());
                 recent.push(event);
-                if recent.len() > 160 {
-                    recent.drain(..recent.len() - 160);
+                if recent.len() > 512 {
+                    recent.drain(..recent.len() - 512);
                 }
                 let _ = store.put("voice-diagnostics", &recent);
             }

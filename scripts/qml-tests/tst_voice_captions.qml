@@ -30,5 +30,12 @@ Item {
             captions.text=""
             verify(!captions.visible)
         }
+        function test_last_words_expire_after_speech_stops() {
+            captions.active=true;captions.text="Back at the green-stone passage,"
+            captions.active=false
+            verify(captions.visible,"Leave the interrupted words briefly readable")
+            tryCompare(captions,"visible",false,8500)
+            compare(captions.text,"Back at the green-stone passage,")
+        }
     }
 }

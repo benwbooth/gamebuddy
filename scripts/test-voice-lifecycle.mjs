@@ -285,4 +285,22 @@ assert.deepEqual(render([.25,.5]),[0,0],'mute also silences direct native audio'
 voice.muteOutput(false);
 voice.stop();
 assert.equal(timers.size,0);
+// Exercise the actual QML console handler: an interrupted caption must stop
+// being active even when a delegated answer is still pending.
+const panel=readFileSync(new URL('../crates/gamebuddy-app/qml/RealtimePanel.qml',import.meta.url),'utf8');
+const handler=panel.match(/onJavaScriptConsoleMessage: \(level,message,line,source\) => \{([\s\S]*?)\n    \}\n    onEnabledBackendChanged/)[1];
+const state={started:true,trace:false,captionText:'',captionStreaming:false,assistantSpeaking:false,waitingForReply:false,activeAdviceStep:'',pendingCue:'',outputAt:0,transport:{trace_event(){}}};
+runInNewContext('function receive(message){'+handler+'}',state);
+const panelEvent=(type,value)=>state.receive('GAMEBUDDY_VOICE '+JSON.stringify({type,value}));
+panelEvent('reply-pending',true);
+panelEvent('caption','Back at the green-stone passage,');
+panelEvent('output-active',true);
+assert(state.captionStreaming&&state.assistantSpeaking);
+panelEvent('output-active',false);
+assert(state.waitingForReply,'tool work remains pending');
+assert(!state.captionStreaming&&!state.assistantSpeaking,'silence releases caption expiry while tools are pending');
+assert.equal(state.captionText,'Back at the green-stone passage,','the last words remain briefly readable');
+panelEvent('caption','Over twenty-two hundred experience.');
+panelEvent('output-active',true);
+assert(state.captionStreaming&&state.assistantSpeaking,'the next audible answer resumes captions');
 console.log('Voice lifecycle passed: native speech, delegated tools, backchannels, prepared audio, captions and microphone cleanup.');

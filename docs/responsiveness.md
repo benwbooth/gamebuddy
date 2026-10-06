@@ -28,6 +28,8 @@ Short eligible questions can use a read-only Codex proposal with compact current
 
 The live voice and tool reasoner use separate provider conversations. Native delegation requests are identified individually; only the complete player request enters the authoritative tool conversation. Repeated handoffs and unrelated backchannels must not replay or replace that task. Verified results return through the matching delegation, while automatic coaching uses a session-level spoken update. The official installed Codex client continues to own authentication; no subscription credentials are extracted and no API-key provider is substituted.
 
+Follow-ups now revise the active native backend turn rather than cancelling and starting over. Its completed tool results remain available, and its original deadline remains in force. Updates take ownership only after acknowledgment; stale queued mutations cannot act on a superseded request. A simple clarification of a verified number or instruction can be answered by the native voice directly. Captions release their eight-second expiry when audible output stops, independently of pending backend work.
+
 In the optional composed/Piper path, stable partial recognition may start a proposal while the player is speaking. There are at most two attempts per utterance, at least one second apart. Changed wording cancels the candidate. Only an exact match already ready when the request settles can be applied; endpointing is not shortened. Changed captures, revisions or progress reject proposals. Any unfinished preview is cancelled at dispatch, and the complete request goes directly to the general reasoner. A preview cannot impose a serial wait before the normal answer path. Background action review yields new work while a foreground voice request is active.
 
 Native conversation is speech-to-speech, with a separate reasoning and tool backend for grounded game work. Piper is the optional speech-recognition → text reasoning → speech-synthesis path. The two modes have different turn-taking and voice characteristics.
@@ -60,9 +62,12 @@ The native-conversation fixture recorded a penguin joke and forest story with **
 
 This uses the audio conversation plus delegated reasoning arrangement described in OpenAI's [live delegation guide](https://developers.openai.com/api/docs/guides/live-delegation). The installed Codex 0.160.0 protocol uses `delegation.created` and `delegation.context.append`; verified answers return on the matching delegation ID. Backchannels cannot rebind the original task, and duplicate delegation IDs cannot replay it.
 
+The follow-up regression reproduced the green-stone-passage cue and asked “How much experience do I need to collect?” Native speech began 660 ms after the question WAV ended, with zero backend dispatches; independent transcription of that answer alone read “Over 2,200 experience.” A separate request held a real tool response for twenty seconds, then added a second screenshot/widget question. Both widget actions completed once within one backend turn, without an interrupt, and recorded speech named the correct green rectangle and red square. The 30.9-second follow-up interval includes that artificial hold and speech playback; it is a continuation check, not a normal-latency measurement.
+
 ```sh
 # Run inside nix develop. Native speech is the default in disposable test stores.
 GAMEBUDDY_TEST_NATIVE_CONVERSATION=1 scripts/test-realtime
+GAMEBUDDY_TEST_FOLLOWUPS=1 scripts/test-realtime
 GAMEBUDDY_TEST_RESPONSIVE=1 GAMEBUDDY_TEST_CAPTIONS=1 scripts/test-realtime
 scripts/test-narration
 

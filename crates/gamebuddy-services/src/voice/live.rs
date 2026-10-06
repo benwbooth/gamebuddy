@@ -50,6 +50,10 @@ impl Requests {
     pub fn utterance(&self) -> u64 {
         self.active.as_ref().map_or(0, |(id, _)| *id)
     }
+
+    pub fn stopped(&self) -> bool {
+        self.active.as_ref().is_some_and(|(_, text)| is_stop(text))
+    }
 }
 
 fn is_stop(text: &str) -> bool {

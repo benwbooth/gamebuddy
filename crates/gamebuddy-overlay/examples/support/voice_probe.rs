@@ -9,6 +9,8 @@ use std::{
 };
 use x11rb::rust_connection::RustConnection;
 
+#[path = "followup_probe.rs"]
+mod followup_probe;
 #[path = "native_conversation_probe.rs"]
 mod native_conversation_probe;
 #[path = "progress_probe.rs"]
@@ -404,6 +406,11 @@ fn realtime(
     wait("quiet play restores game audio", || {
         Ok(!game_audio.ducked()?)
     })?;
+    if std::env::var_os("GAMEBUDDY_TEST_FOLLOWUPS").is_some() {
+        followup_probe::run(&store, &log)?;
+        ensure!(capturing()?, "Follow-ups closed the microphone");
+        return Ok(());
+    }
     if std::env::var_os("GAMEBUDDY_TEST_NATIVE_CONVERSATION").is_some() {
         native_conversation_probe::run(&store, &log)?;
         ensure!(capturing()?, "Native conversation closed its microphone");

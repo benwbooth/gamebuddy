@@ -515,7 +515,16 @@ impl ffi::RealtimeVoice {
                 let mut speculation_budget = (0u64, 0u8);
                 let mut last_speculation = Instant::now();
                 let mut sequence = 1000;
-                let mut context_requests = std::collections::HashSet::new();
+                let mut context_requests = std::collections::HashMap::<
+                    u64,
+                    (
+                        Value,
+                        u64,
+                        String,
+                        Option<gamebuddy_services::screen::Snapshot>,
+                    ),
+                >::new();
+                let mut refused_context: Option<(Value, u64, String)> = None;
                 let mut start_requests = std::collections::HashMap::new();
                 let mut prepared_context: Option<(
                     Value,
@@ -651,6 +660,7 @@ impl ffi::RealtimeVoice {
                             supplied_frame = None;
                             refreshed_view = false;
                             spatial_advice = false;
+                            refused_context = None;
                             if unsolicited {
                                 // The live speaker can still delegate despite
                                 // its prompt, sometimes on the first few words.
@@ -803,15 +813,32 @@ impl ffi::RealtimeVoice {
                             // turn is not a failure of the new voice session.
                             continue;
                         }
-                        if event["id"]
-                            .as_u64()
-                            .is_some_and(|id| context_requests.remove(&id))
+                        if let Some((turn_id, updated_utterance, updated_request, updated_frame)) =
+                            event["id"]
+                                .as_u64()
+                                .and_then(|id| context_requests.remove(&id))
                         {
+                            let accepted = event.get("error").is_none();
+                            diagnostics.record(
+                                "request_update",
+                                json!({"utterance":updated_utterance,"accepted":accepted}),
+                            );
+                            if reasoning_turn.as_ref() == Some(&turn_id) {
+                                if accepted {
+                                    // Only an acknowledged update owns the
+                                    // result. A rejected/racing steer cannot
+                                    // relabel the old answer as the new one.
+                                    reasoning_input = Some(updated_utterance);
+                                    supplied_request = updated_request;
+                                    supplied_frame = updated_frame;
+                                    delivery.started(updated_utterance);
+                                } else {
+                                    refused_context =
+                                        Some((turn_id, updated_utterance, updated_request));
+                                }
+                            }
                             if std::env::args().any(|a| a == "--voice-trace") {
-                                eprintln!(
-                                    "GAMEBUDDY_VOICE_CONTEXT_ACCEPTED success={}",
-                                    event.get("error").is_none()
-                                );
+                                eprintln!("GAMEBUDDY_VOICE_CONTEXT_ACCEPTED success={accepted}",);
                             }
                             continue;
                         }
@@ -828,7 +855,11 @@ impl ffi::RealtimeVoice {
                                 } else {
                                     input.lock().unwrap().utterance()
                                 })
-                                || (!readonly && !input.lock().unwrap().settled(Instant::now()));
+                                || (!readonly
+                                    && (!input.lock().unwrap().settled(Instant::now())
+                                        || (conversational
+                                            && reasoning_input
+                                                != Some(live_requests.utterance()))));
                             pending_tools.push_back((event, reject));
                         } else {
                             client.reject(&event)?;
@@ -943,11 +974,13 @@ impl ffi::RealtimeVoice {
                             json!({"method":"gamebuddy/speech","params":{"text":answer,"step_id":response_step.as_ref().filter(|(u,_)|*u==utterance).map(|(_,id)|id),"delegation_id":if conversational {live_requests.delegation_id()} else {None}}}),
                         );
                     }
-                    // A late handoff must not deliver the previous answer over
-                    // a new question. Cancel as input begins, before its new
-                    // delegation needs the backend; pauses inside one request
-                    // keep the same utterance identity.
+                    // Native follow-ups revise the active turn below, keeping
+                    // its evidence and completed actions. Repeated questions
+                    // must not keep cancelling slow work before it can answer.
+                    // Explicit Stop still cancels; composed speech retains its
+                    // existing replacement-turn behavior.
                     if reasoning_input.is_some_and(|prior| prior != utterance)
+                        && (!conversational || live_requests.stopped())
                         && let Some(turn_id) = &reasoning_turn
                     {
                         sequence += 1;
@@ -957,6 +990,15 @@ impl ffi::RealtimeVoice {
                         context_turn = None;
                     }
                     if quiet {
+                        if conversational
+                            && reasoning_input.is_some_and(|prior| prior != utterance)
+                            && request == supplied_request
+                            && reasoning_turn.is_some()
+                        {
+                            reasoning_input = Some(utterance);
+                            delivery.started(utterance);
+                            diagnostics.record("request_repeated", json!({"utterance":utterance}));
+                        }
                         // Dispatch every recognized local utterance even when
                         // the live model neither delegates nor answers. Waiting
                         // for an assistant transcript creates a deadlock when
@@ -1084,6 +1126,9 @@ impl ffi::RealtimeVoice {
                             && start_requests.is_empty()
                             && (request != supplied_request || changed_view)
                             && let Some(turn_id) = context_turn.as_ref()
+                            && !context_requests.values().any(|(id, ..)| id == turn_id)
+                            && refused_context.as_ref()
+                                != Some(&(turn_id.clone(), utterance, request.clone()))
                         {
                             refreshed_view |= changed_view;
                             if !supplied_request.is_empty() {
@@ -1096,8 +1141,9 @@ impl ffi::RealtimeVoice {
                                     }
                                 }
                             }
+                            let mut updated_frame = supplied_frame.clone();
                             let evidence = if supplied_request.is_empty() || changed_view {
-                                supplied_frame = gamebuddy_services::screen::snapshot(&store).ok();
+                                updated_frame = gamebuddy_services::screen::snapshot(&store).ok();
                                 gamebuddy_services::harness::call_tool_with_images(
                                     &store,
                                     "get_game_context",
@@ -1113,11 +1159,12 @@ impl ffi::RealtimeVoice {
                                 None
                             };
                             sequence += 1;
-                            reasoning_input = Some(utterance);
-                            delivery.started(utterance);
-                            context_requests.insert(sequence);
+                            context_requests.insert(
+                                sequence,
+                                (turn_id.clone(), utterance, request.clone(), updated_frame),
+                            );
                             let label = format!(
-                                "The complete live player request is: {request}. This supersedes any earlier partial delegation. Resolve their location correction before repeating previous advice. Carry out every requested action. If a newer image accompanies this update, the view changed while you were thinking: reassess obstacles, enemies and the immediate interaction before giving directions."
+                                "The latest complete live player request is: {request}. Treat this as a follow-up to the conversation already in this turn. Use evidence and successful actions already obtained; do not repeat completed tools. Answer the latest question and retain earlier requested actions unless the player replaces or cancels them. Resolve any location correction before repeating advice. If a newer image accompanies this update, reassess the changed view before giving directions."
                             );
                             let turn_input = evidence.as_ref().map(|context| context.codex_input(&format!("CURRENT_GAME_CONTEXT for this request. {label} Inspect these images; refresh if the screen changes.")))
                                 .unwrap_or_else(|| vec![json!({"type":"text","text":label})]);
@@ -1128,11 +1175,19 @@ impl ffi::RealtimeVoice {
                                     request.len()
                                 );
                             }
+                            diagnostics.record("request_update_sent", json!({"utterance":utterance,"text_bytes":request.len(),"images":evidence.as_ref().map_or(0,|c|c.images.len())}));
                             client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
-                            supplied_request = request.clone();
                         }
                         if let Some((event, reject)) = pending_tools.pop_front()
-                            && answer_tool(&mut client, &store, &game, &event, &request, reject)?
+                            && answer_tool(
+                                &mut client,
+                                &store,
+                                &game,
+                                &event,
+                                &request,
+                                reject,
+                                &diagnostics,
+                            )?
                         {
                             spatial_advice |= event["params"]["tool"] == "set_next_action";
                             if event["params"]["tool"] == "set_next_action" {
@@ -1165,6 +1220,7 @@ fn answer_tool(
     event: &Value,
     request: &str,
     rejected: bool,
+    diagnostics: &gamebuddy_services::voice::diagnostics::Diagnostics,
 ) -> anyhow::Result<bool> {
     let tool_started = Instant::now();
     let params = &event["params"];
@@ -1212,6 +1268,7 @@ fn answer_tool(
         output
     });
     let success = result.is_ok();
+    diagnostics.record("tool_result", json!({"tool":params["tool"],"success":success,"rejected":rejected,"elapsed_ms":tool_started.elapsed().as_millis()}));
     let content=result.map(|r|r.codex_content()).unwrap_or_else(|e|json!([{"type":"inputText","text":json!({"error":e.to_string(),"live_player_request":request}).to_string()}]));
     if std::env::args().any(|a| a == "--voice-trace") {
         eprintln!(

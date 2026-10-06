@@ -264,6 +264,9 @@ WebEngineView {
             if(event.value){pendingCue="";if(!assistantSpeaking && activeAdviceStep.length)transport.advice_spoken(context())}
             if(trace && event.value && !assistantSpeaking)console.warn("GAMEBUDDY_VOICE_PLAYBACK started at_ms="+Date.now())
             outputAt=Date.now();assistantSpeaking=event.value
+            // Waiting for tools is independent of speech. Let the last words
+            // expire after playback stops, including a native interruption.
+            if(!assistantSpeaking)captionStreaming=false
         }
         else if(event.type==="work-pending")workPending=event.value
         else if(event.type==="reply-pending"){waitingForReply=event.value;if(!waitingForReply)captionStreaming=false}
