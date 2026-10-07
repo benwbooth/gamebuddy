@@ -64,5 +64,27 @@ Item {
             verify(findChild(page,"reasoningTest").enabled)
             verify(page.dirty)
         }
+        function test_anthropic_api_has_independent_key_model_and_voice() {
+            const provider=findChild(page,"reasoningProvider")
+            provider.currentIndex=provider.model.findIndex(p=>p.id==="anthropic");provider.activated(provider.currentIndex)
+            compare(findChild(page,"reasoningEndpoint").text,"https://api.anthropic.com/v1")
+            compare(findChild(page,"reasoningKeyName").text,"ANTHROPIC_API_KEY")
+            const request=backend.requests[backend.requests.length-1]
+            compare(request.config.kind,"anthropic");compare(request.config.model,"")
+            backend.provider_result(request.id,JSON.stringify({models:[{id:"claude-fixture",label:"Claude fixture",efforts:["low","high"],vision:true}]}))
+            const picker=findChild(page,"reasoningModelPicker")
+            picker.currentIndex=0;picker.activated(0)
+            const voice=findChild(page,"speechBackend")
+            voice.currentIndex=1;voice.activated(1)
+            page.save()
+            const saved=JSON.parse(backend.settings_json)
+            compare(saved.reasoning.model,"claude-fixture");compare(saved.reasoning.reasoning_effort,"low")
+            compare(saved.reasoning.api_key_env,"ANTHROPIC_API_KEY");compare(saved.speech,"codex_realtime")
+            // Moving back to the subscription cannot retain API credentials.
+            provider.currentIndex=1;provider.activated(1);page.save()
+            const subscription=JSON.parse(backend.settings_json).reasoning
+            compare(subscription.kind,"claude_code");compare(subscription.model,"sonnet")
+            compare(subscription.endpoint,"");compare(subscription.api_key_env,"")
+        }
     }
 }

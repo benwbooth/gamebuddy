@@ -127,6 +127,14 @@ JSON
 if [[ -n "${GAMEBUDDY_TEST_PREPARED_PYTHON:-}" ]]; then
   node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.prepared_speech={enabled:true,python:process.env.GAMEBUDDY_TEST_PREPARED_PYTHON,model:process.env.GAMEBUDDY_TEST_PREPARED_MODEL};fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"
 fi
+if [[ -n "${GAMEBUDDY_TEST_REASONING_CONFIG:-}" ]]; then
+  node - "$runtime_dir/settings.json" "$GAMEBUDDY_TEST_REASONING_CONFIG" <<'JS'
+const fs=require('fs'), [settingsPath,providerPath]=process.argv.slice(2);
+const settings=JSON.parse(fs.readFileSync(settingsPath));
+settings.reasoning=JSON.parse(fs.readFileSync(providerPath));
+fs.writeFileSync(settingsPath,JSON.stringify(settings));
+JS
+fi
 ./target/debug/gamebuddy-cli --data-dir "$GAMEBUDDY_TEST_DATA" configure "$runtime_dir/settings.json"
 if [[ -n "${GAMEBUDDY_TEST_VOICE_MODEL:-}" ]]; then
   node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));s.reasoning.model=process.env.GAMEBUDDY_TEST_VOICE_MODEL;fs.writeFileSync(p,JSON.stringify(s))' "$runtime_dir/settings.json"

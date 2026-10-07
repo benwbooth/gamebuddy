@@ -15,6 +15,7 @@ pub enum ProviderKind {
     Gemini,
     Codex,
     ClaudeCode,
+    Anthropic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +121,7 @@ impl ProviderConfig {
                     self.reasoning_effort.as_str(),
                     "off" | "on" | "low" | "medium" | "high" | "max"
                 ),
-                ProviderKind::ClaudeCode => matches!(
+                ProviderKind::ClaudeCode | ProviderKind::Anthropic => matches!(
                     self.reasoning_effort.as_str(),
                     "low" | "medium" | "high" | "xhigh" | "max"
                 ),
@@ -265,10 +266,11 @@ impl HttpProvider {
                 return result;
             }
             ProviderKind::ClaudeCode => {
-                return crate::subscription::claude_complete(
+                return crate::subscription::claude_complete_structured(
                     &self.config.model,
                     &self.config.reasoning_effort,
                     r,
+                    schema,
                 );
             }
             _ => {}
@@ -276,6 +278,19 @@ impl HttpProvider {
         let base = self.config.endpoint.trim_end_matches('/');
         let (url, body) = match self.config.kind {
             ProviderKind::Codex | ProviderKind::ClaudeCode => unreachable!(),
+            ProviderKind::Anthropic => {
+                let mut content = vec![json!({"type":"text","text":r.prompt})];
+                content.extend(r.images.iter().map(|data| json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":data}})));
+                let mut body = json!({"model":self.config.model,"max_tokens":4096,"system":r.system,"messages":[{"role":"user","content":content}]});
+                if let Some(schema) = schema {
+                    body["output_config"] =
+                        json!({"format":{"type":"json_schema","schema":schema}});
+                }
+                if !matches!(self.config.reasoning_effort.as_str(), "" | "auto") {
+                    body["output_config"]["effort"] = json!(self.config.reasoning_effort);
+                }
+                (format!("{base}/messages"), body)
+            }
             ProviderKind::Ollama => (format!("{base}/api/chat"), {
                 let think = match self.config.reasoning_effort.as_str() {
                     "" | "off" => json!(false),
@@ -338,9 +353,14 @@ impl HttpProvider {
             }
         }
         let mut request = self.client.post(url).json(&body);
+        if self.config.kind == ProviderKind::Anthropic {
+            request = request.header("anthropic-version", "2023-06-01");
+        }
         if let Some(key) = self.key()? {
             request = if self.config.kind == ProviderKind::Gemini {
                 request.header("x-goog-api-key", key)
+            } else if self.config.kind == ProviderKind::Anthropic {
+                request.header("x-api-key", key)
             } else {
                 request.bearer_auth(key)
             };
@@ -358,6 +378,20 @@ impl HttpProvider {
         let body: Value = serde_json::from_str(&text).context("Provider returned invalid JSON")?;
         let result = match self.config.kind {
             ProviderKind::Codex | ProviderKind::ClaudeCode => unreachable!(),
+            ProviderKind::Anthropic => {
+                ensure!(
+                    body["stop_reason"] != "max_tokens",
+                    "Claude's response exceeded the output limit; try a smaller request"
+                );
+                body["content"].as_array().map(|parts| {
+                    parts
+                        .iter()
+                        .filter(|p| p["type"] == "text")
+                        .filter_map(|p| p["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            }
             ProviderKind::Ollama => body["message"]["content"].as_str().map(str::to_owned),
             ProviderKind::OpenAiCompatible => body["choices"][0]["message"]["content"]
                 .as_str()
@@ -612,6 +646,50 @@ pub fn ask(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn anthropic_native_messages_include_images_schema_and_effort() -> Result<()> {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", server.server_addr());
+        let handle = std::thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.url(), "/v1/messages");
+            assert!(request.headers().iter().any(|h| h.field.equiv("anthropic-version") && h.value.as_str() == "2023-06-01"));
+            // Read a test credential from an existing nonsecret environment value.
+            assert!(request.headers().iter().any(|h| h.field.equiv("x-api-key")));
+            assert!(
+                !request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("authorization"))
+            );
+            let mut text = String::new();
+            request.as_reader().read_to_string(&mut text).unwrap();
+            let body: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(body["model"], "claude-test");
+            assert_eq!(body["system"], "system");
+            assert_eq!(
+                body["messages"][0]["content"][1]["source"],
+                json!({"type":"base64","media_type":"image/jpeg","data":"image-data"})
+            );
+            assert_eq!(body["output_config"]["effort"], "low");
+            assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+            request.respond(tiny_http::Response::from_string(json!({"content":[{"type":"thinking","thinking":"private"},{"type":"text","text":"{\"ready\":true}"}],"stop_reason":"end_turn"}).to_string())).unwrap();
+        });
+        let provider = HttpProvider::new(ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            endpoint,
+            model: "claude-test".into(),
+            api_key_env: "USER".into(),
+            reasoning_effort: "low".into(),
+        })?;
+        let reply = provider.complete_structured(ModelRequest {system:"system".into(), prompt:"question".into(), images:vec!["image-data".into()], json:true}, json!({"type":"object","properties":{"ready":{"type":"boolean"}},"required":["ready"],"additionalProperties":false}))?;
+        assert_eq!(reply, "{\"ready\":true}");
+        handle.join().unwrap();
+        Ok(())
+    }
     #[test]
     fn text_import_retains_source_order_when_the_model_omits_chapter_links() -> Result<()> {
         struct Compiled(Guide);

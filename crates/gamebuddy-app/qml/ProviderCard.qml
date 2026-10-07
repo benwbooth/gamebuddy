@@ -23,7 +23,8 @@ Rectangle {
         {id:"ollama", label:"Ollama · local models"},
         {id:"open_ai_compatible", label:"OpenAI-compatible API"},
         {id:"open_ai_responses", label:"OpenAI Responses API"},
-        {id:"gemini", label:"Gemini API"}
+        {id:"gemini", label:"Gemini API"},
+        {id:"anthropic", label:"Claude · Anthropic API"}
     ]
     readonly property var selected: models.find(m => m.id === (config.model || defaultModel)) || ({})
     readonly property var effortOptions: {
@@ -95,11 +96,12 @@ Rectangle {
             onActivated: {
                 const kind = currentValue
                 card.invalidate(); card.models = []; card.defaultModel = ""
-                card.config = {kind:kind,model:kind === "claude_code" ? "sonnet" : "",endpoint:kind === "ollama" ? "http://127.0.0.1:11434" : kind === "open_ai_responses" || kind === "open_ai_compatible" ? "https://api.openai.com/v1" : kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "",api_key_env:"",reasoning_effort:kind === "codex" ? "low" : ""}
+                card.config = {kind:kind,model:kind === "claude_code" ? "sonnet" : "",endpoint:kind === "ollama" ? "http://127.0.0.1:11434" : kind === "open_ai_responses" || kind === "open_ai_compatible" ? "https://api.openai.com/v1" : kind === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : kind === "anthropic" ? "https://api.anthropic.com/v1" : "",api_key_env:kind === "anthropic" ? "ANTHROPIC_API_KEY" : "",reasoning_effort:kind === "codex" || kind === "claude_code" ? "low" : ""}
                 card.edited(); card.request("models")
             }
         }
         Text { visible:card.subscription; text:card.config.kind === "codex" ? "Uses your existing Codex CLI login (codex login)." : "Uses your existing Claude Code login (claude auth login)."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true }
+        Text { visible:card.config.kind === "anthropic"; text:"API usage is billed separately from your Claude Code subscription. Set ANTHROPIC_API_KEY before launching GameBuddy, then find models and test the connection."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true }
         GbField {
             id:endpoint; objectName:card.role+"Endpoint"; visible:!card.subscription; Layout.fillWidth:true
             text:card.config.endpoint || ""; placeholderText:"Server address"
@@ -134,8 +136,8 @@ Rectangle {
         Text { text:"Lower thinking usually answers sooner. Available controls depend on the model."; color:"#a3b4c7"; font.pixelSize:12; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         Text { visible:card.role === "vision" && card.selected.vision === false; text:"This model does not accept images. Choose a vision model for screen interpretation."; color:"#ffbd8b"; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         GbField {
-            id:keyName; visible:!card.subscription && card.config.kind !== "ollama"; Layout.fillWidth:true
-            text:card.config.api_key_env || ""; placeholderText:"API key environment variable, e.g. OPENAI_API_KEY"
+            id:keyName; objectName:card.role+"KeyName"; visible:!card.subscription && card.config.kind !== "ollama"; Layout.fillWidth:true
+            text:card.config.api_key_env || ""; placeholderText:card.config.kind === "anthropic" ? "API key environment variable, e.g. ANTHROPIC_API_KEY" : "API key environment variable, e.g. OPENAI_API_KEY"
             onEditingFinished:card.setField("api_key_env",text.trim())
         }
         GbButton { objectName:card.role+"Test"; text:card.pendingOperation === "test" ? "Testing…" : "Test connection"; enabled:!card.pendingOperation; onClicked:card.request("test") }

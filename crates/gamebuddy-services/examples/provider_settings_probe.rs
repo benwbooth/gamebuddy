@@ -6,20 +6,29 @@ fn main() -> anyhow::Result<()> {
     let kind = match args.next().as_deref() {
         Some("codex") => ProviderKind::Codex,
         Some("claude") => ProviderKind::ClaudeCode,
+        Some("anthropic") => ProviderKind::Anthropic,
         Some("ollama") => ProviderKind::Ollama,
-        _ => anyhow::bail!("Usage: provider_settings_probe codex|claude|ollama [model [effort]]"),
+        _ => anyhow::bail!(
+            "Usage: provider_settings_probe codex|claude|anthropic|ollama [model [effort]]"
+        ),
     };
     let model = args.next();
     let config = ProviderConfig {
         endpoint: if kind == ProviderKind::Ollama {
             "http://127.0.0.1:11434".into()
+        } else if kind == ProviderKind::Anthropic {
+            "https://api.anthropic.com/v1".into()
+        } else {
+            String::new()
+        },
+        api_key_env: if kind == ProviderKind::Anthropic {
+            "ANTHROPIC_API_KEY".into()
         } else {
             String::new()
         },
         kind,
         model: model.clone().unwrap_or_default(),
         reasoning_effort: args.next().unwrap_or_default(),
-        api_key_env: String::new(),
     };
     let result = if model.is_some() {
         provider_catalog::test(config)?

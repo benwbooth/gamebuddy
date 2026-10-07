@@ -1,6 +1,6 @@
 //! Model discovery used by the native settings page. Listing is not an inference test.
 use crate::{HttpProvider, ModelRequest, ProviderConfig, ProviderKind, ReasoningProvider};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,57 @@ pub fn discover(config: &ProviderConfig) -> Result<Value> {
                 json!({"models":models,"note":"Installed models at this Ollama address. Screen interpretation requires a vision model."}),
             )
         }
+        ProviderKind::Anthropic => {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()?;
+            let key = if config.api_key_env.is_empty() {
+                None
+            } else {
+                Some(std::env::var(&config.api_key_env).with_context(|| {
+                    format!("Set {} before launching GameBuddy", config.api_key_env)
+                })?)
+            };
+            let mut models = vec![];
+            let mut cursor = String::new();
+            for _ in 0..20 {
+                let mut request = client
+                    .get(format!("{}/models", config.endpoint.trim_end_matches('/')))
+                    .header("anthropic-version", "2023-06-01")
+                    .query(&[("limit", "100")]);
+                if let Some(key) = &key {
+                    request = request.header("x-api-key", key);
+                }
+                if !cursor.is_empty() {
+                    request = request.query(&[("after_id", &cursor)]);
+                }
+                let page: Value = request.send()?.error_for_status()?.json()?;
+                for model in page["data"]
+                    .as_array()
+                    .context("Anthropic returned no model catalog")?
+                {
+                    let efforts: Vec<_> = ["low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .filter(|e| model["capabilities"]["effort"][e]["supported"] == true)
+                        .collect();
+                    models.push(json!({"id":model["id"],"label":model["display_name"],"efforts":efforts,"vision":model["capabilities"]["image_input"]["supported"]}));
+                }
+                if page["has_more"] != true {
+                    return Ok(
+                        json!({"models":models,"note":"Available models for your Anthropic API key. API usage is billed separately from your Claude Code subscription."}),
+                    );
+                }
+                let next = page["last_id"]
+                    .as_str()
+                    .context("Anthropic model cursor missing")?;
+                ensure!(
+                    !next.is_empty() && next != cursor,
+                    "Anthropic model cursor did not advance"
+                );
+                cursor = next.into();
+            }
+            anyhow::bail!("Anthropic model catalog exceeded the page limit")
+        }
         _ => Ok(
             json!({"models":[],"note":"Enter the model ID provided by your API service. Thinking defaults to the provider setting."}),
         ),
@@ -139,6 +190,43 @@ pub fn test(config: ProviderConfig) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn anthropic_discovery_reads_capabilities_and_follows_pages() -> Result<()> {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1", server.server_addr());
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                assert!(request.url().starts_with("/v1/models?limit=100"));
+                assert_eq!(request.url().contains("after_id=first"), index == 1);
+                assert!(request.headers().iter().any(|h| h.field.equiv("x-api-key")));
+                let body = if index == 0 {
+                    json!({"data":[{"id":"first","display_name":"First","capabilities":{"image_input":{"supported":true},"effort":{"low":{"supported":true},"max":{"supported":false}}}}],"has_more":true,"last_id":"first"})
+                } else {
+                    json!({"data":[{"id":"second","display_name":"Second","capabilities":null}],"has_more":false})
+                };
+                request
+                    .respond(tiny_http::Response::from_string(body.to_string()))
+                    .unwrap();
+            }
+        });
+        let result = discover(&ProviderConfig {
+            kind: ProviderKind::Anthropic,
+            endpoint,
+            model: String::new(),
+            api_key_env: "USER".into(),
+            reasoning_effort: String::new(),
+        })?;
+        assert_eq!(result["models"][0]["efforts"], json!(["low"]));
+        assert_eq!(result["models"][0]["vision"], true);
+        assert_eq!(result["models"][1]["id"], "second");
+        assert!(result["models"][1]["vision"].is_null());
+        handle.join().unwrap();
+        Ok(())
+    }
     #[test]
     fn thinking_options_follow_model_capabilities() {
         assert_eq!(

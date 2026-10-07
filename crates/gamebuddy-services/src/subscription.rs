@@ -359,6 +359,15 @@ pub(crate) fn codex_complete_scoped(
 }
 
 pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<String> {
+    claude_complete_structured(model, effort, r, None)
+}
+
+pub fn claude_complete_structured(
+    model: &str,
+    effort: &str,
+    r: ModelRequest,
+    schema: Option<Value>,
+) -> Result<String> {
     let directory = tempfile::tempdir()?;
     let login = Command::new("claude")
         .args(["--safe-mode", "auth", "status"])
@@ -371,7 +380,7 @@ pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<Str
         serde_json::from_slice(&login.stdout).context("Cannot read Claude sign-in status")?;
     ensure!(
         login["loggedIn"] == true && login["authMethod"] == "claude.ai",
-        "The Claude subscription provider requires a Claude account login; API-key authentication uses a separate provider"
+        "Sign in to your Claude subscription with `claude auth login`, then test again. For an API key, select Anthropic API instead."
     );
     let mut command = Command::new("claude");
     command
@@ -403,6 +412,9 @@ pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<Str
     }
     if !matches!(effort, "" | "auto") {
         command.args(["--effort", effort]);
+    }
+    if let Some(schema) = &schema {
+        command.args(["--json-schema", &schema.to_string()]);
     }
     let mut process = Process(
         command
@@ -442,6 +454,13 @@ pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<Str
         .find(|v| v["type"] == "result")
         .context("Claude returned no result; check `claude auth status`")?;
     ensure!(value["is_error"] != true, "Claude: {}", value["result"]);
+    if schema.is_some() {
+        let output = value
+            .get("structured_output")
+            .filter(|v| v.is_object())
+            .context("Claude returned no structured output")?;
+        return Ok(output.to_string());
+    }
     let answer = value["result"]
         .as_str()
         .context("Claude returned no result")?;

@@ -53,7 +53,7 @@ ScrollView {
         }
         ProviderCard {
             id:reasoning; backend:page.backend; role:"reasoning"; heading:"Interactive advice"
-            description:"Answers player questions and resolves corrections. Lower thinking reduces response time."
+            description:"Answers player questions and resolves corrections in text and voice. Lower thinking reduces response time."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             onEdited:page.dirty = true
         }
@@ -84,8 +84,8 @@ ScrollView {
             model:["Local speech · uses selected advice provider","Codex live voice · ChatGPT subscription"]
             onActivated:page.dirty = true
         }
-        Text { text:"Codex live voice uses a separate voice service. When Codex is selected for advice, its model and thinking also control voice reasoning. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
-        CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1; Layout.leftMargin:24; onClicked:page.dirty=true }
+        Text { text:"Both voice modes use the selected advice provider. Codex live voice still uses your ChatGPT subscription for listening and speech; choose Local speech to use local audio. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
+        CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1 && reasoning.config.kind === "codex"; Layout.leftMargin:24; onClicked:page.dirty=true }
         CheckBox { id:preparedVoice; text:"Prepared neural speech · local voice"; visible:voice.currentIndex===1; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { visible:voice.currentIndex===1; text:preparedVoice.enabled ? "Uses the installed local voice for faster replies and prepares upcoming instructions. Codex continues listening. Reconnect after changing this setting." : "Install a prepared speech voice to enable local audio preparation."; color:"#a3b4c7";font.pixelSize:12;wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24 }
         CheckBox { id:duck; text:"Lower game volume during conversations"; Layout.leftMargin:24; onClicked:page.dirty=true }

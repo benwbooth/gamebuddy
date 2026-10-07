@@ -64,6 +64,40 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Audio remains on Codex's realtime transport; game reasoning can use any
+// configured provider while sharing the same tool validation and delivery loop.
+struct VoiceClient {
+    audio: CodexClient,
+    reasoner: Option<gamebuddy_services::voice::provider::Lane>,
+}
+impl std::ops::Deref for VoiceClient {
+    type Target = CodexClient;
+    fn deref(&self) -> &Self::Target {
+        &self.audio
+    }
+}
+impl std::ops::DerefMut for VoiceClient {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.audio
+    }
+}
+impl VoiceClient {
+    fn send(&mut self, message: Value) -> anyhow::Result<()> {
+        if let Some(lane) = self.reasoner.as_mut()
+            && lane.send(&message)?
+        {
+            return Ok(());
+        }
+        self.audio.send(message)
+    }
+    fn poll(&mut self) -> anyhow::Result<Option<Value>> {
+        if let Some(event) = self.reasoner.as_mut().and_then(|lane| lane.poll()) {
+            return Ok(Some(event));
+        }
+        self.audio.poll()
+    }
+}
+
 #[derive(Default)]
 pub struct RealtimeVoiceRust {
     status: QString,
@@ -418,28 +452,34 @@ impl ffi::RealtimeVoice {
                     ""
                 };
                 use gamebuddy_services::subscription::session::{Options, Role};
-                let tier = client.voice_tier(model, settings.fast_voice, deadline);
-                let session = client.saved_thread(
-                    &store,
-                    &game,
-                    Role::Reasoner,
-                    Options {
-                        model,
-                        instructions: &instructions,
-                        tools,
-                        tier: Some(tier),
-                        effort: if settings.reasoning.kind
-                            == gamebuddy_services::ProviderKind::Codex
-                        {
-                            &settings.reasoning.reasoning_effort
-                        } else {
-                            ""
+                let (thread, reasoner) = if settings.reasoning.kind
+                    == gamebuddy_services::ProviderKind::Codex
+                {
+                    let tier = client.voice_tier(model, settings.fast_voice, deadline);
+                    let session = client.saved_thread(
+                        &store,
+                        &game,
+                        Role::Reasoner,
+                        Options {
+                            model,
+                            instructions: &instructions,
+                            tools,
+                            tier: Some(tier),
+                            effort: &settings.reasoning.reasoning_effort,
                         },
-                    },
-                    deadline,
-                )?;
-                diagnostics.record("llm_session", json!({"role":"reasoner","thread_id":session.id,"resumed":session.resumed,"replacement":session.replacement}));
-                let thread = session.id;
+                        deadline,
+                    )?;
+                    diagnostics.record("llm_session", json!({"role":"reasoner","provider":settings.reasoning.kind,"model":model,"thread_id":session.id,"resumed":session.resumed,"replacement":session.replacement}));
+                    (session.id, None)
+                } else {
+                    let lane = gamebuddy_services::voice::provider::Lane::new(
+                        settings.reasoning.clone(),
+                        instructions,
+                        tools,
+                    )?;
+                    diagnostics.record("llm_session", json!({"role":"reasoner","provider":settings.reasoning.kind,"model":settings.reasoning.model,"thread_id":lane.thread}));
+                    (lane.thread.clone(), Some(lane))
+                };
                 // Native recognition may merge successive utterances and may
                 // delegate despite its prompt. Keep that evolving transcript
                 // out of the authoritative tool conversation. Only settled
@@ -463,6 +503,10 @@ impl ffi::RealtimeVoice {
                 )?;
                 diagnostics.record("llm_session", json!({"role":"speaker","thread_id":speaker.id,"resumed":speaker.resumed,"replacement":speaker.replacement}));
                 let speaker_thread = speaker.id;
+                let mut client = VoiceClient {
+                    audio: client,
+                    reasoner,
+                };
                 let mut memory = conversation::RealtimeMemory::new(&store, &game, &speaker_thread);
                 let approved_speech = std::cell::Cell::new(false);
                 let mut notification = |event: &Value| -> anyhow::Result<()> {
@@ -530,13 +574,8 @@ impl ffi::RealtimeVoice {
                     json!({"method":"gamebuddy/voice-mode","params":{"conversational":conversational}}),
                 );
                 client.request_with_notifications("thread/realtime/start", json!({"threadId":speaker_thread,"outputModality":"audio","version":"v3","delegationAckFiller":false,"clientManagedHandoffs":true,"codexResponseHandoffMode":"bemTags","includeStartupContext":false,"prompt":if conversational {gamebuddy_services::voice::prompts::CONVERSATIONAL_SPEAKER} else {gamebuddy_services::voice::prompts::SPEAKER},"initialItems":conversation::initial_items(&context,&history),"transport":{"type":"webrtc","sdp":offer.to_string()}}), deadline, &mut notification)?;
-                let mut decision_settings = settings.clone();
-                decision_settings.reasoning.model = model.into();
-                if settings.reasoning.kind != gamebuddy_services::ProviderKind::Codex {
-                    decision_settings.reasoning.reasoning_effort.clear();
-                }
                 let mut decision =
-                    gamebuddy_services::voice::decision::Lane::start(decision_settings);
+                    gamebuddy_services::voice::decision::Lane::start(settings.clone());
                 let mut decision_ready: Option<gamebuddy_services::voice::decision::Proposal> =
                     None;
                 let mut speculation_budget = (0u64, 0u8);
@@ -767,8 +806,10 @@ impl ffi::RealtimeVoice {
                                 && reasoning_turn.as_ref() == Some(&event["params"]["turn"]["id"])
                             {
                                 delivery.abandon(utterance);
+                                let error = event["params"]["turn"]["error"].as_str()
+                                    .unwrap_or("I couldn't finish that request. You can still speak to me; please try again.");
                                 emit(
-                                    json!({"method":"gamebuddy/reply-error","params":{"text":"I couldn't finish that request. You can still speak to me; please try again."}}),
+                                    json!({"method":"gamebuddy/reply-error","params":{"text":error}}),
                                 );
                             }
                             drop(current_input);
@@ -994,6 +1035,7 @@ impl ffi::RealtimeVoice {
                         speculation_budget = (utterance, 0);
                     }
                     if !conversational
+                        && settings.reasoning.kind == gamebuddy_services::ProviderKind::Codex
                         && !quiet
                         && speculation_budget.1 < 2
                         && last_speculation.elapsed() >= Duration::from_secs(1)
@@ -1245,14 +1287,14 @@ impl ffi::RealtimeVoice {
                             }
                             diagnostics.record("request_update_sent", json!({"utterance":utterance,"text_bytes":request.len(),"images":evidence.as_ref().map_or(0,|c|c.images.len())}));
                             client.send(json!({"id":sequence,"method":"turn/steer","params":{"threadId":thread,"expectedTurnId":turn_id,"input":turn_input}}))?;
-                            if evidence.is_some() {
-                                if let Some(frame) = &updated_frame {
-                                    let _ = gamebuddy_services::screen::seen::record(
-                                        &store,
-                                        frame,
-                                        "assistant",
-                                    );
-                                }
+                            if evidence.is_some()
+                                && let Some(frame) = &updated_frame
+                            {
+                                let _ = gamebuddy_services::screen::seen::record(
+                                    &store,
+                                    frame,
+                                    "assistant",
+                                );
                             }
                         }
                         if let Some((event, reject)) = pending_tools.pop_front() {
@@ -1345,7 +1387,7 @@ struct ToolOutcome {
 }
 
 fn answer_tool(
-    client: &mut CodexClient,
+    client: &mut VoiceClient,
     store: &Store,
     game: &str,
     event: &Value,
