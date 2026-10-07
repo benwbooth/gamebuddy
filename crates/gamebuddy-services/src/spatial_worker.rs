@@ -253,7 +253,8 @@ pub fn call(config: &WorkerConfig, slot: &str, request: Value) -> Result<Value> 
     result
 }
 
-#[cfg(test)]
+// nix-ld and these colon-separated paths exist only on Unix.
+#[cfg(all(test, unix))]
 mod library_path_tests {
     use super::foreign_library_path;
     #[test]
