@@ -1,2 +1,3 @@
 module GameBuddy
 NeuralVoice 1.0 NeuralVoice.qml
+GeminiVoice 1.0 GeminiVoice.qml

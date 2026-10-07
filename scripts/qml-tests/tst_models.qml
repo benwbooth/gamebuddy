@@ -95,7 +95,7 @@ Item {
             const scope=findChild(page,"singleProvider")
             scope.checked=true;scope.clicked()
             const voice=findChild(page,"speechBackend")
-            compare(voice.currentIndex,0);verify(!voice.enabled)
+            compare(voice.currentIndex,0)
             page.save()
             let saved=JSON.parse(backend.settings_json)
             verify(saved.single_provider)
@@ -114,6 +114,11 @@ Item {
             saved=JSON.parse(backend.settings_json)
             compare(saved.vision.kind,"anthropic");compare(saved.vision.api_key_env,"ANTHROPIC_API_KEY")
             compare(saved.speech,"local")
+            // Gemini Live only voices the assistant, so it stays selected.
+            voice.currentIndex=2;voice.activated(2);page.save()
+            saved=JSON.parse(backend.settings_json)
+            compare(saved.speech,"gemini_live");compare(saved.vision.kind,"anthropic")
+            compare(saved.live_voice.model,"gemini-3.1-flash-live-preview");compare(saved.live_voice.api_key_env,"GEMINI_API_KEY")
         }
     }
 }

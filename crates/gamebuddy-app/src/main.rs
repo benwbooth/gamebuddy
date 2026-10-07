@@ -1,5 +1,6 @@
 mod audio;
 mod controller;
+mod gemini_voice;
 mod neural_voice;
 mod overlay;
 mod realtime;

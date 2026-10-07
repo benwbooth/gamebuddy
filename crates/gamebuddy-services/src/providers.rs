@@ -59,6 +59,67 @@ pub struct Settings {
     pub duck_game_audio: bool,
     #[serde(default = "fast_voice_enabled")]
     pub fast_voice: bool,
+    #[serde(default)]
+    pub live_voice: LiveVoice,
+}
+/// Gemini Live speech-to-speech. It owns listening, turn-taking and speech;
+/// game questions go to the reasoning provider through a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveVoice {
+    pub model: String,
+    pub voice: String,
+    pub api_key_env: String,
+}
+impl Default for LiveVoice {
+    fn default() -> Self {
+        Self {
+            model: "gemini-3.1-flash-live-preview".into(),
+            voice: "Puck".into(),
+            api_key_env: "GEMINI_API_KEY".into(),
+        }
+    }
+}
+impl LiveVoice {
+    /// The environment variable first, then a private key file outside the
+    /// data store for launchers that do not pass the session environment.
+    pub fn api_key(&self) -> Result<String> {
+        if let Ok(key) = std::env::var(&self.api_key_env)
+            && !key.trim().is_empty()
+        {
+            return Ok(key.trim().into());
+        }
+        let file = Self::key_file()?;
+        let key = std::fs::read_to_string(&file).with_context(|| {
+            format!(
+                "Set {} or save a Gemini API key in {}",
+                self.api_key_env,
+                file.display()
+            )
+        })?;
+        ensure!(!key.trim().is_empty(), "The saved Gemini API key is empty");
+        Ok(key.trim().into())
+    }
+    pub fn key_file() -> Result<std::path::PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })
+            .context("No configuration directory")?;
+        Ok(config.join("gamebuddy").join("gemini-api-key"))
+    }
+    pub fn save_api_key(key: &str) -> Result<()> {
+        let key = key.trim();
+        ensure!(!key.is_empty(), "Enter a Gemini API key");
+        let file = Self::key_file()?;
+        std::fs::create_dir_all(file.parent().unwrap())?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        std::io::Write::write_all(&mut options.open(&file)?, key.as_bytes())?;
+        Ok(())
+    }
 }
 fn fast_voice_enabled() -> bool {
     true
@@ -77,6 +138,7 @@ impl Default for Settings {
             speech: SpeechBackend::default(),
             duck_game_audio: true,
             fast_voice: true,
+            live_voice: LiveVoice::default(),
         }
     }
 }
@@ -85,11 +147,14 @@ impl Settings {
         if self.single_provider {
             self.vision = self.reasoning.clone();
             self.planning = None;
-            self.speech = if self.reasoning.kind == ProviderKind::Codex {
-                SpeechBackend::CodexRealtime
-            } else {
-                SpeechBackend::Local
-            };
+            // Gemini Live is an explicit choice and only voices the assistant.
+            if self.speech != SpeechBackend::GeminiLive {
+                self.speech = if self.reasoning.kind == ProviderKind::Codex {
+                    SpeechBackend::CodexRealtime
+                } else {
+                    SpeechBackend::Local
+                };
+            }
         }
     }
 
@@ -114,6 +179,7 @@ pub enum SpeechBackend {
     #[default]
     Local,
     CodexRealtime,
+    GeminiLive,
 }
 
 impl ProviderConfig {
@@ -692,6 +758,12 @@ mod tests {
         settings.apply_provider_scope();
         assert_eq!(settings.speech, SpeechBackend::CodexRealtime);
         assert_eq!(settings.planning_config().model, "chosen-model");
+        // A chosen Gemini Live voice survives; it only voices the assistant.
+        settings.reasoning.kind = ProviderKind::ClaudeCode;
+        settings.speech = SpeechBackend::GeminiLive;
+        settings.apply_provider_scope();
+        assert_eq!(settings.speech, SpeechBackend::GeminiLive);
+        assert_eq!(settings.live_voice.api_key_env, "GEMINI_API_KEY");
         Ok(())
     }
     #[test]

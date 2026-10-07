@@ -29,6 +29,9 @@ ApplicationWindow {
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
     property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
+    property bool geminiEnabled: JSON.parse(buddy.settings_json).speech === "gemini_live"
+    // Either live backend owns listening and speech; local audio stays quiet.
+    readonly property bool liveVoiceEnabled: realtimeEnabled || geminiEnabled
     property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false
     property string captureError: ""
     property string smokePath: arg("--smoke-test")
@@ -111,7 +114,7 @@ ApplicationWindow {
         onState_jsonChanged: root.session = JSON.parse(state_json)
         onMap_preview_ready: (id, preview) => widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
         Component.onCompleted: initialize()
-        onAnswerChanged: { if (!root.realtimeEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
+        onAnswerChanged: { if (!root.liveVoiceEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
         onVoice_command: action => root.overlayAction(action)
         onBusyChanged: if (!busy) root.voiceTurnRunning = false
     }
@@ -126,7 +129,7 @@ ApplicationWindow {
     Timer {
         interval:100;repeat:true;running:true
         onTriggered:gameAudio.poll(root.arg("--game-pid"),
-            realtimeVoice.conversationActive || voice.speaking || companion.recording || companion.pendingRecording
+            realtimeVoice.conversationActive || liveVoice.conversationActive || voice.speaking || companion.recording || companion.pendingRecording
             || root.voiceTurnRunning || root.queuedVoice.length>0 || speech.speaking,
             root.duckGameAudio)
     }
@@ -142,6 +145,17 @@ ApplicationWindow {
         onAnswer: text => buddy.answer = text
         onOverlayAction: action => root.overlayAction(action)
     }
+    LiveVoicePanel {
+        id: liveVoice
+        parent: compositor.active ? overlayScene : companionWindow.contentItem
+        buddy: root.buddyObject; voice: voice; session: root.session
+        contextSource: realtimeVoice
+        enabledBackend: root.geminiEnabled; spokenReplies: companion.spokenReplies
+        automaticSession: compositor.active
+        trace: root.appArguments.indexOf("--voice-trace") >= 0
+        onTranscript: text => buddy.realtime_transcript(text)
+        onAnswer: text => buddy.answer = text
+    }
     VoiceInput {
         id: voice
         armed: compositor.active && root.appArguments.indexOf("--no-listen") < 0
@@ -153,7 +167,7 @@ ApplicationWindow {
         onTriggered: {
             const path = voice.poll(buddy.voice_directory(), buddy.busy || root.voiceTurnRunning || root.queuedVoice.length > 0,
                 speech.busy,
-                companion.recording || companion.pendingRecording, root.realtimeEnabled)
+                companion.recording || companion.pendingRecording, root.liveVoiceEnabled)
             if (path.length) root.queuedVoice = path
             if (root.queuedVoice.length && !buddy.busy) {
                 const ready = root.queuedVoice
@@ -194,10 +208,10 @@ ApplicationWindow {
         z: 10
         buddy: root.buddyObject
         voice: voice
-        realtimeEnabled: root.realtimeEnabled
-        realtimeStatus: realtimeVoice.status
-        realtimeCapturing: realtimeVoice.capturing
-        realtimeThinking: realtimeVoice.started && (realtimeVoice.workPending || realtimeVoice.backendBusy || (realtimeVoice.waitingForReply && !realtimeVoice.assistantSpeaking && !realtimeVoice.userSpeaking))
+        realtimeEnabled: root.liveVoiceEnabled
+        realtimeStatus: root.geminiEnabled ? liveVoice.status : realtimeVoice.status
+        realtimeCapturing: root.geminiEnabled ? liveVoice.capturing : realtimeVoice.capturing
+        realtimeThinking: root.geminiEnabled ? liveVoice.started && liveVoice.workPending : realtimeVoice.started && (realtimeVoice.workPending || realtimeVoice.backendBusy || (realtimeVoice.waitingForReply && !realtimeVoice.assistantSpeaking && !realtimeVoice.userSpeaking))
         spokenReplies: root.appArguments.indexOf("--quiet") < 0
         widgetCatalog: root.widgetCatalog
         onWidgetVisibilityChanged: (id,shown) => { buddy.set_widget_visible(id,shown);if(shown){root.widgetsEnabled=true;companion.widgetsVisible=true} }
@@ -208,7 +222,7 @@ ApplicationWindow {
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
         onCropRequested: root.openCrop()
         onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
-        onStopSpeaking: { speech.stop(); realtimeVoice.stopSpeaking() }
+        onStopSpeaking: { speech.stop(); realtimeVoice.stopSpeaking(); liveVoice.stopSpeaking() }
         onWidgetsToggled: shown => root.widgetsEnabled = shown
         onArrangementChanged: active => { root.editOverlay = active; root.widgetsEnabled = true }
     }
@@ -333,8 +347,8 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 32
             z: 25
-            text: realtimeVoice.captionText
-            active: realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking
+            text: root.geminiEnabled ? liveVoice.captionText : realtimeVoice.captionText
+            active: root.geminiEnabled ? liveVoice.captionStreaming || liveVoice.assistantSpeaking : realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking
         }
         WebEngineView {
             id: widgetView

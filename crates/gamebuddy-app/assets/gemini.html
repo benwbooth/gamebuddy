@@ -1,0 +1,126 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src wss://generativelanguage.googleapis.com"></head><body><script>
+// Gemini Live: 16 kHz PCM microphone in, 24 kHz PCM speech out, one
+// WebSocket. Server-side voice activity detection handles turn-taking and
+// barge-in; game questions arrive as ask_gamebuddy tool calls.
+(() => {
+  const URL_BASE='wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=';
+  let ws=null,config=null,generation=0,resumeHandle=null,reconnects=0,ready=false,stopping=false;
+  let mic=null,micContext=null,micNodes=null,captureGeneration=0;
+  let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,meterTimer=null;
+  let inputText='',outputText='',pendingTools=new Map();
+  const emit=(type,value)=>console.info('GAMEBUDDY_GEMINI '+JSON.stringify({type,value,at:Date.now()}));
+  const send=message=>{if(ws?.readyState===WebSocket.OPEN&&ready)ws.send(JSON.stringify(message))};
+  function base64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(s)}
+  function stopPlayback(){for(const s of sources){s.onended=null;try{s.stop()}catch{}}sources.clear();playAt=0;setSpeaking(false)}
+  function setSpeaking(value){if(value!==speaking){speaking=value;emit('output-active',value)}}
+  function play(data){
+    if(outputMuted||!speaker)return;
+    const raw=atob(data),samples=new Float32Array(raw.length>>1);
+    for(let i=0;i<samples.length;i++){let v=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);if(v>=32768)v-=65536;samples[i]=v/32768}
+    const buffer=speaker.createBuffer(1,samples.length,24000);buffer.copyToChannel(samples,0);
+    const source=speaker.createBufferSource();source.buffer=buffer;source.connect(speaker.destination);
+    playAt=Math.max(playAt,speaker.currentTime+0.03);source.start(playAt);playAt+=buffer.duration;
+    sources.add(source);source.onended=()=>{sources.delete(source);if(!sources.size)setSpeaking(false)};
+    setSpeaking(true);
+  }
+  function message(m){
+    if(m.setupComplete){ready=true;reconnects=0;emit('ready',true);return}
+    if(m.sessionResumptionUpdate?.resumable&&m.sessionResumptionUpdate.newHandle)resumeHandle=m.sessionResumptionUpdate.newHandle;
+    if(m.goAway){emit('trace','go-away '+(m.goAway.timeLeft||''));reconnect();return}
+    if(m.toolCall){for(const call of m.toolCall.functionCalls||[]){pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,request:call.args?.request||''})}return}
+    if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}return}
+    const c=m.serverContent;if(!c)return;
+    if(c.interrupted){stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
+    if(c.inputTranscription?.text){inputText+=c.inputTranscription.text;emit('input-text',inputText)}
+    if(c.outputTranscription?.text){
+      if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
+      outputText+=c.outputTranscription.text;emit('caption',outputText)}
+    for(const part of c.modelTurn?.parts||[])if(part.inlineData?.data)play(part.inlineData.data);
+    if(c.turnComplete||c.generationComplete){
+      if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
+      if(c.turnComplete&&outputText.trim()){emit('output-final',outputText.trim());outputText=''}
+    }
+  }
+  function connect(){
+    const own=generation;ready=false;
+    const setup=JSON.parse(JSON.stringify(config.setup));
+    if(resumeHandle)setup.sessionResumption={handle:resumeHandle};
+    const socket=new WebSocket(URL_BASE+encodeURIComponent(config.key));ws=socket;
+    socket.onopen=()=>{if(own===generation&&ws===socket)socket.send(JSON.stringify({setup}))};
+    socket.onmessage=async e=>{if(own!==generation||ws!==socket)return;try{message(JSON.parse(typeof e.data==='string'?e.data:await e.data.text()))}catch(err){emit('trace','bad message '+err.message)}};
+    socket.onerror=()=>{if(own===generation&&ws===socket)emit('trace','socket error')};
+    socket.onclose=e=>{
+      if(own!==generation||ws!==socket||stopping)return;
+      ready=false;
+      // Policy and key errors will not succeed on retry.
+      if([1007,1008].includes(e.code)||reconnects>=3){emit('error',e.reason||('Gemini Live closed ('+e.code+')'));return}
+      reconnect();
+    };
+  }
+  function reconnect(){
+    if(!config)return;reconnects++;
+    const old=ws;ws=null;ready=false;if(old){old.onclose=null;try{old.close()}catch{}}
+    emit('reconnecting',reconnects);setTimeout(()=>{if(config&&!ws)connect()},reconnects>1?1000:0);
+  }
+  function closeMic(){
+    captureGeneration++;
+    if(micNodes){micNodes.processor.onaudioprocess=null;micNodes.source.disconnect();micNodes.processor.disconnect();micNodes.zero.disconnect();micNodes=null}
+    if(mic){mic.getTracks().forEach(t=>t.stop());mic=null;send({realtimeInput:{audioStreamEnd:true}})}
+    if(micContext){micContext.close().catch(()=>{});micContext=null}
+    emit('capture',false);
+  }
+  async function setMicrophone(enabled,deviceName){
+    closeMic();if(!enabled||!config)return;
+    const request=captureGeneration,stale=()=>request!==captureGeneration||!config;
+    const constraints={echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1};
+    let stream=null;
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:constraints,video:false});
+      if(deviceName){
+        const devices=await navigator.mediaDevices.enumerateDevices();
+        const selected=devices.find(d=>d.kind==='audioinput'&&(d.label===deviceName||d.label.endsWith(deviceName)));
+        if(!selected)throw Error('Selected microphone is unavailable to the voice engine');
+        stream.getTracks().forEach(t=>t.stop());
+        stream=await navigator.mediaDevices.getUserMedia({audio:{...constraints,deviceId:{exact:selected.deviceId}},video:false});
+      }
+      if(stale()){stream.getTracks().forEach(t=>t.stop());return}
+      // The context resamples the microphone to the 16 kHz Gemini expects.
+      const context=new AudioContext({sampleRate:16000});await context.resume();
+      const source=context.createMediaStreamSource(stream),processor=context.createScriptProcessor(1024,1,1),zero=context.createGain();
+      zero.gain.value=0;source.connect(processor);processor.connect(zero);zero.connect(context.destination);
+      processor.onaudioprocess=event=>{
+        if(!ready)return;
+        const input=event.inputBuffer.getChannelData(0),pcm=new Int16Array(input.length);
+        for(let i=0;i<input.length;i++)pcm[i]=Math.max(-32768,Math.min(32767,Math.round(input[i]*32767)));
+        send({realtimeInput:{audio:{data:base64(new Uint8Array(pcm.buffer)),mimeType:'audio/pcm;rate=16000'}}});
+      };
+      mic=stream;micContext=context;micNodes={source,processor,zero};emit('capture',true);
+    }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale())emit('microphone-error',e.name+': '+e.message)}
+  }
+  function stop(){
+    generation++;stopping=true;closeMic();stopPlayback();pendingTools.clear();inputText='';outputText='';
+    if(ws){ws.onclose=null;try{ws.close()}catch{}}ws=null;ready=false;config=null;resumeHandle=null;reconnects=0;
+    if(speaker){speaker.close().catch(()=>{});speaker=null}
+    clearInterval(meterTimer);meterTimer=null;stopping=false;
+  }
+  window.gamebuddyGemini={
+    async start(session,deviceName,capture){
+      stop();
+      if(session.error){emit('error',session.error);return}
+      config=session;speaker=new AudioContext({sampleRate:24000});await speaker.resume();
+      connect();if(capture)await setMicrophone(true,deviceName);
+    },
+    stop,setMicrophone,
+    toolResult(id,text,failed=false){
+      const name=pendingTools.get(id);if(!name)return;pendingTools.delete(id);
+      send({toolResponse:{functionResponses:[{id,name,response:failed?{error:text}:{answer:text}}]}});
+    },
+    // Application cues are spoken; context is quiet background.
+    cue(text){send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
+    context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},
+    interrupt(){stopPlayback()},
+    muteOutput(muted){outputMuted=muted;if(muted)stopPlayback()}
+  };
+})();
+</script></body></html>

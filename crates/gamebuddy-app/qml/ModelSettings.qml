@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import GameBuddy
 
 ScrollView {
     id: page
@@ -18,7 +19,9 @@ ScrollView {
         reasoning.load(settings.reasoning); vision.load(settings.vision)
         automaticPlanning.checked = !settings.planning
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
-        voice.currentIndex = settings.speech === "codex_realtime" ? 1 : 0
+        voice.currentIndex = settings.speech === "codex_realtime" ? 1 : settings.speech === "gemini_live" ? 2 : 0
+        liveModel.text = settings.live_voice?.model || "gemini-3.1-flash-live-preview"
+        liveVoiceName.text = settings.live_voice?.voice || "Puck"
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         preparedVoice.enabled=!!settings.prepared_speech
         preparedVoice.checked=!!settings.prepared_speech && settings.prepared_speech.enabled!==false
@@ -35,7 +38,8 @@ ScrollView {
         if (!singleProvider.checked) return
         const config = reasoning.configuration()
         vision.load(config); planning.load(config); automaticPlanning.checked = true
-        voice.currentIndex = config.kind === "codex" ? 1 : 0
+        // Gemini Live only voices the assistant, so it survives this choice.
+        if (voice.currentIndex !== 2) voice.currentIndex = config.kind === "codex" ? 1 : 0
     }
     function save() {
         applySingleProvider()
@@ -43,7 +47,8 @@ ScrollView {
         settings.single_provider = singleProvider.checked
         settings.reasoning = reasoning.configuration(); settings.vision = vision.configuration()
         settings.planning = automaticPlanning.checked ? null : planning.configuration()
-        settings.speech = voice.currentIndex === 1 ? "codex_realtime" : "local"
+        settings.speech = ["local", "codex_realtime", "gemini_live"][voice.currentIndex]
+        settings.live_voice = Object.assign({api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {}, {model: liveModel.text.trim(), voice: liveVoiceName.text.trim()})
         settings.fast_voice = fast.checked; settings.duck_game_audio = duck.checked
         if(settings.prepared_speech)settings.prepared_speech.enabled=preparedVoice.checked
         backend.save_settings(JSON.stringify(settings))
@@ -103,14 +108,29 @@ ScrollView {
         Text { text:"Voice"; color:"#eaf2fa"; font.pixelSize:20; Layout.leftMargin:24 }
         ComboBox {
             id:voice; objectName:"speechBackend"; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
-            enabled:!singleProvider.checked
-            model:["Local audio · selected provider handles all conversation","Codex live voice · ChatGPT subscription"]
+            model:["Local audio · selected provider handles all conversation","Codex live voice · ChatGPT subscription","Gemini Live voice · natural speech, your assistant answers game questions"]
             onActivated:page.dirty = true
         }
         Text { text:singleProvider.checked ? (reasoning.config.kind === "codex" ? "This setup uses Codex for both the assistant and live voice." : "All spoken answers come from the selected assistant. Audio is transcribed and spoken locally. Local listening pauses while processing and playing a reply; Stop cuts off playback.") : "Local audio sends every conversation to the selected provider. Codex live voice also uses ChatGPT for ordinary conversation, listening, and speech. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1 && reasoning.config.kind === "codex"; Layout.leftMargin:24; onClicked:page.dirty=true }
         CheckBox { id:preparedVoice; text:"Prepared neural speech · local voice"; visible:voice.currentIndex===1; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { visible:voice.currentIndex===1; text:preparedVoice.enabled ? "Uses the installed local voice for faster replies and prepares upcoming instructions. Codex continues listening. Reconnect after changing this setting." : "Install a prepared speech voice to enable local audio preparation."; color:"#a3b4c7";font.pixelSize:12;wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24 }
+        GeminiVoice { id:geminiKeys }
+        GridLayout {
+            visible:voice.currentIndex===2; columns:2; columnSpacing:10; rowSpacing:8
+            Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
+            Text { text:"Gemini model"; color:"#a3b4c7"; font.pixelSize:12 }
+            TextField { id:liveModel; objectName:"geminiModel"; Layout.fillWidth:true; onTextEdited:page.dirty=true }
+            Text { text:"Voice"; color:"#a3b4c7"; font.pixelSize:12 }
+            TextField { id:liveVoiceName; objectName:"geminiVoiceName"; Layout.fillWidth:true; placeholderText:"Puck, Charon, Kore, Fenrir, Aoede…"; onTextEdited:page.dirty=true }
+            Text { text:"API key"; color:"#a3b4c7"; font.pixelSize:12 }
+            RowLayout {
+                Layout.fillWidth:true
+                TextField { id:geminiKey; objectName:"geminiApiKey"; Layout.fillWidth:true; echoMode:TextInput.Password; placeholderText:"Paste a Google AI Studio key to replace the saved one" }
+                GbButton { text:"Save key"; enabled:geminiKey.text.trim().length>0; onClicked:{ const error=geminiKeys.save_api_key(geminiKey.text); geminiKeyStatus.text=error.length ? error : "Key saved privately on this computer."; if(!error.length)geminiKey.text="" } }
+            }
+        }
+        Text { id:geminiKeyStatus; visible:voice.currentIndex===2; text:"Gemini listens and speaks; game questions go to the assistant above. The key comes from GEMINI_API_KEY, or the private key file ~/.config/gamebuddy/gemini-api-key. Reconnect voice after saving."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:duck; text:"Lower game volume during conversations"; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { text:page.audioStatus; color:"#a3b4c7"; font.pixelSize:12; Layout.leftMargin:24; Layout.rightMargin:24; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         RowLayout {
