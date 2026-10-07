@@ -1,5 +1,7 @@
 name: Rust core and services
-on: [push, pull_request]
+# Manual only until the Actions quota resets on 2026-11-01; restore
+# `on: [push, pull_request]` then. Run it with: gh workflow run core.yml
+on: [workflow_dispatch]
 jobs:
   test:
     strategy:
