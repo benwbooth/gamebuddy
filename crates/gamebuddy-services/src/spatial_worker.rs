@@ -55,6 +55,25 @@ struct StartupEvent {
     total: u32,
 }
 
+/// Prebuilt Python wheels (numpy, torch) on NixOS load system libraries such
+/// as libz through nix-ld. nix-ld only supplies NIX_LD_LIBRARY_PATH when
+/// LD_LIBRARY_PATH is unset, and GameBuddy's own runtime sets it, so the
+/// worker would crash on import. Append nix-ld's libraries after ours.
+fn foreign_library_path(
+    current: Option<std::ffi::OsString>,
+    nix_ld: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let nix_ld = nix_ld.filter(|p| !p.is_empty())?;
+    let current = current.filter(|p| !p.is_empty())?;
+    let mut paths: Vec<_> = std::env::split_paths(&current).collect();
+    for path in std::env::split_paths(&nix_ld) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    std::env::join_paths(paths).ok()
+}
+
 pub struct Worker {
     child: Child,
     input: ChildStdin,
@@ -66,7 +85,14 @@ impl Worker {
         Self::start_with_status(config, Arc::new(Mutex::new(Startup::starting())))
     }
     fn start_with_status(config: &WorkerConfig, startup: Arc<Mutex<Startup>>) -> Result<Self> {
-        let mut child = Command::new(&config.executable)
+        let mut command = Command::new(&config.executable);
+        if let Some(path) = foreign_library_path(
+            std::env::var_os("LD_LIBRARY_PATH"),
+            std::env::var_os("NIX_LD_LIBRARY_PATH"),
+        ) {
+            command.env("LD_LIBRARY_PATH", path);
+        }
+        let mut child = command
             .args(&config.arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -225,6 +251,26 @@ pub fn call(config: &WorkerConfig, slot: &str, request: Value) -> Result<Value> 
         *worker = None;
     }
     result
+}
+
+#[cfg(test)]
+mod library_path_tests {
+    use super::foreign_library_path;
+    #[test]
+    fn nix_ld_libraries_follow_the_app_runtime_libraries() {
+        let joined = foreign_library_path(Some("/app/lib".into()), Some("/nix-ld/lib".into()));
+        assert_eq!(joined, Some("/app/lib:/nix-ld/lib".into()));
+        // nix-ld handles an unset LD_LIBRARY_PATH itself; non-NixOS has no NIX_LD.
+        assert_eq!(foreign_library_path(None, Some("/nix-ld/lib".into())), None);
+        assert_eq!(foreign_library_path(Some("/app/lib".into()), None), None);
+        assert_eq!(
+            foreign_library_path(
+                Some("/app/lib:/nix-ld/lib".into()),
+                Some("/nix-ld/lib".into())
+            ),
+            Some("/app/lib:/nix-ld/lib".into())
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
