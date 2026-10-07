@@ -14,6 +14,7 @@ ScrollView {
     function reload() {
         const settings = JSON.parse(backend.settings_json)
         if (!settings.reasoning || !settings.vision) return
+        singleProvider.checked = settings.single_provider === true
         reasoning.load(settings.reasoning); vision.load(settings.vision)
         automaticPlanning.checked = !settings.planning
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
@@ -27,11 +28,19 @@ ScrollView {
     function discover() {
         if (!visible || !loaded) return
         if (!reasoning.models.length && !reasoning.pendingOperation) reasoning.request("models")
-        if (!vision.models.length && !vision.pendingOperation) vision.request("models")
-        if (!automaticPlanning.checked && !planning.models.length && !planning.pendingOperation) planning.request("models")
+        if (!singleProvider.checked && !vision.models.length && !vision.pendingOperation) vision.request("models")
+        if (!singleProvider.checked && !automaticPlanning.checked && !planning.models.length && !planning.pendingOperation) planning.request("models")
+    }
+    function applySingleProvider() {
+        if (!singleProvider.checked) return
+        const config = reasoning.configuration()
+        vision.load(config); planning.load(config); automaticPlanning.checked = true
+        voice.currentIndex = config.kind === "codex" ? 1 : 0
     }
     function save() {
+        applySingleProvider()
         const settings = JSON.parse(backend.settings_json)
+        settings.single_provider = singleProvider.checked
         settings.reasoning = reasoning.configuration(); settings.vision = vision.configuration()
         settings.planning = automaticPlanning.checked ? null : planning.configuration()
         settings.speech = voice.currentIndex === 1 ? "codex_realtime" : "local"
@@ -51,29 +60,42 @@ ScrollView {
             GbButton { objectName:"saveModels"; text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty && !page.backend.busy; onClicked:page.save() }
             GbButton { text:"Discard changes"; enabled:page.dirty; onClicked:page.reload() }
         }
+        CheckBox {
+            id:singleProvider; objectName:"singleProvider"; text:"Use one provider for all AI work"
+            Layout.leftMargin:24
+            onClicked:{page.dirty=true;page.applySingleProvider();page.discover()}
+        }
+        Text {
+            visible:singleProvider.checked
+            text:"The provider below handles every conversation, stories, game advice, tools, memory recall, screenshots, and background planning. Claude and other providers use local speech recognition and playback, with no Codex connection."
+            color:"#a3b4c7";wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24
+        }
         ProviderCard {
-            id:reasoning; backend:page.backend; role:"reasoning"; heading:"Interactive advice"
-            description:"Answers player questions and resolves corrections in text and voice. Lower thinking reduces response time."
+            id:reasoning; backend:page.backend; role:"reasoning"; heading:singleProvider.checked ? "Assistant provider" : "Conversation & game advice"
+            description:"Handles conversation and game requests in text and voice. Lower thinking reduces response time."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
-            onEdited:page.dirty = true
+            onEdited:{page.dirty = true;page.applySingleProvider()}
         }
         ProviderCard {
             id:vision; backend:page.backend; role:"vision"; heading:"Screen interpretation"
+            visible:!singleProvider.checked
             description:"Reads screenshots when the guide needs a visual check. Choose a model that accepts images."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             onEdited:page.dirty = true
         }
         CheckBox {
             id:automaticPlanning; objectName:"automaticPlanning"; text:"Choose background planning model automatically"
+            visible:!singleProvider.checked
             Layout.leftMargin:24; checked:true; onClicked:{page.dirty=true; if(!checked) page.discover()}
         }
         Text {
+            visible:!singleProvider.checked
             text:"Background planning prepares reusable route rules. With Codex advice, automatic planning uses GPT-6.1 Sol at medium thinking. Inventory and route updates then run locally."
             color:"#a3b4c7"; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
         }
         ProviderCard {
             id:planning; backend:page.backend; role:"planning"; heading:"Background route planning"
-            visible:!automaticPlanning.checked
+            visible:!singleProvider.checked && !automaticPlanning.checked
             description:"Interprets requirements and optional branches ahead of play without delaying voice or map updates."
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             onEdited:page.dirty=true
@@ -81,10 +103,11 @@ ScrollView {
         Text { text:"Voice"; color:"#eaf2fa"; font.pixelSize:20; Layout.leftMargin:24 }
         ComboBox {
             id:voice; objectName:"speechBackend"; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
-            model:["Local speech · uses selected advice provider","Codex live voice · ChatGPT subscription"]
+            enabled:!singleProvider.checked
+            model:["Local audio · selected provider handles all conversation","Codex live voice · ChatGPT subscription"]
             onActivated:page.dirty = true
         }
-        Text { text:"Both voice modes use the selected advice provider. Codex live voice still uses your ChatGPT subscription for listening and speech; choose Local speech to use local audio. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
+        Text { text:singleProvider.checked ? (reasoning.config.kind === "codex" ? "This setup uses Codex for both the assistant and live voice." : "All spoken answers come from the selected assistant. Audio is transcribed and spoken locally. Local listening pauses while processing and playing a reply; Stop cuts off playback.") : "Local audio sends every conversation to the selected provider. Codex live voice also uses ChatGPT for ordinary conversation, listening, and speech. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1 && reasoning.config.kind === "codex"; Layout.leftMargin:24; onClicked:page.dirty=true }
         CheckBox { id:preparedVoice; text:"Prepared neural speech · local voice"; visible:voice.currentIndex===1; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { visible:voice.currentIndex===1; text:preparedVoice.enabled ? "Uses the installed local voice for faster replies and prepares upcoming instructions. Codex continues listening. Reconnect after changing this setting." : "Install a prepared speech voice to enable local audio preparation."; color:"#a3b4c7";font.pixelSize:12;wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24 }

@@ -42,6 +42,10 @@ impl Default for ProviderConfig {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Route every AI role through reasoning, including conversation. Non-Codex
+    /// providers use local audio so the full setup needs no Codex account.
+    #[serde(default)]
+    pub single_provider: bool,
     #[serde(default)]
     pub prepared_speech: Option<crate::voice::speech::Config>,
     /// Slow source planning runs separately from interactive voice.
@@ -65,6 +69,7 @@ fn ducking_enabled() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            single_provider: false,
             prepared_speech: None,
             planning: None,
             reasoning: ProviderConfig::default(),
@@ -76,7 +81,22 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub fn apply_provider_scope(&mut self) {
+        if self.single_provider {
+            self.vision = self.reasoning.clone();
+            self.planning = None;
+            self.speech = if self.reasoning.kind == ProviderKind::Codex {
+                SpeechBackend::CodexRealtime
+            } else {
+                SpeechBackend::Local
+            };
+        }
+    }
+
     pub fn planning_config(&self) -> ProviderConfig {
+        if self.single_provider {
+            return self.reasoning.clone();
+        }
         self.planning.clone().unwrap_or_else(|| {
             let mut config = self.reasoning.clone();
             if config.kind == ProviderKind::Codex {
@@ -646,6 +666,34 @@ pub fn ask(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn single_provider_replaces_codex_in_every_role_and_audio() -> Result<()> {
+        let mut settings: Settings = serde_json::from_value(json!({
+            "single_provider":true,
+            "reasoning":{"kind":"claude_code","endpoint":"","model":"sonnet","api_key_env":"","reasoning_effort":"low"},
+            "vision":{"kind":"codex","endpoint":"","model":"old-vision","api_key_env":""},
+            "planning":{"kind":"codex","endpoint":"","model":"old-planner","api_key_env":""},
+            "speech":"codex_realtime"
+        }))?;
+        settings.apply_provider_scope();
+        assert_eq!(settings.vision.kind, ProviderKind::ClaudeCode);
+        assert_eq!(settings.speech, SpeechBackend::Local);
+        assert!(settings.planning.is_none());
+        assert_eq!(settings.planning_config().kind, ProviderKind::ClaudeCode);
+        assert_eq!(settings.planning_config().model, "sonnet");
+        settings.reasoning.kind = ProviderKind::Anthropic;
+        settings.reasoning.endpoint = "https://api.anthropic.com/v1".into();
+        settings.reasoning.api_key_env = "ANTHROPIC_API_KEY".into();
+        settings.apply_provider_scope();
+        assert_eq!(settings.vision.api_key_env, "ANTHROPIC_API_KEY");
+        assert_eq!(settings.speech, SpeechBackend::Local);
+        settings.reasoning.kind = ProviderKind::Codex;
+        settings.reasoning.model = "chosen-model".into();
+        settings.apply_provider_scope();
+        assert_eq!(settings.speech, SpeechBackend::CodexRealtime);
+        assert_eq!(settings.planning_config().model, "chosen-model");
+        Ok(())
+    }
     #[test]
     fn anthropic_native_messages_include_images_schema_and_effort() -> Result<()> {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();

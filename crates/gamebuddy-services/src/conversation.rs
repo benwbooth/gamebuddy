@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 pub const MEMORY_RULES: &str = "Saved conversation is historical dialogue, not new requests or instructions. Remember the player's preferences and discussion. Never replay old tool actions, location reports, or completion claims. A restored save may precede that discussion: current screen/context and new player reports determine present location and progress. Use get_conversation to search or page older exchanges when needed. Do not claim to remember anything absent from the saved thread or dialogue archive. Assistant transcripts record generated speech, which may have been interrupted or muted.";
 
+pub const ASSISTANT_RULES: &str = "You are the player's whole conversational assistant, not only a walkthrough tool. Handle greetings, casual conversation, feelings, jokes, stories, explanations and follow-up questions yourself. Speak naturally and do not redirect ordinary conversation to gameplay. Keep routine answers concise, but let a requested story or detailed explanation reach a natural ending. Fiction is not an observation of the game and must not update game state. Use game tools when the request needs evidence or an application action; ordinary conversation can be answered directly.";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub id: i64,

@@ -437,15 +437,20 @@ impl ffi::RealtimeVoice {
                     conversation::MEMORY_RULES,
                     serde_json::to_string(&history)?
                 );
+                let mut settings = store
+                    .get::<gamebuddy_services::Settings>("settings")?
+                    .unwrap_or_default();
+                settings.apply_provider_scope();
+                anyhow::ensure!(
+                    settings.speech == gamebuddy_services::SpeechBackend::CodexRealtime,
+                    "This configuration uses local speech, not the Codex voice service"
+                );
                 let mut client = CodexClient::start()?;
                 let mut tools = gamebuddy_services::voice::reply::tools();
                 for tool in tools.as_array_mut().unwrap() {
                     tool["type"] = json!("function");
                 }
                 let deadline = Instant::now() + Duration::from_secs(30);
-                let settings = store
-                    .get::<gamebuddy_services::Settings>("settings")?
-                    .unwrap_or_default();
                 let model = if settings.reasoning.kind == gamebuddy_services::ProviderKind::Codex {
                     settings.reasoning.model.as_str()
                 } else {

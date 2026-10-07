@@ -17,7 +17,10 @@ Item {
     UI.ModelSettings { id:page; anchors.fill:parent; backend:backend }
     TestCase {
         name:"ModelSettings"; when:windowShown
-        function init() { page.reload(); wait(20); backend.requests=[] }
+        function init() {
+            backend.settings_json=JSON.stringify({single_provider:false,reasoning:{kind:"codex",endpoint:"",model:"",api_key_env:""},vision:{kind:"ollama",endpoint:"http://127.0.0.1:11434",model:"qwen3.5:4b",api_key_env:""},speech:"codex_realtime",duck_game_audio:true,fast_voice:true})
+            page.reload();wait(20);backend.requests=[]
+        }
         function test_save_model_thinking_and_voice_without_json() {
             const provider = findChild(page,"reasoningProvider")
             provider.currentIndex=1; provider.activated(1)
@@ -85,6 +88,32 @@ Item {
             const subscription=JSON.parse(backend.settings_json).reasoning
             compare(subscription.kind,"claude_code");compare(subscription.model,"sonnet")
             compare(subscription.endpoint,"");compare(subscription.api_key_env,"")
+        }
+        function test_claude_takes_every_role_and_replaces_codex_voice() {
+            const provider=findChild(page,"reasoningProvider")
+            provider.currentIndex=1;provider.activated(1)
+            const scope=findChild(page,"singleProvider")
+            scope.checked=true;scope.clicked()
+            const voice=findChild(page,"speechBackend")
+            compare(voice.currentIndex,0);verify(!voice.enabled)
+            page.save()
+            let saved=JSON.parse(backend.settings_json)
+            verify(saved.single_provider)
+            compare(saved.reasoning.kind,"claude_code");compare(saved.vision.kind,"claude_code")
+            compare(saved.vision.model,"sonnet");compare(saved.planning,null);compare(saved.speech,"local")
+            // Later model/provider changes must update every role, including audio.
+            const model=findChild(page,"reasoningModel")
+            model.text="opus";model.editingFinished();page.save()
+            saved=JSON.parse(backend.settings_json)
+            compare(saved.vision.model,"opus")
+            provider.currentIndex=0;provider.activated(0);page.save()
+            saved=JSON.parse(backend.settings_json)
+            compare(saved.vision.kind,"codex");compare(saved.speech,"codex_realtime")
+            provider.currentIndex=6;provider.activated(6)
+            model.text="claude-fixture";model.editingFinished();page.save()
+            saved=JSON.parse(backend.settings_json)
+            compare(saved.vision.kind,"anthropic");compare(saved.vision.api_key_env,"ANTHROPIC_API_KEY")
+            compare(saved.speech,"local")
         }
     }
 }

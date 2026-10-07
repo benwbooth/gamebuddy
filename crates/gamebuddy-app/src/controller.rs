@@ -1305,7 +1305,8 @@ impl ffi::Buddy {
             return;
         }
         let result = (|| -> Result<Settings> {
-            let s: Settings = serde_json::from_str(&json.to_string())?;
+            let mut s: Settings = serde_json::from_str(&json.to_string())?;
+            s.apply_provider_scope();
             s.reasoning.validate()?;
             s.vision.validate()?;
             if let Some(planning) = &s.planning {

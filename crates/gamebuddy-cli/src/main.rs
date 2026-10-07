@@ -289,7 +289,8 @@ fn main() -> Result<()> {
             println!("Selected {} ({})", guide.title, guide.id);
         }
         Action::Configure { path } => {
-            let settings: Settings = serde_json::from_slice(&std::fs::read(path)?)?;
+            let mut settings: Settings = serde_json::from_slice(&std::fs::read(path)?)?;
+            settings.apply_provider_scope();
             settings.reasoning.validate()?;
             settings.vision.validate()?;
             if let Some(planning) = &settings.planning {
