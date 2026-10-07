@@ -1,5 +1,6 @@
 //! First-launch guide preparation. Search results are evidence; the model may
 //! choose only a returned video ID. Downloads and imported guides are cached.
+use crate::setup_progress::{Tracker, written_since};
 use crate::{
     HttpProvider, ModelRequest, ReasoningProvider, Settings, Store, import_youtube, index_video,
     parse_json,
@@ -8,7 +9,11 @@ use anyhow::{Context, Result, ensure};
 use gamebuddy_core::{Crop, Guide, youtube_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::process::Command;
+use std::{
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalkthroughCandidate {
@@ -146,10 +151,33 @@ pub fn choose_walkthrough(
 }
 
 /// Idempotent per title/platform; expensive work is reused across launches.
+/// Every stage reports to [`crate::setup_progress`] so the player can see what
+/// is running, how far it has got, and what needs attention.
 pub fn prepare_game(
     store: &Store,
     game: &str,
     platform: &str,
+    progress: &dyn Fn(String),
+) -> Result<Guide> {
+    let tracker = Tracker::start(store, game);
+    let result = prepare_tracked(store, game, platform, &tracker, &|message: String| {
+        tracker.message(&message);
+        progress(message)
+    });
+    tracker.complete(
+        &result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("{e:#}")),
+    );
+    result
+}
+
+fn prepare_tracked(
+    store: &Store,
+    game: &str,
+    platform: &str,
+    tracker: &Tracker,
     progress: &dyn Fn(String),
 ) -> Result<Guide> {
     let cache_key = format!(
@@ -183,19 +211,57 @@ pub fn prepare_game(
                 .find(|g| g.game.eq_ignore_ascii_case(game) && matches_selection(g))
                 .cloned()
         });
+    tracker.begin("source", "Looking for a saved walkthrough");
+    let download = |url: &str| {
+        tracker.begin("download", "Reading YouTube metadata…");
+        let started = SystemTime::now();
+        let media = store.root.join("media");
+        let reported = AtomicU64::new(0);
+        let _watch = tracker.watch(Duration::from_secs(1), move |t| {
+            let (_, bytes) = written_since(&media, started, None);
+            let mb = bytes / 1_000_000;
+            if mb > 0 && reported.swap(mb, Ordering::Relaxed) != mb {
+                t.detail(
+                    "download",
+                    format!("Downloading walkthrough video · {mb} MB so far"),
+                );
+            }
+        });
+        let guide = import_youtube(store, game, url, progress)?;
+        tracker.finish(
+            "download",
+            match guide.sources[0].captions_path {
+                Some(_) => "Video and English captions downloaded",
+                None => "Video downloaded; captions unavailable",
+            },
+        );
+        Ok::<_, anyhow::Error>(guide)
+    };
     let guide = if let Some(guide) = existing {
         progress(format!("Using saved walkthrough: {}", guide.title));
+        tracker.finish(
+            "source",
+            format!("Using saved walkthrough: {}", guide.title),
+        );
+        tracker.skip("download", "Already saved on this computer");
         guide
     } else if let Some(selection) = &selected {
         progress(format!(
             "Importing your selected walkthrough: {}",
             selection.url
         ));
-        import_youtube(store, game, &selection.url, progress)?
+        tracker.finish(
+            "source",
+            format!("Using your selected walkthrough: {}", selection.url),
+        );
+        download(&selection.url)?
     } else {
         progress(format!("Finding complete walkthroughs for {game}…"));
         let candidates = discover_walkthroughs(game, platform)?;
-        progress("Asking your reasoning model to assess the walkthrough candidates…".into());
+        progress(format!(
+            "Found {} candidate videos. Asking your reasoning model to assess the walkthrough candidates…",
+            candidates.len()
+        ));
         let settings = store.get::<Settings>("settings")?.unwrap_or_default();
         let choice = choose_walkthrough(
             &HttpProvider::new(settings.reasoning)?,
@@ -208,16 +274,23 @@ pub fn prepare_game(
             .find(|c| c.video_id == choice.video_id)
             .unwrap();
         progress(format!("Selected {} — {}", chosen.title, choice.reason));
+        tracker.finish(
+            "source",
+            format!(
+                "{} · {} · {}",
+                chosen.title,
+                chosen.channel,
+                crate::media::timestamp((chosen.duration_seconds * 1000.0) as u64)
+            ),
+        );
         store.put(
             &format!("discovery:{cache_key}"),
             &json!({"candidates":candidates,"choice":choice}),
         )?;
-        let mut guide = import_youtube(
-            store,
-            game,
-            &format!("https://www.youtube.com/watch?v={}", choice.video_id),
-            progress,
-        )?;
+        let mut guide = download(&format!(
+            "https://www.youtube.com/watch?v={}",
+            choice.video_id
+        ))?;
         guide.coverage_notes.push(format!("Source selected by the reasoning model from YouTube search results: {}. This is a source assessment, not proof of complete game coverage.", choice.reason));
         store.save_guide(&guide)?;
         guide
@@ -226,43 +299,139 @@ pub fn prepare_game(
     store.put(&cache_key, &guide.id)?;
     store.put("active_guide", &guide.id)?;
     if guide.sources.iter().any(|s| s.media_path.is_some()) && store.index(&guide)?.is_none() {
+        tracker.begin(
+            "references",
+            "Preparing visual references for automatic synchronization…",
+        );
         progress("Preparing visual references for automatic synchronization…".into());
-        index_video(store, &guide, Crop::default(), 10, progress)?;
+        // Mirrors index_video's sampling interval to estimate the frame count.
+        let expected: u64 = guide
+            .sources
+            .iter()
+            .filter(|s| s.media_path.is_some())
+            .filter_map(|s| s.duration_ms)
+            .map(|ms| {
+                let seconds = ms / 1000;
+                seconds / 10u64.max(seconds.div_ceil(1200)).max(1)
+            })
+            .sum();
+        let started = SystemTime::now();
+        let references = store.root.join("references").join(&guide.id);
+        let _watch = tracker.watch(Duration::from_secs(1), move |t| {
+            let (frames, _) = written_since(&references, started, Some("jpg"));
+            t.count(
+                "references",
+                frames,
+                (expected > 0).then_some(expected.max(frames)),
+            );
+        });
+        let index = index_video(store, &guide, Crop::default(), 10, progress)?;
+        tracker.count(
+            "references",
+            index.frames.len() as u64,
+            Some(index.frames.len() as u64),
+        );
+        tracker.finish(
+            "references",
+            format!("{} reference frames ready", index.frames.len()),
+        );
+    } else if guide.sources.iter().any(|s| s.media_path.is_some()) {
+        tracker.skip("references", "Visual references already prepared");
+    } else {
+        tracker.skip("references", "This walkthrough has no video to sample");
     }
     // Both consumers run inside GameBuddy's first-load preparation workflow.
     let spatial_root = store.root.clone();
     let spatial_guide = guide.clone();
+    let spatial_tracker = tracker.clone();
+    tracker.begin(
+        "spatial",
+        "Identifying game viewports, HUD masks, and camera type…",
+    );
     let spatial_task = std::thread::spawn(move || -> Result<()> {
         let store = Store::open(spatial_root)?;
         let notify = |message: String| {
             let _ = store.put(&format!("world-message:{}", spatial_guide.id), &message);
+            spatial_tracker.message_for("spatial", &message);
             eprintln!("{message}");
         };
         crate::spatial::build(&store, &spatial_guide, &notify).map(|_| ())
     });
-    let guide = crate::preparation::compile_walkthrough(store, &guide, progress)?;
+    tracker.begin("sections", "Dividing the walkthrough into sections…");
+    let sections_key = format!("preparation:{}", guide.id);
+    let before = store.get::<Value>(&sections_key)?;
+    let guide = crate::preparation::compile_walkthrough(store, &guide, &|message: String| {
+        if let Ok(Some(state)) = store.get::<Value>(&sections_key) {
+            tracker.count(
+                "sections",
+                state["reviewed"].as_u64().unwrap_or(0),
+                state["total"].as_u64(),
+            );
+        }
+        progress(message)
+    })?;
+    // An unchanged record means no section needed writing on this launch.
+    match store
+        .get::<Value>(&sections_key)?
+        .filter(|s| Some(s) != before.as_ref())
+    {
+        Some(state) if state["phase"] == "partial" => tracker.attention(
+            "sections",
+            state["message"]
+                .as_str()
+                .unwrap_or("Some sections failed; retry preparation"),
+        ),
+        Some(state) => tracker.finish(
+            "sections",
+            format!(
+                "{} of {} sections written",
+                state["reviewed"].as_u64().unwrap_or(0),
+                state["total"].as_u64().unwrap_or(0)
+            ),
+        ),
+        None => tracker.finish("sections", "Walkthrough sections already written"),
+    }
     if store.index(&guide)?.is_some() {
         crate::walkthrough::export_book(
             store,
             &guide,
             &store.root.join("walkthroughs").join(&guide.id),
         )?;
-        if let Err(error) = crate::navigation::prepare_atlas(store, &guide, platform, progress) {
-            progress(format!(
-                "Walkthrough is available; location atlas preparation can be retried: {error:#}"
-            ));
+        tracker.begin("atlas", "");
+        match crate::navigation::prepare_atlas(store, &guide, platform, progress) {
+            Ok(_) => tracker.finish("atlas", "Location atlas ready"),
+            Err(error) => {
+                let message = format!(
+                    "Walkthrough is available; location atlas preparation can be retried: {error:#}"
+                );
+                progress(message.clone());
+                tracker.attention("atlas", message);
+            }
         }
         if crate::spatial::profile(store, &guide)?.dimension == crate::spatial::Dimension::TwoD
             && store
                 .get::<crate::spatial_worker::WorkerConfig>("spatial-worker")?
                 .is_some()
-            && let Err(error) = crate::spatial_maps::prepare(store, &guide, progress)
         {
-            progress(format!("Map image registration needs attention: {error:#}"));
+            tracker.begin("maps", "");
+            match crate::spatial_maps::prepare(store, &guide, progress) {
+                Ok(_) => tracker.finish("maps", "Map images registered"),
+                Err(error) => {
+                    let message = format!("Map image registration needs attention: {error:#}");
+                    progress(message.clone());
+                    tracker.attention("maps", message);
+                }
+            }
+        } else {
+            tracker.skip("maps", "No map registration needed for this game");
         }
+    } else {
+        tracker.skip("atlas", "Needs visual references first");
+        tracker.skip("maps", "Needs visual references first");
     }
+    tracker.detail("spatial", "Finishing world mapping…");
     match spatial_task.join() {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => tracker.finish("spatial", "Game world mapped"),
         other => {
             let error = match other {
                 Ok(Err(e)) => format!("{e:#}"),
@@ -270,9 +439,10 @@ pub fn prepare_game(
                 _ => unreachable!(),
             };
             store.put(&format!("world-error:{}", guide.id), &error)?;
-            progress(format!(
-                "Walkthrough available; spatial preparation needs attention: {error}"
-            ));
+            let message =
+                format!("Walkthrough available; spatial preparation needs attention: {error}");
+            progress(message.clone());
+            tracker.attention("spatial", message);
         }
     }
     progress(format!(

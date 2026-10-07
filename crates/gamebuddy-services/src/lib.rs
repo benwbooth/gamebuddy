@@ -22,6 +22,7 @@ pub mod journal;
 pub mod navigation;
 pub mod plan;
 pub mod preparation;
+pub mod setup_progress;
 pub mod spatial;
 pub mod spatial_maps;
 pub mod spatial_worker;

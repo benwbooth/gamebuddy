@@ -10,6 +10,7 @@ Item {
     required property var voice
     required property var session
     property var startup: null
+    property var preparation: null
     property bool expanded: false
     property bool recording: false
     property bool pendingRecording: false
@@ -21,6 +22,7 @@ Item {
     signal captureRequested()
     signal cropRequested()
     signal workbenchRequested()
+    signal preparationRetryRequested()
     signal stopSpeaking()
     signal widgetsToggled(bool shown)
     signal arrangementChanged(bool active)
@@ -45,8 +47,8 @@ Item {
     property string lastLayoutTrace: ""
     readonly property real maximumPanelWidth: embedded && parent ? parent.width : Screen.desktopAvailableWidth
     readonly property real maximumPanelHeight: embedded && parent ? parent.height : Screen.desktopAvailableHeight
-    width: expanded ? Math.min(expandedWidth, maximumPanelWidth) : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0)
-    height: expanded ? Math.min(expandedHeight, maximumPanelHeight) : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0)
+    width: expanded ? Math.min(expandedWidth, maximumPanelWidth) : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0, compactPreparation.visible ? compactPreparation.x + compactPreparation.width + 8 : 0)
+    height: expanded ? Math.min(expandedHeight, maximumPanelHeight) : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0, compactPreparation.visible ? compactPreparation.y + compactPreparation.height + 8 : 0)
     onWidthChanged: if (embedded && parent && parent.width > 0 && width > 0) x = Math.max(0, Math.min(parent.width - width, x))
     onHeightChanged: if (embedded && parent && parent.height > 0 && height > 0) y = Math.max(0, Math.min(parent.height - height, y))
     Settings {
@@ -238,6 +240,17 @@ Item {
         width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
         MouseArea { anchors.fill: parent; onClicked: companion.expanded = true }
     }
+    PreparationStatus {
+        id: compactPreparation
+        objectName: "companionPreparation"
+        compact: true
+        report: companion.preparation
+        visible: !companion.expanded && (running || failed)
+        x: 8; y: compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 80
+        width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
+        onRetryRequested: companion.preparationRetryRequested()
+        MouseArea { anchors.fill: parent; z: -1; onClicked: companion.expanded = true }
+    }
     ColumnLayout {
         visible: companion.expanded
         anchors { top: parent.top; left: parent.left; right: parent.right; bottom: parent.bottom; topMargin: 25; leftMargin: 24; rightMargin: 24; bottomMargin: 22 }
@@ -324,8 +337,14 @@ Item {
             ScrollBar.vertical.policy: ScrollBar.AsNeeded
             Column {
                 width: conversation.availableWidth; spacing: 12
+                PreparationStatus {
+                    objectName: "companionExpandedPreparation"
+                    width: parent.width
+                    report: companion.preparation
+                    onRetryRequested: companion.preparationRetryRequested()
+                }
                 Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#a9c0cf"; font.pixelSize: companion.dialogueFontSize-2; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { objectName: "companionChatReply"; width: parent.width; text: buddy.chat_error || buddy.answer || (buddy.busy && buddy.transcript ? "Thinking…" : "") || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: buddy.chat_error ? "#f6b7a5" : "#e3edf5"; font.pixelSize: companion.dialogueFontSize; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { objectName: "companionChatReply"; width: parent.width; text: buddy.chat_error || buddy.answer || (buddy.busy && buddy.transcript ? "Thinking…" : "") || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. You can keep playing; progress is shown above." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: buddy.chat_error ? "#f6b7a5" : "#e3edf5"; font.pixelSize: companion.dialogueFontSize; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             }
         }
         RowLayout {

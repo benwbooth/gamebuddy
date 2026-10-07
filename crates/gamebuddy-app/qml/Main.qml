@@ -187,6 +187,8 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--ui-trace") >= 0
         syncActive: root.autoSync
         startup: JSON.parse(buddy.startup_json)
+        preparation: JSON.parse(buddy.preparation_json)
+        onPreparationRetryRequested: buddy.prepare_game()
         x: compositor.active ? 36 : 0
         y: compositor.active ? 90 : 0
         z: 10
@@ -544,13 +546,20 @@ ApplicationWindow {
                     RowLayout {
                         Layout.leftMargin: 24; Layout.rightMargin: 24
                         GbButton { text: "YouTube video"; accent: true; enabled: !buddy.busy; onClicked: youtubeDialog.open() }
-                        GbButton { text: "Find guide automatically"; enabled: !buddy.busy; onClicked: buddy.prepare_game() }
+                        GbButton { text: "Find guide automatically"; enabled: !buddy.busy && !buddy.preparing; onClicked: buddy.prepare_game() }
                         GbButton { text: "Paste text"; enabled: !buddy.busy; onClicked: textDialog.open() }
                         GbButton { text: "Import file"; enabled: !buddy.busy; onClicked: fileDialog.open() }
                         ComboBox {
                             Layout.fillWidth: true; textRole: "title"; valueRole: "id"; model: root.session.guides || []
                             onActivated: buddy.select_guide(currentValue)
                         }
+                    }
+                    PreparationStatus {
+                        objectName: "workbenchPreparation"
+                        Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24
+                        Layout.maximumHeight: 520; clip: true
+                        report: JSON.parse(buddy.preparation_json)
+                        onRetryRequested: buddy.prepare_game()
                     }
                     RowLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24; spacing: 20

@@ -13,6 +13,7 @@ pub mod ffi {
         #[qproperty(QString, state_json)]
         #[qproperty(QString, settings_json)]
         #[qproperty(QString, startup_json)]
+        #[qproperty(QString, preparation_json)]
         #[qproperty(QString, message)]
         #[qproperty(QString, answer)]
         #[qproperty(QString, chat_error)]
@@ -132,6 +133,7 @@ pub struct BuddyRust {
     state_json: QString,
     settings_json: QString,
     startup_json: QString,
+    preparation_json: QString,
     startup_worker: Option<services::spatial_worker::WorkerConfig>,
     message: QString,
     answer: QString,
@@ -167,6 +169,7 @@ impl Default for BuddyRust {
             state_json: QString::from("{}"),
             settings_json: QString::from("{}"),
             startup_json: QString::from("null"),
+            preparation_json: QString::from("null"),
             startup_worker: None,
             message: QString::from("Ready to start"),
             answer: QString::default(),
@@ -542,7 +545,17 @@ impl ffi::Buddy {
                 eprintln!("GAMEBUDDY_STARTUP {value}");
             }
             self.as_mut().set_startup_json(q(value));
-            self.refresh();
+            self.as_mut().refresh();
+        }
+        // First-launch preparation reports from worker threads; the 100 ms
+        // poll publishes it without waiting for a pipeline message.
+        let report = services::setup_progress::snapshot(&self.rust().root, &self.rust().game);
+        let value = serde_json::to_string(&report).unwrap_or_else(|_| "null".into());
+        if self.preparation_json().to_string() != value {
+            if std::env::args().any(|arg| arg == "--ui-trace") {
+                eprintln!("GAMEBUDDY_PREPARATION {value}");
+            }
+            self.as_mut().set_preparation_json(q(value));
         }
     }
     fn background<F>(mut self: Pin<&mut Self>, label: &str, job: F)
