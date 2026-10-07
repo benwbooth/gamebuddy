@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod claude;
 pub mod session;
 
 #[derive(Debug)]

@@ -304,6 +304,8 @@ impl ffi::Buddy {
                 self.as_mut().rust_mut().screen_session = capture_session;
                 self.as_mut()
                     .set_settings_json(q(serde_json::to_string(&settings).unwrap()));
+                // The first question must not wait for the assistant to start.
+                services::harness::prepare_coach(&settings.reasoning);
                 if let Some(g) = guide {
                     self.as_mut().use_guide(g);
                 } else {
@@ -1333,6 +1335,7 @@ impl ffi::Buddy {
         })();
         match result {
             Ok(s) => {
+                services::harness::prepare_coach(&s.reasoning);
                 self.as_mut()
                     .set_settings_json(q(serde_json::to_string(&s).unwrap()));
                 self.set_message(q(

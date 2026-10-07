@@ -271,6 +271,35 @@ pub trait ReasoningProvider {
     fn complete_structured(&self, request: ModelRequest, _schema: Value) -> Result<String> {
         self.complete(request)
     }
+    /// A multi-turn conversation for tool loops, when the provider keeps one
+    /// cheaply. Later turns then carry only new evidence.
+    fn conversation(&self) -> Option<Box<dyn Conversation + '_>> {
+        None
+    }
+}
+pub trait Conversation {
+    /// The first request's system prompt applies to the whole conversation.
+    fn send(&mut self, request: ModelRequest) -> Result<String>;
+}
+struct ClaudeConversation<'a> {
+    config: &'a ProviderConfig,
+    session: Option<crate::subscription::claude::Session>,
+}
+impl Conversation for ClaudeConversation<'_> {
+    fn send(&mut self, request: ModelRequest) -> Result<String> {
+        if self.session.is_none() {
+            self.session = Some(crate::subscription::claude::Session::take(
+                &self.config.model,
+                &self.config.reasoning_effort,
+                &request.system,
+            )?);
+        }
+        let result = self.session.as_mut().unwrap().send(request);
+        if result.is_err() {
+            self.session = None;
+        }
+        result
+    }
 }
 pub struct HttpProvider {
     pub config: ProviderConfig,
@@ -323,6 +352,14 @@ impl HttpProvider {
 impl ReasoningProvider for HttpProvider {
     fn complete(&self, r: ModelRequest) -> Result<String> {
         self.complete_with_schema(r, None)
+    }
+    fn conversation(&self) -> Option<Box<dyn Conversation + '_>> {
+        (self.config.kind == ProviderKind::ClaudeCode).then(|| {
+            Box::new(ClaudeConversation {
+                config: &self.config,
+                session: None,
+            }) as Box<dyn Conversation>
+        })
     }
     fn complete_structured(&self, r: ModelRequest, schema: Value) -> Result<String> {
         self.complete_with_schema(r, Some(schema))
