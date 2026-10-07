@@ -16,14 +16,14 @@ fi
 "$speech_python" - "$speech_dir" <<'PY'
 import hashlib, pathlib, sys, urllib.request
 root = pathlib.Path(sys.argv[1])
-base = 'https://huggingface.co/rhasspy/piper-voices/resolve/b145f2ac26522d6a2ccde0164b7b0e48b1e3199c/en/en_US/ljspeech/medium/'
+base = 'https://huggingface.co/rhasspy/piper-voices/resolve/b145f2ac26522d6a2ccde0164b7b0e48b1e3199c/en/en_US/ryan/high/'
 files = {
- 'en_US-ljspeech-medium.onnx': '6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22',
- 'en_US-ljspeech-medium.onnx.json': '141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860',
- 'MODEL_CARD': 'fbee1529c89d36b3fe76d7e9f3f832dce17f44900a52d76a9bda735654766b4d',
+ 'en_US-ryan-high.onnx': 'b3990d7606e183ec8dbfba70a4607074f162de1a0c412e0180d1ff60bb154eca',
+ 'en_US-ryan-high.onnx.json': 'c6d3b98f08315cb4bebf0d49d50fc4ff491b503c64b940cd3d5ca28543b48011',
+ 'MODEL_CARD': '7c3b337dd4e96c3f311f476118b15d93867aefa4bee54263e250c45f759fad0d',
 }
 for name, digest in files.items():
-    destination = root / (name if name != 'MODEL_CARD' else 'ljspeech-MODEL_CARD')
+    destination = root / (name if name != 'MODEL_CARD' else 'ryan-MODEL_CARD')
     if destination.exists() and hashlib.sha256(destination.read_bytes()).hexdigest() == digest:
         continue
     temporary = destination.with_suffix(destination.suffix + '.download')
@@ -36,7 +36,7 @@ PY
 settings_file="$(mktemp)"
 trap 'rm -f -- "$settings_file"' EXIT
 "$cli" "$@" settings > "$settings_file"
-"$speech_python" - "$settings_file" "$speech_python" "$speech_dir/en_US-ljspeech-medium.onnx" <<'PY'
+"$speech_python" - "$settings_file" "$speech_python" "$speech_dir/en_US-ryan-high.onnx" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 settings = json.loads(path.read_text())

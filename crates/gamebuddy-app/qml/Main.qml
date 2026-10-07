@@ -127,7 +127,7 @@ ApplicationWindow {
         interval:100;repeat:true;running:true
         onTriggered:gameAudio.poll(root.arg("--game-pid"),
             realtimeVoice.conversationActive || voice.speaking || companion.recording || companion.pendingRecording
-            || root.voiceTurnRunning || root.queuedVoice.length>0 || speech.state===TextToSpeech.Speaking,
+            || root.voiceTurnRunning || root.queuedVoice.length>0 || speech.speaking,
             root.duckGameAudio)
     }
     RealtimePanel {
@@ -136,7 +136,7 @@ ApplicationWindow {
         buddy: root.buddyObject; voice: voice; session: root.session
         enabledBackend: root.realtimeEnabled; spokenReplies: companion.spokenReplies
         automaticSession: compositor.active
-        localConversationActive: buddy.busy || root.voiceTurnRunning || root.queuedVoice.length>0 || companion.recording || companion.pendingRecording || speech.state===TextToSpeech.Speaking
+        localConversationActive: buddy.busy || root.voiceTurnRunning || root.queuedVoice.length>0 || companion.recording || companion.pendingRecording || speech.speaking
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
@@ -152,7 +152,7 @@ ApplicationWindow {
         interval: 40; repeat: true; running: true
         onTriggered: {
             const path = voice.poll(buddy.voice_directory(), buddy.busy || root.voiceTurnRunning || root.queuedVoice.length > 0,
-                speech.state !== TextToSpeech.Ready && speech.state !== TextToSpeech.Error,
+                speech.busy,
                 companion.recording || companion.pendingRecording, root.realtimeEnabled)
             if (path.length) root.queuedVoice = path
             if (root.queuedVoice.length && !buddy.busy) {
@@ -224,9 +224,10 @@ ApplicationWindow {
         source: root.replayPath.length > 0 ? "file://" + root.replayPath : ""
         onErrorOccurred: (error, errorString) => root.captureError = errorString
     }
-    TextToSpeech {
+    SpeechOutput {
         id: speech
-        onStateChanged: state => { if (root.appArguments.indexOf("--voice-trace") >= 0) console.warn("GAMEBUDDY_SPEECH_STATE " + state) }
+        directory: root.session.data_dir || ""
+        trace: root.appArguments.indexOf("--voice-trace") >= 0
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
     Timer { interval: 100; repeat: true; running: true; onTriggered: buddy.poll_startup() }

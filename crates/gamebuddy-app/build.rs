@@ -10,6 +10,7 @@ fn main() {
         "qml/Companion.qml",
         "qml/StartupStatus.qml",
         "qml/PreparationStatus.qml",
+        "qml/SpeechOutput.qml",
         "qml/RealtimePanel.qml",
         "qml/VoiceCaptions.qml",
         "qml/NavigationArrow.qml",
@@ -20,7 +21,8 @@ fn main() {
     .file("src/voice.rs")
     .file("src/audio.rs")
     .file("src/realtime.rs")
-    .file("src/webengine.rs");
+    .file("src/webengine.rs")
+    .file("src/neural_voice.rs");
     // SAFETY: add a header search path only; preserve CXX-Qt's compiler flags.
     let builder = unsafe {
         builder.cc_builder(|cc| {

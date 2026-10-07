@@ -88,7 +88,7 @@ scripts/test-narration
 
 # To compare optional Piper speech in disposable test stores:
 export GAMEBUDDY_TEST_PREPARED_PYTHON="$HOME/.local/share/GameBuddy/models/piper/runtime/bin/python"
-export GAMEBUDDY_TEST_PREPARED_MODEL="$HOME/.local/share/GameBuddy/models/piper/en_US-ljspeech-medium.onnx"
+export GAMEBUDDY_TEST_PREPARED_MODEL="$HOME/.local/share/GameBuddy/models/piper/en_US-ryan-high.onnx"
 export GAMEBUDDY_TEST_VOICE_MODEL=gpt-6.1-sol
 GAMEBUDDY_TEST_LOCATION=1 GAMEBUDDY_TEST_ROUTINE=1 scripts/test-realtime
 GAMEBUDDY_TEST_RESPONSIVE=1 scripts/test-realtime

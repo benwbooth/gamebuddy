@@ -96,7 +96,7 @@ scripts/test-voice
 scripts/test-realtime
 GAMEBUDDY_TEST_LOCATION=1 scripts/test-realtime
 node scripts/test-voice-lifecycle.mjs
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input scripts/qml-tests
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -import scripts/qml-tests/stubs -input scripts/qml-tests
 ```
 
 To exercise another advice provider through live voice, set `GAMEBUDDY_TEST_REASONING_CONFIG` to a JSON file containing its `kind`, `endpoint`, `model`, `api_key_env`, and `reasoning_effort`, then run `scripts/test-realtime`. The fixture uses a separate game store and virtual audio devices.
