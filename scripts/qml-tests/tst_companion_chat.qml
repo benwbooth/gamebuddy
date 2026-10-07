@@ -47,7 +47,10 @@ Item {
             buddy.transcript = ""; buddy.answer = ""; buddy.chat_error = ""
             companion.voiceTurnPending = false; companion.expanded = true
             companion.x = 0; companion.y = 0
+            companion.expandedWidth = 640; companion.expandedHeight = 820
+            companion.dialogueFontSize = 22
             findChild(companion, "companionChatInput").text = ""
+            waitForRendering(companion)
         }
         function test_enter_sends_trimmed_text_once_without_microphone() {
             const input = findChild(companion, "companionChatInput")
@@ -111,8 +114,44 @@ Item {
             const p = input.mapToItem(companion, 0, 0)
             verify(p.y >= 0 && p.y + input.height < companion.height)
             verify(input.width > 200)
+            const conversation = findChild(companion, "companionConversation")
+            verify(conversation.height >= 250, "Dialogue needs usable space: " + conversation.height)
+            compare(findChild(companion, "companionChatReply").font.pixelSize, 22)
             waitForRendering(companion)
             grabImage(companion).save("/tmp/gamebuddy-text-companion.png")
+        }
+        function test_resize_handle_and_collapse_preserve_dimensions() {
+            const handle = findChild(companion, "companionResizeHandle")
+            const p = handle.mapToItem(companion, 15, 15)
+            mousePress(handle, 15, 15)
+            mouseMove(companion, p.x + 120, p.y - 100)
+            mouseRelease(companion, p.x + 120, p.y - 100)
+            tryCompare(companion, "width", 760)
+            tryCompare(companion, "height", 720)
+            companion.expanded = false
+            verify(companion.width > 80 && companion.width < 440)
+            companion.expanded = true
+            compare(companion.width, 760)
+            compare(companion.height, 720)
+            companion.resizePanel(1, 1)
+            compare(companion.width, 440)
+            compare(companion.height, 560)
+        }
+        function test_dialogue_native_wheel() {
+            buddy.answer = Array(100).fill("A long readable dialogue line.").join("\n")
+            const conversation = findChild(companion, "companionConversation")
+            waitForRendering(companion)
+            verify(conversation.contentHeight > conversation.height)
+            const before = conversation.contentItem.contentY
+            mouseWheel(conversation, 100, 80, 0, -120)
+            tryVerify(() => conversation.contentItem.contentY > before)
+            mouseWheel(conversation, 100, 80, 0, 120)
+            tryVerify(() => conversation.contentItem.contentY <= before + 1)
+        }
+        function test_larger_dialogue_text() {
+            mouseClick(findChild(companion, "companionLargerText"))
+            compare(findChild(companion, "companionChatReply").font.pixelSize, 24)
+            compare(findChild(companion, "companionChatInput").font.pixelSize, 22)
         }
         function test_title_drags_panel_without_sending_or_toggling() {
             const handle=findChild(companion,"companionTitleDrag")

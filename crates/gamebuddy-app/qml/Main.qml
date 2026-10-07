@@ -115,7 +115,10 @@ ApplicationWindow {
         onVoice_command: action => root.overlayAction(action)
         onBusyChanged: if (!busy) root.voiceTurnRunning = false
     }
-    Compositor { id: compositor }
+    Compositor {
+        id: compositor
+        onFocus_modeChanged: if(root.appArguments.indexOf("--ui-trace")>=0)console.warn("GAMEBUDDY_UI_FOCUS mode="+focus_mode)
+    }
     GameAudio {
         id: gameAudio
         onStatusChanged: if(root.appArguments.indexOf("--voice-trace")>=0)console.warn("GAMEBUDDY_AUDIO "+status)
@@ -168,12 +171,20 @@ ApplicationWindow {
         x: 36; y: 90
         width: companion.width; height: companion.height
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        function keepOnScreen() {
+            if (!visible) return
+            x = Math.max(Screen.virtualX, Math.min(x, Screen.virtualX + Screen.desktopAvailableWidth-width))
+            y = Math.max(Screen.virtualY, Math.min(y, Screen.virtualY + Screen.desktopAvailableHeight-height))
+        }
+        onWidthChanged: Qt.callLater(keepOnScreen)
+        onHeightChanged: Qt.callLater(keepOnScreen)
     }
     Companion {
         id: companion
         parent: compositor.active ? overlayScene : companionWindow.contentItem
         hostWindow: companionWindow
         embedded: compositor.active
+        trace: root.appArguments.indexOf("--ui-trace") >= 0
         syncActive: root.autoSync
         startup: JSON.parse(buddy.startup_json)
         x: compositor.active ? 36 : 0

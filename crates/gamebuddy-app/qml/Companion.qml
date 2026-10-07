@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtMultimedia
+import QtCore
 
 Item {
     id: companion
@@ -37,14 +38,46 @@ Item {
     property var widgetCatalog: []
     signal widgetVisibilityChanged(string id, bool shown)
     signal utteranceReady(string path)
-    width: expanded ? 450 : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0)
-    height: expanded ? 600 : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0)
+    property real expandedWidth: 640
+    property real expandedHeight: 820
+    property int dialogueFontSize: 22
+    property bool trace: false
+    property string lastLayoutTrace: ""
+    readonly property real maximumPanelWidth: embedded && parent ? parent.width : Screen.desktopAvailableWidth
+    readonly property real maximumPanelHeight: embedded && parent ? parent.height : Screen.desktopAvailableHeight
+    width: expanded ? Math.min(expandedWidth, maximumPanelWidth) : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0)
+    height: expanded ? Math.min(expandedHeight, maximumPanelHeight) : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0)
     onWidthChanged: if (embedded && parent && parent.width > 0 && width > 0) x = Math.max(0, Math.min(parent.width - width, x))
     onHeightChanged: if (embedded && parent && parent.height > 0 && height > 0) y = Math.max(0, Math.min(parent.height - height, y))
+    Settings {
+        category: "companion"
+        property alias panelWidth: companion.expandedWidth
+        property alias panelHeight: companion.expandedHeight
+        property alias dialogueTextSize: companion.dialogueFontSize
+    }
+    function resizePanel(w, h) {
+        expandedWidth = Math.max(Math.min(440, maximumPanelWidth), Math.min(w, maximumPanelWidth - (embedded ? x : 0)))
+        expandedHeight = Math.max(Math.min(560, maximumPanelHeight), Math.min(h, maximumPanelHeight - (embedded ? y : 0)))
+    }
+    function traceLayout() {
+        function rect(item, shown=true) {
+            if (!shown || !item.visible) return null
+            const p=item.mapToItem(companion.parent,0,0)
+            return [p.x,p.y,item.width,item.height]
+        }
+        let items={orb:rect(orb),title:rect(titleDrag),listen:rect(listenButton),crop:rect(cropButton),widgets:rect(widgetsButton),controls:rect(controlsButton),resize:rect(resizeHandle),widgets_all:rect(widgetsAllButton,controlsTray.opened),options:rect(optionsButton,controlsTray.opened),controls_done:rect(controlsDoneButton,controlsTray.opened),tray_done:rect(trayDoneButton,widgetTray.opened)}
+        for(let i=0;i<widgetToggles.count;i++){
+            const item=widgetToggles.itemAt(i)
+            if(item)items['widget:'+item.modelData.id]=rect(item,widgetTray.opened)
+        }
+        const next=JSON.stringify(items)
+        if(next!==lastLayoutTrace){lastLayoutTrace=next;console.warn('GAMEBUDDY_COMPANION_LAYOUT '+next)}
+    }
+    Timer { interval:100;repeat:true;running:companion.trace;onTriggered:companion.traceLayout() }
 
     onExpandedChanged: {
-        if(!expanded)widgetTray.close()
-        if (embedded) {
+        if(!expanded){widgetTray.close();controlsTray.close()}
+        if (embedded && parent) {
             x = Math.max(0, Math.min(parent.width-width, x))
             y = Math.max(0, Math.min(parent.height-height, y))
         }
@@ -208,7 +241,7 @@ Item {
     ColumnLayout {
         visible: companion.expanded
         anchors { top: parent.top; left: parent.left; right: parent.right; bottom: parent.bottom; topMargin: 25; leftMargin: 24; rightMargin: 24; bottomMargin: 22 }
-        spacing: 13
+        spacing: 10
         RowLayout {
             Layout.leftMargin: 62; Layout.fillWidth: true; Layout.preferredHeight: 46
             Item {
@@ -243,6 +276,8 @@ Item {
                     ToolTip.text: "Drag to move GameBuddy"
                 }
             }
+            GbButton { text: "A−"; implicitWidth: 38; enabled: companion.dialogueFontSize > 16; onClicked: companion.dialogueFontSize -= 2; Accessible.name: "Smaller dialogue text" }
+            GbButton { objectName: "companionLargerText"; text: "A+"; implicitWidth: 38; enabled: companion.dialogueFontSize < 40; onClicked: companion.dialogueFontSize += 2; Accessible.name: "Larger dialogue text" }
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
         }
         StartupStatus {
@@ -266,7 +301,7 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
-            GbButton { text: voice.active ? "Stop listening" : "Listen"; Layout.fillWidth: true; onClicked: voice.toggle_listening() }
+            GbButton { id:listenButton; text: voice.active ? "Stop listening" : "Listen"; Layout.fillWidth: true; onClicked: voice.toggle_listening() }
             CheckBox {
                 text: "Hands-free"; font.pixelSize: 14; checked: voice.armed; onToggled: voice.armed = checked
                 palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
@@ -280,14 +315,17 @@ Item {
             text: companion.session.screen?.status === "live" ? "Watching game · " + (companion.session.screen.scene_error ? "visual analysis unavailable; screenshots ready" : companion.session.screen.scene?.fresh ? companion.session.screen.scene.summary : "interpreting the scene…") : "Screen " + (companion.session.screen?.status || "waiting") + " · " + (companion.session.screen?.error || buddy.message)
             color: "#a9c0cf"; font.pixelSize: 14; wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight
             }
-            GbButton {text:"Crop…";enabled:!!companion.session.frame_url;onClicked:companion.cropRequested()}
+            GbButton {id:cropButton;text:"Crop…";enabled:!!companion.session.frame_url;onClicked:companion.cropRequested()}
         }
         ScrollView {
+            id: conversation
+            objectName: "companionConversation"
             Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
             Column {
-                width: parent.width; spacing: 10
-                Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#91a9b9"; font.pixelSize: 14; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
-                Text { objectName: "companionChatReply"; width: parent.width; text: buddy.chat_error || buddy.answer || (buddy.busy && buddy.transcript ? "Thinking…" : "") || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: buddy.chat_error ? "#f6b7a5" : "#e3edf5"; font.pixelSize: 16; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                width: conversation.availableWidth; spacing: 12
+                Text { width: parent.width; visible: buddy.transcript.length > 0; text: "You: " + buddy.transcript; color: "#a9c0cf"; font.pixelSize: companion.dialogueFontSize-2; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
+                Text { objectName: "companionChatReply"; width: parent.width; text: buddy.chat_error || buddy.answer || (buddy.busy && buddy.transcript ? "Thinking…" : "") || ((companion.session.navigation?.guidance?.status === "ready" && companion.session.current) ? companion.session.current.instructions : buddy.preparing ? "Preparing your walkthrough and visual references. The outline will fill in as sections are interpreted." : "Your outline is available over the game. Watching for a reliable location match before giving the next instruction."); color: buddy.chat_error ? "#f6b7a5" : "#e3edf5"; font.pixelSize: companion.dialogueFontSize; lineHeight: 1.25; wrapMode: Text.WordWrap; textFormat: Text.PlainText }
             }
         }
         RowLayout {
@@ -296,6 +334,8 @@ Item {
                 id: chatInput
                 objectName: "companionChatInput"
                 Layout.fillWidth: true
+                font.pixelSize: companion.dialogueFontSize-2
+                implicitHeight: Math.max(40, font.pixelSize+18)
                 placeholderText: "Message GameBuddy…"
                 Accessible.name: "Message GameBuddy"
                 onAccepted: companion.sendMessage()
@@ -309,21 +349,44 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
-            GbButton { text: companion.embedded ? (companion.syncActive ? "Pause watching" : "Resume watching") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
-            GbButton { text: companion.spokenReplies ? "Voice on" : "Voice off"; onClicked: { companion.spokenReplies = !companion.spokenReplies; if (!companion.spokenReplies) companion.stopSpeaking() } }
-            GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
-        }
-        RowLayout {
-            Layout.fillWidth: true
             GbButton { text: "Browse guide"; Layout.fillWidth: true; enabled: !!companion.session.guide; onClicked: companion.widgetVisibilityChanged("guide-library",true) }
-            GbButton { text: "Options"; onClicked: companion.workbenchRequested() }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            GbButton { text: companion.widgetsVisible ? "Hide widgets" : "Show widgets"; Layout.fillWidth: true; onClicked: { companion.widgetsVisible = !companion.widgetsVisible; companion.widgetsToggled(companion.widgetsVisible) } }
-            GbButton { text: "Widgets…"; onClicked: widgetTray.open() }
+            GbButton { id:widgetsButton; text: "Widgets…"; onClicked: widgetTray.open() }
+            GbButton { id:controlsButton; objectName: "companionControls"; text: "Controls…"; onClicked: controlsTray.open() }
         }
     }
+    MouseArea {
+        id: resizeHandle
+        objectName: "companionResizeHandle"
+        visible: companion.expanded
+        anchors.right: parent.right; anchors.bottom: parent.bottom
+        width: 30; height: 30; cursorShape: Qt.SizeFDiagCursor
+        property point origin
+        property size initialSize
+        onPressed: mouse => { origin = mapToGlobal(mouse.x, mouse.y); initialSize = Qt.size(companion.width, companion.height) }
+        onPositionChanged: mouse => { if (pressed) { const p = mapToGlobal(mouse.x, mouse.y); companion.resizePanel(initialSize.width + p.x-origin.x, initialSize.height + p.y-origin.y) } }
+        Text { anchors.centerIn: parent; text: "◢"; color: "#86decb"; font.pixelSize: 20 }
+        Accessible.name: "Resize GameBuddy companion"
+    }
+    }
+    Popup {
+        id: controlsTray
+        parent: companion
+        x: 20; y: Math.max(90, companion.height-height-65); width: companion.width-40
+        padding: 14
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: "#162c35"; radius: 12; border.color: "#86decb" }
+        contentItem: ColumnLayout {
+            RowLayout {
+                GbButton { text: companion.embedded ? (companion.syncActive ? "Pause watching" : "Resume watching") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
+                GbButton { text: companion.spokenReplies ? "Voice on" : "Voice off"; onClicked: { companion.spokenReplies = !companion.spokenReplies; if (!companion.spokenReplies) companion.stopSpeaking() } }
+                GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
+            }
+            RowLayout {
+                GbButton { id:widgetsAllButton; text: companion.widgetsVisible ? "Hide widgets" : "Show widgets"; Layout.fillWidth: true; onClicked: { companion.widgetsVisible = !companion.widgetsVisible; companion.widgetsToggled(companion.widgetsVisible) } }
+                GbButton { id:optionsButton; text: "Options"; onClicked: { controlsTray.close(); companion.workbenchRequested() } }
+                GbButton { id:controlsDoneButton; text: "Done"; onClicked: controlsTray.close() }
+            }
+        }
     }
     Popup {
         id: widgetTray
@@ -336,13 +399,14 @@ Item {
         contentItem: ColumnLayout {
             RowLayout {
                 Text { text:"Your widgets";color:"#c7fff0";font.pixelSize:18;Layout.fillWidth:true }
-                GbButton { text:"Done";onClicked:widgetTray.close() }
+                GbButton { id:trayDoneButton; text:"Done";onClicked:widgetTray.close() }
             }
             ScrollView {
                 Layout.fillWidth:true;Layout.fillHeight:true;clip:true
                 Column {
                     width: parent.width
                     Repeater {
+                        id:widgetToggles
                         model: companion.widgetCatalog
                         CheckDelegate {
                             id: widgetToggle

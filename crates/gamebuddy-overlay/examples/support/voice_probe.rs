@@ -197,8 +197,8 @@ pub fn run(
         })?;
         thread::sleep(Duration::from_millis(400));
         screenshot("voice-hands-free.png")?;
-        // Companion at (36,90); the Listen/Stop listening row is at y=300.
-        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 180, 300, 0)?
+        let (cx, cy) = super::companion_center("listen")?;
+        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, cx, cy, 0)?
             .check()?;
         conn.flush()?;
         thread::sleep(Duration::from_millis(200));
@@ -656,6 +656,10 @@ fn realtime(
         .join()
         .map_err(|_| anyhow::anyhow!("Player audio worker failed"))??;
     let started = Instant::now();
+    println!(
+        "GAMEBUDDY_REALTIME_REQUEST_END at_ms={}",
+        gamebuddy_services::screen::now_ms()
+    );
     wait("spoken request reaches GameBuddy widget tool", || {
         let id: String = store.get("active_guide")?.context("active guide")?;
         Ok(

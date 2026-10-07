@@ -482,11 +482,13 @@ fn main() -> anyhow::Result<()> {
         toggle()?;
         // Open the production tray, then restore its fifth item (the custom
         // widget, following the outline, guide library, next action and map).
-        mouse(MOTION_NOTIFY_EVENT, 0, 414, 648)?;
+        let (cx, cy) = support::companion_center("widgets")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widget-tray.png")?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 210, 453)?;
+        let (cx, cy) = support::companion_center("widget:compositor-test")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         let visibility: serde_json::Value =
@@ -498,10 +500,16 @@ fn main() -> anyhow::Result<()> {
         let restored: serde_json::Value = store.get("widget-layout")?.unwrap();
         ensure!(restored == layout, "Restoring a widget lost its layout");
         screenshot("widget-restored.png")?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 420, 215)?;
+        let (cx, cy) = support::companion_center("tray_done")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
-        mouse(MOTION_NOTIFY_EVENT, 0, 140, 648)?;
+        let (cx, cy) = support::companion_center("controls")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+        let (cx, cy) = support::companion_center("widgets_all")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
         mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
         mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         screenshot("widgets-hidden.png")?;
@@ -527,6 +535,10 @@ fn main() -> anyhow::Result<()> {
         println!(
             "GAMEBUDDY_WIDGET_VISIBILITY_TEST_PASS dismiss, tray restore, layout persistence, hide/show all"
         );
+        let (cx, cy) = support::companion_center("controls_done")?;
+        mouse(MOTION_NOTIFY_EVENT, 0, cx, cy)?;
+        mouse(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+        mouse(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
         mouse(MOTION_NOTIFY_EVENT, 0, 1250, 690)?;
     }
     toggle()?;
@@ -539,12 +551,13 @@ fn main() -> anyhow::Result<()> {
     pause();
     ensure!(count_a()? == 1, "Game input not restored");
     // Hover/click the real Qt companion orb in our private test display.
-    conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 76, 130, 0)?
+    let (orb_x, orb_y) = support::companion_center("orb")?;
+    conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, orb_x, orb_y, 0)?
         .check()?;
     conn.flush()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while cardinal(&conn, overlay, focus)? != 2 {
-        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, 76, 130, 0)?
+        conn.xtest_fake_input(MOTION_NOTIFY_EVENT, 0, 0, root, orb_x, orb_y, 0)?
             .check()?;
         conn.flush()?;
         ensure!(
@@ -571,6 +584,7 @@ fn main() -> anyhow::Result<()> {
         "Clicking orb did not expand companion"
     );
     toggle()?;
+    screenshot("before-orb-drag.png")?;
     conn.xtest_fake_input(BUTTON_PRESS_EVENT, 1, 0, root, 0, 0, 0)?
         .check()?;
     conn.flush()?;
@@ -584,10 +598,11 @@ fn main() -> anyhow::Result<()> {
     conn.flush()?;
     pause();
     screenshot("dragged.png")?;
-    let collapsed = image::open(directory.join("collapsed.png"))?.to_rgb8();
+    let collapsed = image::open(directory.join("before-orb-drag.png"))?.to_rgb8();
     let dragged = image::open(directory.join("dragged.png"))?.to_rgb8();
     ensure!(
-        collapsed.get_pixel(76, 130) != dragged.get_pixel(76, 130),
+        collapsed.get_pixel(orb_x as u32, orb_y as u32)
+            != dragged.get_pixel(orb_x as u32, orb_y as u32),
         "Orb did not leave old position"
     );
     ensure!(

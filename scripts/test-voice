@@ -27,6 +27,6 @@ pactl set-source-mute "$GAMEBUDDY_TEST_MIC_SOURCE" 1
 nix run nixpkgs#espeak-ng -- -v en-us -s 135 -w "$GAMEBUDDY_TEST_VOICE_WAV" 'Please open the guide.'
 nix run nixpkgs#espeak-ng -- -v en-us -s 135 -w "$GAMEBUDDY_TEST_QUESTION_WAV" 'What should I do next?'
 ./target/debug/examples/compositor_probe --prepare "$GAMEBUDDY_TEST_DATA"
-./target/debug/gamebuddy --launch --windowed --no-prepare --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
+./target/debug/gamebuddy --launch --windowed --no-prepare --ui-trace --voice-trace --data-dir "$GAMEBUDDY_TEST_DATA" -- \
     ./target/debug/examples/compositor_probe "$runtime_dir/proof"
 printf 'Voice test artifacts: %s\n' "$runtime_dir/proof"
