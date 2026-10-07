@@ -488,6 +488,7 @@ mod tests {
             &guide,
             super::super::LocationReport {
                 place_id: "chamber".into(),
+                place_label: None,
                 step_id: None,
                 player_report: "I am in the chamber now.".into(),
                 expected_revision: guide.revision,

@@ -90,6 +90,11 @@ pub fn intent(text: &str) -> Option<&'static str> {
 
 pub fn for_context(context: &Value, request: &str) -> Option<Response> {
     let kind = intent(request)?;
+    // The text cache has never inspected pixels. Live navigation and location
+    // questions require the image-aware path, even if the saved plan is ready.
+    if context["screen"]["status"] == "live" && matches!(kind, "next" | "location") {
+        return None;
+    }
     let nav = &context["navigation"];
     let guidance = &nav["guidance"];
     let action = &guidance["now"];
@@ -342,6 +347,17 @@ mod tests {
                 .text
                 .contains("goal is complete")
         );
+    }
+
+    #[test]
+    fn live_next_and_location_questions_require_image_inspection() {
+        let c = json!({"screen":{"status":"live"}, "navigation":{
+            "location":{"status":"confirmed"}, "map":{"current_place":{"label":"Town"}},
+            "guidance":{"status":"ready","now":{"id":"fight","instructions":"Fight every enemy."}}
+        }});
+        assert!(for_context(&c, "What next?").is_none());
+        assert!(for_context(&c, "Where am I?").is_none());
+        assert!(for_context(&c, "Repeat that").is_some());
     }
 
     #[test]

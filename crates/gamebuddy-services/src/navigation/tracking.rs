@@ -8,7 +8,11 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct LocationReport {
+    #[serde(default)]
     pub place_id: String,
+    /// Exact area name stated by the player when no known place matches. Do
+    /// not substitute a named shop/interior for a town-level report.
+    pub place_label: Option<String>,
     /// Only supply a task when the player states it and the atlas binds it to
     /// this place. Omit for an arrival/place report; that never guesses a task.
     pub step_id: Option<String>,
@@ -17,7 +21,47 @@ pub struct LocationReport {
     pub epoch: u64,
 }
 
-pub fn report_location(store: &Store, guide: &Guide, report: LocationReport) -> Result<Value> {
+#[derive(Serialize, Deserialize)]
+struct ReportedView {
+    place_id: String,
+    frame: screen::MovementFrame,
+}
+
+fn reported_view_key(guide: &Guide) -> String {
+    format!("reported-location-view:{}", guide.id)
+}
+
+/// Similar-looking interiors must not immediately overrule a player correction.
+/// The report yields to visual tracking after an actual change in the scene.
+pub(super) fn reported_view_unchanged(
+    store: &Store,
+    guide: &Guide,
+    tracker: &PlaceTracker,
+) -> Result<bool> {
+    if tracker.status != "reported" {
+        return Ok(false);
+    }
+    let key = reported_view_key(guide);
+    let Some((Some(saved), version)) = store.get_versioned::<Option<ReportedView>>(&key)? else {
+        return Ok(false);
+    };
+    if tracker.place_id.as_deref() != Some(&saved.place_id)
+        || tracker.session_id != saved.frame.ticket.session
+    {
+        return Ok(false);
+    }
+    let Some(current) = screen::movement_frame(store, screen::now_ms())? else {
+        return Ok(true);
+    };
+    let unchanged = saved.frame.ticket == current.ticket
+        && screen::same_scene(&saved.frame.frame_signature, &current.frame_signature);
+    if !unchanged {
+        store.replace_version(&key, &version, &Option::<ReportedView>::None)?;
+    }
+    Ok(unchanged)
+}
+
+pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport) -> Result<Value> {
     ensure!(
         report.expected_revision == guide.revision,
         "Outline changed; read the current context"
@@ -27,8 +71,46 @@ pub fn report_location(store: &Store, guide: &Guide, report: LocationReport) -> 
         "Include the player's own short location statement"
     );
     let atlas = atlas(store, guide)?;
+    let new_place = if report.place_id.is_empty() {
+        let label = report.place_label.as_deref().unwrap_or_default().trim();
+        ensure!(
+            !label.is_empty() && label.len() <= 120,
+            "Supply the player's exact area name in place_label when its place ID is unknown"
+        );
+        ensure!(
+            report
+                .player_report
+                .to_lowercase()
+                .contains(&label.to_lowercase()),
+            "Use an area name actually stated in player_report"
+        );
+        ensure!(
+            report.step_id.is_none(),
+            "An unmapped area report cannot establish a task"
+        );
+        if let Some(place) = atlas
+            .places
+            .iter()
+            .find(|p| p.label.eq_ignore_ascii_case(label))
+        {
+            report.place_id = place.id.clone();
+            None
+        } else {
+            let place = gamebuddy_core::Place {
+                id: format!("reported-{}", uuid::Uuid::new_v4()),
+                label: label.into(),
+                map_id: None,
+                landmarks: "Player-reported area; no specific interior or coordinates established."
+                    .into(),
+            };
+            report.place_id = place.id.clone();
+            Some(place)
+        }
+    } else {
+        None
+    };
     ensure!(
-        atlas.places.iter().any(|p| p.id == report.place_id),
+        new_place.is_some() || atlas.places.iter().any(|p| p.id == report.place_id),
         "Unknown place; read get_atlas first"
     );
     let progress = store.progress(guide)?;
@@ -65,7 +147,22 @@ pub fn report_location(store: &Store, guide: &Guide, report: LocationReport) -> 
             &report.player_report,
         );
     }
-    let progress = store.report_location(guide, report.epoch, tracker, &report.player_report)?;
+    let progress = store.report_location(
+        guide,
+        report.epoch,
+        tracker,
+        &report.player_report,
+        new_place,
+    )?;
+    if let Some(frame) = screen::movement_frame(store, screen::now_ms())? {
+        store.put(
+            &reported_view_key(guide),
+            &ReportedView {
+                place_id: report.place_id,
+                frame,
+            },
+        )?;
+    }
     Ok(json!({"progress":progress,"evidence_kind":"player_report",
         "navigation":context(store, guide, &progress, &SyncEstimate::default())?}))
 }
@@ -168,6 +265,64 @@ mod tests {
     use super::*;
     use crate::harness::call_tool;
     use gamebuddy_core::{Atlas, MapAsset, Place, PlaceBinding, Progress};
+
+    #[test]
+    fn an_unknown_area_report_does_not_guess_an_interior_or_task() -> Result<()> {
+        let (_dir, store, guide) = fixture();
+        let result = call_tool(
+            &store,
+            "report_location",
+            json!({"place_label":"North Town", "player_report":"I am in North Town", "expected_revision":guide.revision,"epoch":0}),
+        )?;
+        assert_eq!(
+            result["navigation"]["map"]["current_place"]["label"],
+            "North Town"
+        );
+        assert!(result["navigation"]["location"]["reference_step_id"].is_null());
+        assert!(result["navigation"]["guidance"]["warning"].is_null());
+        assert!(store.progress(&guide)?.current_step.is_none());
+        let count = atlas(&store, &guide)?.places.len();
+        call_tool(
+            &store,
+            "report_location",
+            json!({"place_label":"North Town", "player_report":"Still in North Town", "expected_revision":guide.revision,"epoch":1}),
+        )?;
+        assert_eq!(atlas(&store, &guide)?.places.len(), count);
+        assert!(call_tool(&store, "report_location", json!({"place_label":"Invented Room", "player_report":"I am in town", "expected_revision":guide.revision,"epoch":2})).is_err());
+        assert_eq!(atlas(&store, &guide)?.places.len(), count);
+        Ok(())
+    }
+
+    #[test]
+    fn player_correction_survives_repeated_matches_until_the_view_changes() -> Result<()> {
+        let (dir, store, guide) = fixture();
+        let ticket = screen::start(&store, &guide.game, true)?;
+        let path = dir.path().join("frame.png");
+        image::RgbImage::from_pixel(96, 64, image::Rgb([200, 20, 30])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "fixture")?;
+        report(&store, &guide, "church", "step-1", 0)?;
+        let progress = store.progress(&guide)?;
+        let now = screen::now_ms();
+        let estimate = |offset| SyncEstimate {
+            epoch: progress.epoch,
+            observed_at_ms: now + offset,
+            located_step: Some("step-2".into()),
+            status: "located".into(),
+            ..Default::default()
+        };
+        for offset in 1..=3 {
+            let nav = context(&store, &guide, &progress, &estimate(offset))?;
+            assert_eq!(nav["location"]["status"], "reported");
+            assert_eq!(nav["map"]["current_place"]["id"], "church");
+        }
+        image::RgbImage::from_pixel(96, 64, image::Rgb([10, 200, 240])).save(&path)?;
+        screen::publish(&store, &ticket, &path, "fixture")?;
+        context(&store, &guide, &progress, &estimate(4))?;
+        let nav = context(&store, &guide, &progress, &estimate(5))?;
+        assert_eq!(nav["map"]["current_place"]["id"], "shop");
+        assert_eq!(nav["location"]["status"], "estimated");
+        Ok(())
+    }
 
     fn fixture() -> (tempfile::TempDir, Store, Guide) {
         let dir = tempfile::tempdir().unwrap();

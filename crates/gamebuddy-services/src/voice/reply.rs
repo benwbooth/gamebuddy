@@ -8,7 +8,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const TOOL: &str = "finish_voice_reply";
 pub const RETRY_INSTRUCTIONS: &str = "The prior answer was rejected. This is the replacement evidence for the SAME live request. Use the supplied current context and any new pixels directly, then finish the corrected answer; no separate screen fetch is needed. Preserve successful actions already completed in this turn.";
-pub const INSTRUCTIONS: &str = "For live voice, finish with finish_voice_reply as soon as the complete player request is satisfied. It delivers speech immediately. Copy request_id from the latest application request; a follow-up or corrected transcript replaces that ID. For a new gameplay instruction, include next_action in that same call instead of a separate set_next_action; its instructions will be the spoken text. Complete any other requested tool actions and check their successful results first. Do not batch this final tool with other actions. Set screen_grounded=true whenever the answer depends on the supplied screenshot, such as identifying this door or directing an immediate movement. Set it false for instructions or facts supported entirely by the guide and confirmed progress; ordinary screen movement does not invalidate those. Use next_action=null for factual answers, clarifications, uncertainty or conversation. After success, end the turn without repeating the answer or calling more tools. On failure, correct only the reported problem and retry. Never claim an action succeeded before its tool succeeded.";
+pub const INSTRUCTIONS: &str = "For live voice, finish with finish_voice_reply as soon as the complete player request is satisfied. It delivers speech immediately. Copy request_id from the latest application request; a follow-up or corrected transcript replaces that ID. For a new gameplay instruction, include next_action in that same call instead of a separate set_next_action; its instructions will be the spoken text. For a pure location correction that needs no new advice, include location_report in this same final call with next_action=null; this records the report and delivers the answer in one pass instead of calling report_location separately. Other requested tool actions must succeed before finishing. Do not batch this final tool with other actions. Set screen_grounded=true whenever the answer depends on the supplied screenshot, such as identifying this door or directing an immediate movement. Set it false for instructions or facts supported entirely by the guide and confirmed progress; ordinary screen movement does not invalidate those. Use next_action=null for factual answers, clarifications, uncertainty or conversation. After success, end the turn without repeating the answer or calling more tools. On failure, correct only the reported problem and retry. Never claim an action succeeded before its tool succeeded.";
 
 pub fn request_id(utterance: u64, request: &str) -> String {
     let mut hash = DefaultHasher::new();
@@ -51,6 +51,9 @@ pub struct Reply {
     /// The entire useful spoken answer, usually one or two sentences.
     pub text: String,
     pub screen_grounded: bool,
+    /// A correction-only reply may record the player's location in this same
+    /// call. Do not combine it with next_action; changed advice needs its new epoch.
+    pub location_report: Option<crate::navigation::LocationReport>,
     /// New immediate advice only. Its instructions must match text exactly.
     pub next_action: Option<NextAction>,
 }
@@ -87,6 +90,10 @@ pub fn apply(
         "This answer belongs to an older request. Complete the latest live_player_request using request_id {request_id} before finishing. Nothing was published or spoken."
     );
     ensure!(!reply.text.trim().is_empty(), "Spoken answer is empty");
+    ensure!(
+        reply.location_report.is_none() || reply.next_action.is_none(),
+        "Record the location first, then select advice using its new progress epoch. A correction-only reply can omit next_action."
+    );
     // Source instructions remain valid while a menu opens or the camera moves.
     // Only visual claims and immediate screen-relative directions require the
     // original pixels. Revision/epoch/route eligibility are still checked below.
@@ -100,6 +107,10 @@ pub fn apply(
         .next_action
         .as_ref()
         .map(|action| action.step_id.clone());
+    let location_updated = reply.location_report.is_some();
+    if let Some(report) = reply.location_report {
+        crate::harness::call_tool(store, "report_location", json!(report))?;
+    }
     if let Some(action) = reply.next_action {
         ensure!(
             action.instructions == reply.text,
@@ -108,7 +119,7 @@ pub fn apply(
         crate::harness::call_tool(store, "set_next_action", json!(action))?;
     }
     Ok(ToolOutput {
-        value: json!({"delivered":true,"voice_reply":{"text":reply.text,"step_id":step_id}}),
+        value: json!({"delivered":true,"voice_reply":{"text":reply.text,"step_id":step_id,"state_changed":location_updated}}),
         images: vec![],
     })
 }
@@ -116,6 +127,36 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn location_correction_and_reply_commit_together_without_a_second_model_turn() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Guide", "# Begin\nTalk to the guard.")?;
+        store.save_guide(&guide)?;
+        store.put("active_guide", &guide.id)?;
+        let answer = json!({"request_id":"current","text":"I've corrected your location to North Town.","screen_grounded":false,"next_action":null,
+            "location_report":{"place_label":"North Town","player_report":"I am in North Town","expected_revision":guide.revision,"epoch":0}});
+        assert!(apply(&store, answer.clone(), "older", None).is_err());
+        assert_eq!(store.progress(&guide)?.epoch, 0);
+        let mut combined = answer.clone();
+        combined["next_action"] = json!({"expected_revision":guide.revision,"epoch":0,"step_id":guide.steps[0].id,"instructions":answer["text"],"screen_direction":null});
+        assert!(apply(&store, combined, "current", None).is_err());
+        assert_eq!(store.progress(&guide)?.epoch, 0);
+        let reply = apply(&store, answer.clone(), "current", None)?;
+        assert_eq!(reply.value["voice_reply"]["state_changed"], true);
+        assert_eq!(store.progress(&guide)?.epoch, 1);
+        assert!(store.progress(&guide)?.current_step.is_none());
+        assert_eq!(
+            crate::harness::call_tool(&store, "get_game_context", json!({}))?["navigation"]["map"]
+                ["current_place"]["label"],
+            "North Town"
+        );
+        assert!(apply(&store, answer, "current", None).is_err());
+        assert_eq!(store.progress(&guide)?.epoch, 1);
+        Ok(())
+    }
 
     #[test]
     fn rejected_answer_returns_exact_replacement_pixels_without_publishing() -> Result<()> {

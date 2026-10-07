@@ -565,6 +565,7 @@ impl Store {
         epoch: u64,
         mut tracker: gamebuddy_core::PlaceTracker,
         report: &str,
+        new_place: Option<gamebuddy_core::Place>,
     ) -> Result<Progress> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.connection,
@@ -584,6 +585,12 @@ impl Store {
         }
         progress.epoch += 1;
         tracker.epoch = progress.epoch;
+        if let Some(place) = new_place {
+            let key = format!("player-places:{}", guide.id);
+            let mut places: Vec<gamebuddy_core::Place> = self.get(&key)?.unwrap_or_default();
+            places.push(place);
+            self.put(&key, &places)?;
+        }
         self.put(
             &format!("progress:{}:{}", guide.id, guide.revision),
             &progress,

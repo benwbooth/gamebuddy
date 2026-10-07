@@ -148,7 +148,7 @@
       emit('input-text',v.item.text);
       // A short stop may be recognized well before its final turn event.
       workInput=(workInput+v.item.text).slice(-8000);
-      if(/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(workInput.trim()))clearWork();
+      if(/^(?:please\s+)?(?:uh[,\s]+|ah[,\s]+)?(?:stop(?: talking| speaking)?|be quiet|quiet|shut up)[.!?\s]*$/i.test(workInput.trim()))clearWork();
       else if(!conversational)beginWork();
     }
     if(conversational&&!nativeOutput&&(v.type==='output_transcript.added'||(v.type==='turn.created'&&v.turn?.role==='assistant'))){
@@ -177,7 +177,7 @@
       if(assistantTurns.delete(v.turn.id)){assistantDoneAt=Date.now();if(conversational)nativeOutput=false}
     }
     if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&v.turn.transcript?.trim())emit('input-final',v.turn.transcript);
-    if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(stop(?: talking| speaking)?|be quiet)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
+    if(v.type==='turn.done'&&v.turn?.role==='user'&&mic&&/^(?:please\s+)?(?:uh[,\s]+|ah[,\s]+)?(?:stop(?: talking| speaking)?|be quiet|quiet|shut up)[.!?\s]*$/i.test(v.turn.transcript?.trim()||'')){
       // An exact completed stop command needs no spoken acknowledgment. Wait
       // for completion so "stop ... and show me X" remains a normal request.
       cancelPrepared();clearWork();workAnswered=true;approved=false;queuedSpeech=null;outputMeter?.clear();resetCaptions();replyUntil=0;cueWaitingAt=0;awaitingAnswer=false;assistantTurns.clear();emit('reply-pending',false);

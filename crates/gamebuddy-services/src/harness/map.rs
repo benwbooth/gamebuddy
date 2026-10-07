@@ -74,6 +74,59 @@ pub(super) fn read(
 mod tests {
     use super::*;
     #[test]
+    fn named_area_map_is_prefetched_without_claiming_a_player_position() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Guide", "# Begin\nTalk to the guard.")?;
+        store.save_guide(&guide)?;
+        store.put("active_guide", &guide.id)?;
+        let map = gamebuddy_core::MapAsset {
+            id: "town-map".into(),
+            title: "North Town".into(),
+            url: "https://example.org/town.png".into(),
+            source_url: "https://example.org/atlas".into(),
+            credit: "Fixture".into(),
+            enabled: true,
+        };
+        store.put(
+            &format!("atlas:{}", guide.id),
+            &gamebuddy_core::Atlas {
+                guide_id: guide.id.clone(),
+                guide_revision: guide.revision,
+                maps: vec![map.clone()],
+                ..Default::default()
+            },
+        )?;
+        std::fs::create_dir_all(store.root.join("maps"))?;
+        image::RgbImage::from_pixel(200, 200, image::Rgb([0, 180, 60]))
+            .save(crate::navigation::cached_map_path(&store, &map))?;
+        let path = dir.path().join("screen.png");
+        image::RgbImage::from_pixel(96, 64, image::Rgb([200, 20, 30])).save(&path)?;
+        let ticket = crate::screen::start(&store, &guide.game, true)?;
+        crate::screen::publish(&store, &ticket, &path, "fixture")?;
+        let context = crate::harness::context_for_request(
+            &store,
+            "I'm in North Town. There's no danger here.",
+        )?;
+        assert_eq!(context.images.len(), 2);
+        assert_eq!(context.value["requested_map_image"]["map_id"], "town-map");
+        assert_eq!(context.value["requested_map_image"]["image_index"], 1);
+        assert!(context.value["requested_map_image"]["camera_marker"].is_null());
+        assert!(context.value["navigation"]["map"]["current_place"].is_null());
+        assert_eq!(
+            context.screen_frame().unwrap().jpeg,
+            crate::screen::snapshot(&store)?.jpeg
+        );
+        assert_eq!(
+            crate::harness::context_for_request(&store, "I'm in North Township")?
+                .images
+                .len(),
+            1
+        );
+        Ok(())
+    }
+    #[test]
     fn actual_map_pixels_are_available_with_or_without_a_live_match() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::open(dir.path())?;

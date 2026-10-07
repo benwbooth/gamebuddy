@@ -89,6 +89,16 @@ pub fn atlas(store: &Store, guide: &Guide) -> Result<Atlas> {
     atlas
         .places
         .retain(|p| atlas.bindings.iter().any(|b| b.place_id == p.id));
+    // Explicit player reports are evidence for an area name even when the
+    // prepared source atlas omitted it. They establish no task or coordinates.
+    let reported: Vec<Place> = store
+        .get(&format!("player-places:{}", guide.id))?
+        .unwrap_or_default();
+    for place in reported {
+        if !atlas.places.iter().any(|p| p.id == place.id) {
+            atlas.places.push(place);
+        }
+    }
     atlas
         .map_links
         .retain(|link| atlas.places.iter().any(|p| p.id == link.place_id));
@@ -696,15 +706,16 @@ pub fn context(
         tracker = PlaceTracker::for_session(session.clone());
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
-    let spatial = crate::spatial::context(store, guide)?;
+    let mut spatial = crate::spatial::context(store, guide)?;
     let geometric_ready = spatial["preparation"]["status"] == "ready";
+    let reported_view_unchanged = tracking::reported_view_unchanged(store, guide, &tracker)?;
     // Once learned references are ready, coarse colour matches must not compete
     // with geometric tracking or revive a discarded location on an ambiguous frame.
     let no_estimate = SyncEstimate::default();
     tracker.observe(
         guide,
         &atlas,
-        if geometric_ready {
+        if geometric_ready || reported_view_unchanged {
             &no_estimate
         } else {
             estimate
@@ -726,12 +737,23 @@ pub fn context(
         tracker.invalidate_visual();
     }
     if !geometric_ready
+        && !reported_view_unchanged
         && let Some(scene) = store.get::<PlaceTracker>(&format!("scene-{tracker_key}"))?
         && scene.session_id == tracker.session_id
     {
         tracker.adopt_visual(&scene, now);
     }
-    if let Some(grounded) = grounded
+    if reported_view_unchanged
+        && grounded
+            .as_ref()
+            .is_some_and(|g| g.place_id != tracker.place_id)
+    {
+        spatial["observation"]["tracker"]["status"] = json!("conflicts_with_player_report");
+        spatial["observation"]["related_step_ids"] = json!([]);
+        spatial["observation"]["map_registration"] = Value::Null;
+    }
+    if !reported_view_unchanged
+        && let Some(grounded) = grounded
         && grounded.session_id == tracker.session_id
         && grounded.epoch == progress.epoch
         && now.saturating_sub(grounded.located_at_ms) < 15_000
@@ -838,7 +860,7 @@ pub fn context(
     let geometric_marker = spatial["observation"]["map_registration"]
         .as_object()
         .map(|_| &spatial["observation"]["map_registration"]);
-    let display_marker = if geometric_marker.is_none() {
+    let display_marker = if geometric_marker.is_none() && !reported_view_unchanged {
         crate::spatial_maps::display_area(store, guide, saved_progress.epoch)?
             .filter(|m| atlas.maps.iter().any(|a| a.enabled && m["map_id"] == a.id))
     } else {
@@ -910,6 +932,7 @@ pub fn context(
         value["guidance"]["warning"] = json!(
             hazards::readiness(guide, progress, &advice, outcome_model, &outcome_view)
                 .or_else(|| hazards::upcoming(guide, progress, &advice, &outcome_view))
+                .filter(|warning| hazards::at_trigger(warning, guide, &atlas, &tracker, now))
         );
     }
     value["prepared_speech"] = json!(crate::voice::prepared::frontier(
@@ -1007,6 +1030,7 @@ mod tests {
             &guide,
             LocationReport {
                 place_id: place.id.clone(),
+                place_label: None,
                 step_id: None,
                 player_report: "I'm in North Town's cathedral.".into(),
                 expected_revision: guide.revision,

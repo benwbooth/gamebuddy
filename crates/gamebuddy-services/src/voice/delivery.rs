@@ -28,14 +28,7 @@ impl Delivery {
             || self.started == Some(utterance)
             || self.delivered == Some(utterance)
             || request.trim().is_empty()
-            || matches!(
-                request
-                    .trim()
-                    .trim_end_matches(['.', '!', '?'])
-                    .to_lowercase()
-                    .as_str(),
-                "stop" | "stop talking" | "stop speaking" | "be quiet"
-            )
+            || super::live::is_stop(request)
         {
             return false;
         }

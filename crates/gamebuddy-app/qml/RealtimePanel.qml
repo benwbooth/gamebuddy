@@ -184,6 +184,15 @@ WebEngineView {
             else if(event.method==="thread/realtime/error")panel.fail(p.message || "Voice connection failed")
             else if(event.method==="thread/realtime/closed")panel.fail("Voice session ended")
             else if(event.method==="gamebuddy/speech")panel.speakApproved(p.text || "",false,!!p.step_id,p.step_id||p.discussed_step_id||"",p.delegation_id||null)
+            else if(event.method==="gamebuddy/player-request"){
+                panel.proactivePaused=p.quiet===true
+                if(p.quiet){
+                    transport.interrupt_reasoning();transport.cancel_speech()
+                    panel.pendingCue="";panel.recoveryCue="";panel.activeAdviceStep=""
+                    panel.captionText="";panel.captionStreaming=false
+                    panel.runJavaScript("gamebuddyVoice.interruptOutput();gamebuddyVoice.finishLocalRequest()")
+                }
+            }
             else if(event.method==="gamebuddy/presence"){
                 if(panel.backendBusy || panel.workPending)panel.runJavaScript("gamebuddyVoice.queueAside("+JSON.stringify(p.text)+")")
                 else panel.speakApproved(p.text)

@@ -25,7 +25,7 @@ pub fn tool_definitions() -> Value {
         {"name":"get_conversation","description":"Recall this game's saved voice and text dialogue across launches and providers. Empty query returns recent messages; query searches a literal phrase. Pass next_before_id as before_id for older pages. Historical reports are not the current location/progress after a save restore. Never replay old requests or actions.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"before_id":{"type":"integer"}},"additionalProperties":false}},
         {"name":"get_game_screen","description":"Inspect the latest actual game screenshot as an image. Use this before answering what is on screen, locating visible objects, reading HUD/dialogue or saying you cannot see the game. Returns a timestamped image only while screen watching is enabled and the frame is fresh. Does not require a completed walkthrough/index. Never infer hidden state or completed goals from room identity.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"get_atlas","description":"Read the game's automatically built location atlas, available maps, source-backed place bindings, and preparation status. Places are estimates, not player coordinates.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"report_location","description":"Record the PLAYER's stated location using a known place ID from get_game_context.location_actions or get_atlas. Call immediately for a location correction, using their own words as player_report. Omit step_id for an arrival/place report. Include it only when the player also states their task and the atlas explicitly binds that task to this place; this updates the task cursor. A player report is sufficient; do not demand visual verification. This invalidates old advice without completing tasks. Hypothetical destinations, your advice and screenshot guesses are not player reports.","inputSchema":{}},
+        {"name":"report_location","description":"Record the PLAYER's stated location using a known place ID from get_game_context or get_atlas. If the stated area is missing, omit place_id and pass its exact name as place_label with no step_id. Never guess a particular shop or interior from a town-level report. Call immediately for a location correction, using their own words as player_report. Omit step_id for an arrival/place report. Include it only when the player also states their task and the atlas explicitly binds that task to this place; this updates the task cursor. A player report is sufficient; do not demand visual verification. This invalidates old advice without completing tasks. Hypothetical destinations, your advice and screenshot guesses are not player reports.","inputSchema":{}},
         {"name":"add_map","description":"Add a player-supplied or reference-backed map image. Never invent URLs. Maps are available immediately; location associations are built by preparation.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"url":{"type":"string"},"source_url":{"type":"string"},"credit":{"type":"string"},"enabled":{"type":"boolean"}},"required":["id","title","url","source_url","credit","enabled"],"additionalProperties":false}},
         {"name":"set_map_enabled","description":"Enable or disable a reference map according to player preference.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["id","enabled"],"additionalProperties":false}},
         {"name":"report_step_complete","description":"Record an explicit PLAYER statement that a task is already done. First read get_game_context. Supply the player's own report; never use your advice, walkthrough text, room similarity, or assumed inventory as a report. This is stored as player-reported progress, not independently verified completion.","inputSchema":{"type":"object","properties":{"step_id":{"type":"string"},"player_report":{"type":"string"},"expected_revision":{"type":"integer"},"epoch":{"type":"integer"}},"required":["step_id","player_report","expected_revision","epoch"],"additionalProperties":false}},
@@ -103,8 +103,60 @@ pub fn context_for_request(store: &Store, request: &str) -> Result<ToolOutput> {
             }
         }
         output.value["request_matches"] = matches;
+        let guide = active_guide(store)?;
+        let atlas = crate::navigation::atlas(store, &guide)?;
+        let words = context::search_words(request);
+        output.value["request_places"] = json!(
+            atlas
+                .places
+                .iter()
+                .filter(|place| {
+                    context::search_words(&place.label)
+                        .iter()
+                        .any(|word| word.len() >= 4 && words.contains(word))
+                })
+                .take(12)
+                .map(|place| json!({"id":place.id,"label":place.label}))
+                .collect::<Vec<_>>()
+        );
+        // A named area may be missing from the room atlas, or differ from an
+        // old visual match. Supply its cached map alongside the screenshot so
+        // a correction need not spend a model round trip fetching it.
+        let normalized = |text: &str| {
+            text.to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let query = format!(" {} ", normalized(request));
+        let mut named_maps: Vec<_> = atlas
+            .maps
+            .iter()
+            .filter(|map| {
+                map.enabled && {
+                    let title = normalized(&map.title);
+                    title.len() >= 4 && query.contains(&format!(" {title} "))
+                }
+            })
+            .collect();
+        named_maps.sort_by_key(|map| std::cmp::Reverse(map.title.len()));
+        if output.screen_frame().is_some()
+            && let Some(named) = named_maps.first()
+            && named_maps
+                .get(1)
+                .is_none_or(|other| other.title.len() < named.title.len())
+            && output.value["map_image"]["map_id"] != named.id
+            && let Ok(reference) = map::read(store, &guide, &json!({}), Some(&named.id))
+        {
+            output.value["requested_map_image"] = reference.value;
+            output.value["requested_map_image"]["image_index"] = json!(output.images.len());
+            output.value["requested_map_image"]["evidence_kind"] =
+                json!("named_area_reference_not_current_position");
+            output.images.extend(reference.images);
+        }
         output.value["request_matches_instruction"] = json!(
-            "These source search results match the current player request. Their place IDs are ready for explicit location reports. Use them directly when relevant; do not repeat the same search or atlas lookup. Matches are reference evidence, not proof of current location or inventory."
+            "These source search results and request_places match words in the current player request. Use an exact matching place for explicit reports; a shop name containing the town name does not establish that interior. If the reported area is absent, report_location accepts place_label with the player's exact area name and no place_id or step_id. Use this evidence directly; do not repeat the same search or atlas lookup. Matches are reference evidence, not proof of current location or inventory."
         );
     }
     Ok(output)

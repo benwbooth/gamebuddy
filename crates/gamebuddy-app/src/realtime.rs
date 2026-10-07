@@ -213,7 +213,7 @@ impl ffi::RealtimeVoice {
         }));
         true
     }
-    pub fn recognize_input(self: Pin<&mut Self>, text: QString, complete: bool) {
+    pub fn recognize_input(mut self: Pin<&mut Self>, text: QString, complete: bool) {
         let text = text.to_string();
         let mut input = self.rust().input.lock().unwrap();
         if complete {
@@ -225,6 +225,14 @@ impl ffi::RealtimeVoice {
             let _ = tx.send(Command::Diagnostic(
                 "recognized-input".into(),
                 json!({"text_bytes":text.len(),"complete":complete,"utterance":input.utterance()}),
+            ));
+        }
+        let spoken = input.text(Instant::now());
+        drop(input);
+        if complete && !spoken.is_empty() {
+            let quiet = gamebuddy_services::voice::live::is_stop(&text);
+            self.as_mut().set_event_json(QString::from(
+                json!({"method":"gamebuddy/player-request","params":{"quiet":quiet}}).to_string(),
             ));
         }
     }
@@ -559,8 +567,6 @@ impl ffi::RealtimeVoice {
                 let mut supplied_request = String::new();
                 let mut final_answer = String::new();
                 let mut supplied_frame = None;
-                let mut last_frame_check = Instant::now();
-                let mut refreshed_view = false;
                 let mut spatial_advice = false;
                 let mut stale_retries = (0u64, 0u8);
                 let mut delivery = gamebuddy_services::voice::delivery::Delivery::default();
@@ -682,7 +688,6 @@ impl ffi::RealtimeVoice {
                             supplied_request.clear();
                             final_answer.clear();
                             supplied_frame = None;
-                            refreshed_view = false;
                             spatial_advice = false;
                             refused_context = None;
                             if unsolicited {
@@ -710,7 +715,6 @@ impl ffi::RealtimeVoice {
                                 reasoning_input = Some(utterance);
                                 supplied_request = request;
                                 supplied_frame = frame;
-                                last_frame_check = Instant::now();
                             }
                         }
                         if event["method"] == "item/completed"
@@ -810,7 +814,6 @@ impl ffi::RealtimeVoice {
                                     reasoning_input = Some(request_utterance);
                                     supplied_request = request;
                                     supplied_frame = frame;
-                                    last_frame_check = Instant::now();
                                 } else {
                                     prepared_context =
                                         Some((turn_id, request_utterance, request, frame));
@@ -1153,7 +1156,7 @@ impl ffi::RealtimeVoice {
                             reasoning_since = Some(Instant::now());
                             diagnostics.record(
                                 "request_dispatched",
-                                json!({"utterance":utterance,"text_bytes":request.len()}),
+                                json!({"utterance":utterance,"text_bytes":request.len(),"context_ms":context_started.elapsed().as_millis(),"images":evidence.as_ref().map_or(0,|c| c.images.len()),"map_image":evidence.as_ref().is_some_and(|c| c.value["map_image"].is_object() || c.value["requested_map_image"].is_object())}),
                             );
                             if std::env::args().any(|a| a == "--voice-trace") {
                                 eprintln!(
@@ -1178,23 +1181,10 @@ impl ffi::RealtimeVoice {
                                 );
                             }
                         }
-                        // Refresh native visual evidence while a long reasoning
-                        // turn is in flight. A new camera view supersedes its old
-                        // route before a queued instruction can be published.
-                        // A continuously moving camera must not keep restarting
-                        // reasoning. Allow one automatic refresh per request;
-                        // tools still obtain fresh evidence before mutations.
-                        let changed_view = !refreshed_view
-                            && reasoning_since
-                                .is_some_and(|since| since.elapsed() >= Duration::from_secs(3))
-                            && last_frame_check.elapsed() >= Duration::from_secs(1)
-                            && supplied_frame.as_ref().is_some_and(|frame| {
-                                !gamebuddy_services::screen::still_current(&store, frame)
-                                    .unwrap_or(false)
-                            });
-                        if last_frame_check.elapsed() >= Duration::from_secs(1) {
-                            last_frame_check = Instant::now();
-                        }
+                        // Validate screen-dependent replies at publication. Routine
+                        // frame changes must not inject a second model pass into
+                        // every request after three seconds. A rejected visual
+                        // reply receives replacement pixels through retry_context.
                         // Native delegation may begin midway through a request.
                         // Supply the finished utterance and current image before
                         // the next reasoning step, avoiding a context-fetch round
@@ -1202,44 +1192,31 @@ impl ffi::RealtimeVoice {
                         if !request.is_empty()
                             && !delivery.finished(utterance)
                             && start_requests.is_empty()
-                            && (request != supplied_request || changed_view)
+                            && request != supplied_request
                             && let Some(turn_id) = context_turn.as_ref()
                             && !context_requests.values().any(|(id, ..)| id == turn_id)
                             && refused_context.as_ref()
                                 != Some(&(turn_id.clone(), utterance, request.clone()))
                         {
-                            refreshed_view |= changed_view;
                             if !supplied_request.is_empty() {
                                 for (event, reject) in &mut pending_tools {
                                     let name = event["params"]["tool"].as_str().unwrap_or_default();
-                                    let source_reply = name
-                                        == gamebuddy_services::voice::reply::TOOL
-                                        && serde_json::from_value::<
-                                            gamebuddy_services::voice::reply::Reply,
-                                        >(
-                                            event["params"]["arguments"].clone()
-                                        )
-                                        .is_ok_and(|r| !r.requires_current_screen());
                                     if !name.starts_with("get_")
                                         && !matches!(name, "search_guide" | "read_reference")
-                                        && (request != supplied_request || !source_reply)
                                     {
                                         *reject = true;
                                     }
                                 }
                             }
                             let mut updated_frame = supplied_frame.clone();
-                            let evidence = if supplied_request.is_empty() || changed_view {
+                            let evidence =
                                 gamebuddy_services::harness::context_for_request(&store, &request)
                                     .ok()
                                     .filter(|c| {
                                         c.value["game"]
                                             .as_str()
                                             .is_some_and(|g| g.eq_ignore_ascii_case(&game))
-                                    })
-                            } else {
-                                None
-                            };
+                                    });
                             sequence += 1;
                             if let Some(context) = &evidence {
                                 updated_frame = context.screen_frame();
@@ -1491,7 +1468,7 @@ fn answer_tool(
     }
     let state_changed = voice_reply
         .as_ref()
-        .is_some_and(|reply| reply["step_id"].is_string())
+        .is_some_and(|reply| reply["step_id"].is_string() || reply["state_changed"] == true)
         || success
             && matches!(
                 params["tool"].as_str(),

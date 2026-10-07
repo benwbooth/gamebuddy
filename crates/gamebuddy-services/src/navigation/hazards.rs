@@ -16,6 +16,29 @@ pub struct Warning {
     pub evidence_kind: &'static str,
 }
 
+/// A saved objective is not physical proximity. Require current location
+/// evidence for the source action that would trigger an unsolicited warning.
+pub fn at_trigger(
+    warning: &Warning,
+    guide: &Guide,
+    atlas: &gamebuddy_core::Atlas,
+    location: &gamebuddy_core::PlaceTracker,
+    now: u64,
+) -> bool {
+    if !matches!(
+        location.status.as_str(),
+        "reported" | "estimated" | "confirmed"
+    ) || now.saturating_sub(location.located_at_ms) > 15_000
+    {
+        return false;
+    }
+    location.place_id.as_deref().is_some_and(|place| {
+        atlas
+            .place_for_step(guide, &warning.trigger_step_id)
+            .is_some_and(|trigger| trigger.id == place)
+    })
+}
+
 fn dangerous(step: &Step) -> bool {
     let words: Vec<_> = format!("{} {}", step.title, step.instructions)
         .to_lowercase()
@@ -230,6 +253,46 @@ pub fn readiness(
 mod tests {
     use super::*;
     use gamebuddy_core::{import_markdown, outcomes::OutcomeModel};
+
+    #[test]
+    fn a_saved_combat_step_is_not_a_warning_in_another_place() {
+        let guide = import_markdown(
+            "Game",
+            "Route",
+            "# Enter item room\nEnter.\n# Defeat every enemy\nUse the upper platforms.",
+        )
+        .unwrap();
+        let progress = Progress::default();
+        let view = OutcomeModel::default().view(&guide, &progress);
+        let guidance = Guidance {
+            now: Some(guide.steps[0].clone()),
+            ..Default::default()
+        };
+        let warning = upcoming(&guide, &progress, &guidance, &view).unwrap();
+        let atlas = gamebuddy_core::Atlas {
+            places: vec![gamebuddy_core::Place {
+                id: "item-room".into(),
+                label: "Item room".into(),
+                map_id: None,
+                landmarks: String::new(),
+            }],
+            bindings: vec![gamebuddy_core::PlaceBinding {
+                step_id: guide.steps[0].id.clone(),
+                place_id: "item-room".into(),
+                evidence: "source".into(),
+            }],
+            ..Default::default()
+        };
+        let mut location = gamebuddy_core::PlaceTracker::default();
+        assert!(!at_trigger(&warning, &guide, &atlas, &location, 100));
+        location.report_place("town", 0, 100, "I am in town");
+        assert!(!at_trigger(&warning, &guide, &atlas, &location, 100));
+        location.report_place("item-room", 0, 100, "I am at the item room");
+        assert!(at_trigger(&warning, &guide, &atlas, &location, 100));
+        assert!(!at_trigger(&warning, &guide, &atlas, &location, 20_000));
+        location.status = "estimated".into();
+        assert!(!at_trigger(&warning, &guide, &atlas, &location, 20_000));
+    }
 
     #[test]
     fn warns_at_the_entrance_without_waiting_for_the_monster_to_be_visible() {

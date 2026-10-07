@@ -183,6 +183,14 @@ voice.playerSpeech(true);wire({type:'turn.done',turn:{role:'user',transcript:'St
 assert(!pendingWork(),'stop clears pending feedback');
 voice.playerSpeech(true);wire({type:'input_transcript.added',item:{text:'Stop'}});wire({type:'input_transcript.added',item:{text:' speaking.'}});voice.playerSpeech(false);tick(6000);
 assert(!pendingWork(),'multi-fragment stop phrases stay quiet');
+for (const phrase of ['Quiet.', 'Uh, shut up!']) {
+  voice.playerSpeech(true);wire({type:'input_transcript.added',item:{text:'Check that room.'}});voice.playerSpeech(false);
+  assert(pendingWork());
+  voice.playerSpeech(true);wire({type:'turn.done',turn:{role:'user',transcript:phrase}});voice.playerSpeech(false);
+  tick(6000);
+  assert(!pendingWork(),phrase+' stops pending work locally');
+  assert(muted(),phrase+' stops audio locally');
+}
 voice.playerSpeech(true);wire({type:'input_transcript.added',item:{text:'Another request.'}});voice.playerSpeech(false);voice.muteOutput(true);tick(25000);
 assert(pendingWork(),'visual feedback is available when spoken replies are muted');
 voice.requestFailed('Please try again.');voice.muteOutput(false);tick(20000);
@@ -306,6 +314,17 @@ assert.equal(timers.size,0);
 // Exercise the actual QML console handler: an interrupted caption must stop
 // being active even when a delegated answer is still pending.
 const panel=readFileSync(new URL('../crates/gamebuddy-app/qml/RealtimePanel.qml',import.meta.url),'utf8');
+const nativeHandler=panel.match(/onEvent_jsonChanged: \{([\s\S]*?)\n        \}\n    \}/)[1];
+const stoppedCalls=[];
+const stoppedPanel={trace:false,proactivePaused:false,pendingCue:'Old warning',recoveryCue:'Old warning',activeAdviceStep:'fight',captionText:'Danger ahead',captionStreaming:true,runJavaScript(code){stoppedCalls.push(code)}};
+const nativeState={panel:stoppedPanel,transport:{interrupt_reasoning(){stoppedCalls.push('interrupt')},cancel_speech(){stoppedCalls.push('cancel')}},event_json:''};
+runInNewContext('function receive(){'+nativeHandler+'}',nativeState);
+nativeState.event_json=JSON.stringify({method:'gamebuddy/player-request',params:{quiet:true}});nativeState.receive();
+assert(stoppedPanel.proactivePaused,'spoken stop pauses unsolicited narration');
+assert.equal(stoppedPanel.pendingCue,'');assert.equal(stoppedPanel.recoveryCue,'');
+assert(stoppedCalls.includes('interrupt')&&stoppedCalls.includes('cancel'),'spoken stop cancels pending reasoning and audio');
+nativeState.event_json=JSON.stringify({method:'gamebuddy/player-request',params:{quiet:false}});nativeState.receive();
+assert(!stoppedPanel.proactivePaused,'a new request resumes narration without reopening the microphone');
 const handler=panel.match(/onJavaScriptConsoleMessage: \(level,message,line,source\) => \{([\s\S]*?)\n    \}\n    onEnabledBackendChanged/)[1];
 const state={started:true,trace:false,captionText:'',captionStreaming:false,assistantSpeaking:false,waitingForReply:false,activeAdviceStep:'',pendingCue:'',outputAt:0,transport:{trace_event(){}}};
 runInNewContext('function receive(message){'+handler+'}',state);

@@ -18,7 +18,7 @@ pub struct Narrator {
     pending_event: String,
     event_votes: u8,
     urgent: bool,
-    warned_hazard: String,
+    warned_hazards: HashSet<String>,
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -92,12 +92,16 @@ impl Narrator {
         let coaching = &context["coaching"];
         let warning = &context["guidance"]["warning"];
         let warning_id = field(warning, "id");
-        if warning_id.is_empty() {
-            self.warned_hazard.clear();
-        }
+        // Losing location for a frame, refreshing progress, or editing a guide
+        // does not mean the player entered a new encounter.
+        let warning_key = format!(
+            "{}:{}",
+            field(warning, "evidence_kind"),
+            warning["encounter_step_id"].as_str().unwrap_or(warning_id)
+        );
         let upcoming_danger = live
             && !warning_id.is_empty()
-            && self.warned_hazard != warning_id
+            && !self.warned_hazards.contains(&warning_key)
             && !field(warning, "text").is_empty();
         if field(coaching, "kind") == "in_progress" {
             self.acknowledged_actions
@@ -120,8 +124,8 @@ impl Narrator {
                 && scene["fresh"] == true
                 && scene["age_ms"].as_u64().unwrap_or(0) <= 3000
                 && event_available(field(scene, "event"), 30));
-        let can_interrupt = context["player_speaking"] == false
-            && (urgent_coaching || urgent_event || upcoming_danger);
+        let can_interrupt =
+            context["player_speaking"] == false && (urgent_coaching || urgent_event);
         if context["conversation_active"] == true && !can_interrupt {
             self.last_conversation = Some(now);
             return None;
@@ -135,9 +139,14 @@ impl Narrator {
         }
         let guidance = &context["guidance"];
         let live = context["screen"]["status"] == "live";
-        let ready = !self
-            .acknowledged_actions
-            .contains(field(&guidance["now"], "id"))
+        let place_conflict = context["current_place"]["id"]
+            .as_str()
+            .zip(context["target_place"]["id"].as_str())
+            .is_some_and(|(current, target)| current != target);
+        let ready = !place_conflict
+            && !self
+                .acknowledged_actions
+                .contains(field(&guidance["now"], "id"))
             && matches!(guidance["status"].as_str(), Some("ready" | "unlocated"))
             && live
             && (context["screen"]["scene"]["fresh"] == true
@@ -189,9 +198,10 @@ impl Narrator {
             }
         }
         if upcoming_danger && context["player_speaking"] != true {
-            self.warned_hazard = warning_id.into();
+            self.warned_hazards.insert(warning_key);
             self.last_spoken = Some(now);
-            self.urgent = true;
+            // A source preview is not an observed emergency. In particular it
+            // must never cancel a request correcting our location or route.
             return Some(field(warning, "text").to_owned());
         }
         if !self.introduced {
@@ -263,29 +273,37 @@ mod tests {
         json!({"game":"Game","screen":{"status":"live","session_id":"s","scene":{"fresh":true}},"location_status":"uncertain","guidance":{"status":"ready","now":{"id":id,"title":"Next task","instructions":format!("Walk right to {id}. Climb the ladder.")}}})
     }
     #[test]
-    fn route_warning_precedes_entry_without_scene_inference_and_waits_for_speech() {
+    fn route_warning_waits_for_corrections_and_survives_context_refreshes() {
         let mut n = Narrator::default();
         let t = Instant::now();
         let mut c = action("entrance");
         n.next(&c, t);
-        c["screen"]["scene"]["fresh"] = json!(false);
         c["conversation_active"] = json!(true);
-        c["player_speaking"] = json!(true);
-        c["guidance"]["warning"] = json!({"id":"chamber", "text":"Danger ahead: a boss waits inside. The shield will not stop its fireballs."});
-        assert!(n.next_cue(&c, t + Duration::from_secs(1)).is_none());
         c["player_speaking"] = json!(false);
-        c["screen"]["status"] = json!("paused");
-        assert!(n.next_cue(&c, t + Duration::from_secs(2)).is_none());
-        c["screen"]["status"] = json!("live");
-        let cue = n.next_cue(&c, t + Duration::from_secs(3)).unwrap();
+        c["guidance"]["warning"] = json!({"id":"guide:1:chamber", "encounter_step_id":"chamber", "text":"Danger ahead: a boss waits inside."});
+        assert!(n.next_cue(&c, t + Duration::from_secs(1)).is_none());
+        c["conversation_active"] = json!(false);
+        let cue = n.next_cue(&c, t + Duration::from_secs(2)).unwrap();
         assert_eq!(cue["text"], c["guidance"]["warning"]["text"]);
-        assert_eq!(cue["urgent"], true);
-        assert!(n.next_cue(&c, t + Duration::from_secs(120)).is_none());
-        c["guidance"]["warning"] = Value::Null;
-        n.next_cue(&c, t + Duration::from_secs(121));
-        c["guidance"]["warning"] =
-            json!({"id":"chamber", "text":"Danger ahead: a boss waits inside."});
-        assert!(n.next_cue(&c, t + Duration::from_secs(122)).is_some());
+        assert_eq!(cue["urgent"], false);
+        for i in 3..6 {
+            c["guidance"]["warning"] = Value::Null;
+            n.next_cue(&c, t + Duration::from_secs(i * 2));
+            c["guidance"]["warning"] = json!({"id":format!("guide:{i}:chamber"), "encounter_step_id":"chamber", "text":"Danger ahead: a boss waits inside."});
+            assert!(n.next_cue(&c, t + Duration::from_secs(i * 2 + 1)).is_none());
+        }
+        c["guidance"]["warning"]["evidence_kind"] = json!("source_route_requirement");
+        assert!(
+            n.next_cue(&c, t + Duration::from_secs(18)).is_some(),
+            "A distinct gate requirement is not the same warning as combat"
+        );
+        c["guidance"]["warning"]["evidence_kind"] = Value::Null;
+        assert!(n.next_cue(&c, t + Duration::from_secs(19)).is_none());
+        c["screen"]["session_id"] = json!("new-session");
+        assert_eq!(
+            n.next_cue(&c, t + Duration::from_secs(20)).unwrap()["text"],
+            c["guidance"]["warning"]["text"]
+        );
     }
     #[test]
     fn new_steps_speak_instructions_immediately_without_a_named_location() {

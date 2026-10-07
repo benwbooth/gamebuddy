@@ -149,13 +149,12 @@ impl Responsiveness {
     }
 }
 
-fn is_stop(text: &str) -> bool {
+pub fn is_stop(text: &str) -> bool {
+    let words = super::command_words(text);
+    let words = words.trim_start_matches("uh ").trim_start_matches("ah ");
     matches!(
-        text.trim()
-            .trim_end_matches(['.', '!', '?'])
-            .to_lowercase()
-            .as_str(),
-        "stop" | "stop talking" | "stop speaking" | "be quiet"
+        words,
+        "stop" | "stop talking" | "stop speaking" | "be quiet" | "quiet" | "shut up"
     )
 }
 
@@ -163,6 +162,22 @@ fn is_stop(text: &str) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn stop_variants_are_local_commands_but_game_questions_are_not() {
+        for text in ["Quiet", "Uh, shut up!", "Please be quiet.", "stop talking"] {
+            assert!(is_stop(text), "{text}");
+            let mut delivery = super::super::delivery::Delivery::default();
+            assert!(!delivery.dispatch(1, text, false));
+        }
+        for text in [
+            "How do I stop the boss?",
+            "Stop at the door",
+            "Quiet room, where next?",
+        ] {
+            assert!(!is_stop(text), "{text}");
+        }
+    }
 
     fn say(input: &mut PlayerInput, text: &str, now: Instant) {
         input.activity(true, now);
