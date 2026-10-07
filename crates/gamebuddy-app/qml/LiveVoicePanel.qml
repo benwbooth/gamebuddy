@@ -118,6 +118,11 @@ WebEngineView {
     }
     Timer { interval: 250; repeat: true; running: panel.started && panel.automaticSession; onTriggered: panel.narrate() }
     Timer { interval: 2000; repeat: true; running: panel.started; onTriggered: panel.shareContext() }
+    // Never leave the player waiting on a request that stalled.
+    Timer {
+        interval: 90000; running: panel.pendingTool.length > 0
+        onTriggered: panel.finishTool("GameBuddy took too long to answer. Ask the player to try again.", true)
+    }
     Timer { interval: 250; repeat: true; running: panel.userSpeaking; onTriggered: if (Date.now() - panel.inputAt > 1500) panel.userSpeaking = false }
     GeminiVoice { id: gemini }
     // Only its narrator is used; the Codex transport never connects here.

@@ -21,7 +21,7 @@ ScrollView {
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : settings.speech === "gemini_live" ? 2 : 0
         liveModel.text = settings.live_voice?.model || "gemini-3.1-flash-live-preview"
-        liveVoiceName.text = settings.live_voice?.voice || "Puck"
+        liveVoiceName.text = settings.live_voice?.voice || "Charon"
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         preparedVoice.enabled=!!settings.prepared_speech
         preparedVoice.checked=!!settings.prepared_speech && settings.prepared_speech.enabled!==false
@@ -122,7 +122,7 @@ ScrollView {
             Text { text:"Gemini model"; color:"#a3b4c7"; font.pixelSize:12 }
             TextField { id:liveModel; objectName:"geminiModel"; Layout.fillWidth:true; onTextEdited:page.dirty=true }
             Text { text:"Voice"; color:"#a3b4c7"; font.pixelSize:12 }
-            TextField { id:liveVoiceName; objectName:"geminiVoiceName"; Layout.fillWidth:true; placeholderText:"Puck, Charon, Kore, Fenrir, Aoede…"; onTextEdited:page.dirty=true }
+            TextField { id:liveVoiceName; objectName:"geminiVoiceName"; Layout.fillWidth:true; placeholderText:"Charon (calm), Schedar (even), Umbriel (easy-going), Sulafat (warm), Puck (upbeat)…"; onTextEdited:page.dirty=true }
             Text { text:"API key"; color:"#a3b4c7"; font.pixelSize:12 }
             RowLayout {
                 Layout.fillWidth:true

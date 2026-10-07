@@ -775,7 +775,19 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
         if let Some(screen) = &screen {
             let _ = crate::screen::seen::record(store, screen, "assistant");
         }
-        let value: Value = parse_json(&text)?;
+        let value: Value = match parse_json(&text) {
+            Ok(value) => value,
+            // A prose reply wastes the round but must not lose the request.
+            Err(error) if round < 7 => {
+                evidence.push(json!({"rejected_reply":text.chars().take(2000).collect::<String>(),"validation_error":format!("{error:#}. Reply with exactly one JSON object: a tool call or {{\"answer\":...}}.")}));
+                store.put(
+                    "coach:last_trace",
+                    &json!({"question":question,"evidence":evidence}),
+                )?;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(name) = value["tool"].as_str() {
             ensure!(
                 round < 7,
@@ -1031,6 +1043,34 @@ mod tests {
                 .contains("did not complete")
         );
         assert_eq!(store.guide(&guide.id).unwrap(), updated);
+    }
+    #[test]
+    fn a_prose_reply_is_retried_instead_of_failing_the_request() {
+        use std::sync::Mutex;
+        struct Replies(Mutex<std::collections::VecDeque<String>>);
+        impl ReasoningProvider for Replies {
+            fn complete(&self, request: ModelRequest) -> Result<String> {
+                let mut replies = self.0.lock().unwrap();
+                if replies.len() == 1 {
+                    assert!(request.prompt.contains("rejected_reply"));
+                }
+                Ok(replies.pop_front().unwrap())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let guide =
+            gamebuddy_core::import_markdown("Faxanadu", "Test", "# Town\nFind the key").unwrap();
+        store.save_guide(&guide).unwrap();
+        store.put("active_guide", &guide.id).unwrap();
+        let provider = Replies(Mutex::new(std::collections::VecDeque::from([
+            "Got it, you're in town.".to_string(),
+            json!({"answer":"Got it, you're in town."}).to_string(),
+        ])));
+        assert_eq!(
+            coach(&provider, &store, "I'm in the town").unwrap(),
+            "Got it, you're in town."
+        );
     }
     #[test]
     fn malformed_widgets_are_repaired_without_partial_updates() {
