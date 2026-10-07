@@ -217,7 +217,7 @@ mod tests {
             kind: ProviderKind::Anthropic,
             endpoint,
             model: String::new(),
-            api_key_env: "USER".into(),
+            api_key_env: "PATH".into(),
             reasoning_effort: String::new(),
         })?;
         assert_eq!(result["models"][0]["efforts"], json!(["low"]));

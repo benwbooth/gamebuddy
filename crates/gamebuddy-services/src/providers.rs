@@ -730,7 +730,7 @@ mod tests {
             kind: ProviderKind::Anthropic,
             endpoint,
             model: "claude-test".into(),
-            api_key_env: "USER".into(),
+            api_key_env: "PATH".into(),
             reasoning_effort: "low".into(),
         })?;
         let reply = provider.complete_structured(ModelRequest {system:"system".into(), prompt:"question".into(), images:vec!["image-data".into()], json:true}, json!({"type":"object","properties":{"ready":{"type":"boolean"}},"required":["ready"],"additionalProperties":false}))?;
