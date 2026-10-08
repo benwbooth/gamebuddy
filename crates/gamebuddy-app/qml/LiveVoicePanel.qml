@@ -53,7 +53,11 @@ WebEngineView {
     }
     function briefContext() {
         const scene = session.screen?.scene
-        return JSON.stringify({game: session.game, current_task: session.current?.title, next_action: session.navigation?.guidance?.now?.instructions,
+        const guidance = session.navigation?.guidance
+        // next_action is the step GameBuddy's assistant last published; Gemini
+        // may repeat it for a plain "what's next?" only while it is ready.
+        return JSON.stringify({game: session.game, current_task: session.current?.title, next_action: guidance?.now?.instructions,
+            next_action_ready: guidance?.status === "ready" && !!guidance?.now?.instructions,
             place: session.navigation?.map?.current_place?.label, scene: scene?.fresh ? (scene.summary || "").slice(0, 400) : null})
     }
     function updateStatus() {
@@ -111,13 +115,13 @@ WebEngineView {
     // Keep Gemini's background picture current without making it speak.
     function shareContext() {
         if (!connected || assistantSpeaking || userSpeaking) return
-        const key = (session.navigation?.guidance?.now?.id || "") + "|" + (session.navigation?.map?.current_place?.label || "")
-        if (key === lastContextKey || Date.now() - lastContextAt < 10000) return
+        const key = (session.navigation?.guidance?.now?.id || "") + "|" + (session.navigation?.guidance?.status || "") + "|" + (session.navigation?.map?.current_place?.label || "")
+        if (key === lastContextKey || Date.now() - lastContextAt < 3000) return
         lastContextKey = key; lastContextAt = Date.now()
         runJavaScript("gamebuddyGemini.context(" + JSON.stringify(briefContext()) + ")")
     }
     Timer { interval: 250; repeat: true; running: panel.started && panel.automaticSession; onTriggered: panel.narrate() }
-    Timer { interval: 2000; repeat: true; running: panel.started; onTriggered: panel.shareContext() }
+    Timer { interval: 1000; repeat: true; running: panel.started; onTriggered: panel.shareContext() }
     // Never leave the player waiting on a request that stalled.
     Timer {
         interval: 90000; running: panel.pendingTool.length > 0
