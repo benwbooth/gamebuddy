@@ -30,6 +30,7 @@ WebEngineView {
     property string captionText: ""
     property bool captionStreaming: false
     property string pendingTool: ""
+    property var queuedTools: []
     property string lastContextKey: ""
     property double lastContextAt: 0
     property string activeAdviceStep: ""
@@ -93,6 +94,7 @@ WebEngineView {
     function shutdown(message) {
         started = false; connected = false; assistantSpeaking = false; workPending = false; captionStreaming = false
         if (pendingTool.length) pendingTool = ""
+        queuedTools = []
         runJavaScript("gamebuddyGemini.stop()")
         status = message
     }
@@ -110,6 +112,17 @@ WebEngineView {
         if (!pendingTool.length) return
         const id = pendingTool; pendingTool = ""; workPending = false
         runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(id) + "," + JSON.stringify(text) + "," + failedRequest + ")")
+        Qt.callLater(startQueuedTool)
+    }
+    // Requests made while GameBuddy is busy wait their turn. Refusing them
+    // made Gemini improvise answers (prices, items) instead of waiting.
+    function startQueuedTool() {
+        if (pendingTool.length || !queuedTools.length) return
+        if (buddy.busy) { Qt.callLater(startQueuedTool); return }
+        const next = queuedTools[0]
+        queuedTools = queuedTools.slice(1)
+        if (buddy.ask(next.request)) { pendingTool = next.id; workPending = true }
+        else runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(next.id) + "," + JSON.stringify("GameBuddy could not start that request. Ask the player to repeat it.") + ",true)")
     }
     function narrate() {
         if (!connected || !spokenReplies || proactivePaused || assistantSpeaking || workPending || userSpeaking || buddy.busy || !placeAgrees()) return
@@ -185,13 +198,14 @@ WebEngineView {
         }
         else if (event.type === "interrupted") { captionStreaming = false; activeAdviceStep = "" }
         else if (event.type === "tool-call") {
-            if (pendingTool.length || buddy.busy || !buddy.ask(v.request)) {
-                runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(v.id) + "," + JSON.stringify("GameBuddy is still working on the previous request. Tell the player it will answer that first.") + ",true)")
-                return
-            }
-            pendingTool = v.id; workPending = true
+            queuedTools = queuedTools.concat([{id: v.id, request: v.request}])
+            workPending = true
+            startQueuedTool()
         }
-        else if (event.type === "tool-cancel") { if (pendingTool === v) { pendingTool = ""; workPending = false } }
+        else if (event.type === "tool-cancel") {
+            queuedTools = queuedTools.filter(t => t.id !== v)
+            if (pendingTool === v) { pendingTool = ""; workPending = queuedTools.length > 0; Qt.callLater(startQueuedTool) }
+        }
     }
     onEnabledBackendChanged: update()
     onSpokenRepliesChanged: { if (spokenReplies) { failed = false; proactivePaused = false }; if (loaded) runJavaScript("gamebuddyGemini.muteOutput(" + (!spokenReplies) + ")"); update() }
