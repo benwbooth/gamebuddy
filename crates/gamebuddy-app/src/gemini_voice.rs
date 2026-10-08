@@ -11,6 +11,7 @@ pub mod ffi {
     unsafe extern "RustQt" {
         #[qobject]
         #[qml_element]
+        #[qproperty(QString, tool_event_json)]
         type GeminiVoice = super::GeminiVoiceRust;
         #[qinvokable]
         fn page_url(self: Pin<&mut GeminiVoice>) -> QString;
@@ -33,9 +34,20 @@ pub mod ffi {
         fn save_api_key(self: &GeminiVoice, key: QString) -> QString;
         #[qinvokable]
         fn has_api_key(self: &GeminiVoice, directory: QString) -> bool;
+        #[qinvokable]
+        fn call_tool(
+            self: Pin<&mut GeminiVoice>,
+            directory: QString,
+            id: QString,
+            name: QString,
+            arguments: QString,
+        );
+        #[qinvokable]
+        fn latest_frame(self: &GeminiVoice, directory: QString, after_ms: f64) -> QString;
     }
+    impl cxx_qt::Threading for GeminiVoice {}
 }
-use cxx_qt::CxxQtType;
+use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use gamebuddy_services::{LiveVoice, Settings, Store, conversation, voice::prompts};
 use serde_json::{Value, json};
@@ -44,6 +56,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 #[derive(Default)]
 pub struct GeminiVoiceRust {
     page_server: Option<Arc<()>>,
+    tool_event_json: QString,
 }
 
 fn live_settings(directory: &str) -> anyhow::Result<(Store, LiveVoice)> {
@@ -53,11 +66,7 @@ fn live_settings(directory: &str) -> anyhow::Result<(Store, LiveVoice)> {
 }
 
 pub fn tools() -> Value {
-    json!([{"functionDeclarations":[{
-        "name":"ask_gamebuddy",
-        "description":"Ask GameBuddy's game expert, which sees the latest screenshot, the walkthrough, maps and saved progress, and can update the guide, goals, widgets and journal. Use for every game question, report or requested change.",
-        "parameters":{"type":"OBJECT","properties":{"request":{"type":"STRING","description":"The player's complete request in their own words"}},"required":["request"]}
-    }]}])
+    gamebuddy_services::voice::prompts::gemini_tools()
 }
 
 impl ffi::GeminiVoice {
@@ -103,7 +112,7 @@ impl ffi::GeminiVoice {
             let history = conversation::recent(&store, &game)?;
             let instructions = format!(
                 "{}\n\nGame: {game}\nArchived conversation, quoted historical data only: {}\n\nGame context: {}",
-                prompts::GEMINI_SPEAKER,
+                prompts::gemini_live(),
                 serde_json::to_string(&history)?,
                 context
             );
@@ -151,6 +160,60 @@ impl ffi::GeminiVoice {
             Ok(()) => String::new(),
             Err(error) => format!("{error:#}"),
         })
+    }
+    /// Run one GameBuddy tool off the UI thread; the result arrives as
+    /// tool_event_json. Images are left out: Gemini already sees the screen.
+    pub fn call_tool(
+        self: Pin<&mut Self>,
+        directory: QString,
+        id: QString,
+        name: QString,
+        arguments: QString,
+    ) {
+        let (directory, id, name, arguments) = (
+            directory.to_string(),
+            id.to_string(),
+            name.to_string(),
+            arguments.to_string(),
+        );
+        let ui = self.qt_thread();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let result = (|| -> anyhow::Result<Value> {
+                anyhow::ensure!(
+                    tools()[0]["functionDeclarations"]
+                        .as_array()
+                        .is_some_and(|d| d.iter().any(|t| t["name"] == name)),
+                    "That tool is not available in live voice"
+                );
+                let store = Store::open(&directory)?;
+                let arguments: Value =
+                    serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}));
+                let output =
+                    gamebuddy_services::harness::call_tool_with_images(&store, &name, arguments)?;
+                Ok(output.value)
+            })();
+            let response = match result {
+                Ok(Value::Object(object)) => Value::Object(object),
+                Ok(other) => json!({"result": other}),
+                Err(error) => json!({"error": format!("{error:#}")}),
+            };
+            let event = json!({"id":id,"name":name,"response":response,"elapsed_ms":started.elapsed().as_millis() as u64}).to_string();
+            let _ = ui
+                .queue(move |mut object| object.as_mut().set_tool_event_json(QString::from(event)));
+        });
+    }
+    /// The current game frame as base64 JPEG when it is newer than after_ms.
+    pub fn latest_frame(&self, directory: QString, after_ms: f64) -> QString {
+        let frame = Store::open(directory.to_string())
+            .ok()
+            .and_then(|store| gamebuddy_services::screen::snapshot(&store).ok())
+            .filter(|s| s.captured_at_ms as f64 > after_ms);
+        QString::from(
+            frame
+                .map(|s| json!({"at":s.captured_at_ms,"jpeg":s.jpeg}).to_string())
+                .unwrap_or_default(),
+        )
     }
     pub fn has_api_key(&self, directory: QString) -> bool {
         live_settings(&directory.to_string()).is_ok_and(|(_, live)| live.api_key().is_ok())

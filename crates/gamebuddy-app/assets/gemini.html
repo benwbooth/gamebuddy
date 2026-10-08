@@ -2,7 +2,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src wss://generativelanguage.googleapis.com"></head><body><script>
 // Gemini Live: 16 kHz PCM microphone in, 24 kHz PCM speech out, one
 // WebSocket. Server-side voice activity detection handles turn-taking and
-// barge-in; game questions arrive as ask_gamebuddy tool calls.
+// barge-in; Gemini calls GameBuddy's tools and watches streamed frames.
 (() => {
   const URL_BASE='wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=';
   let ws=null,config=null,generation=0,resumeHandle=null,reconnects=0,ready=false,stopping=false;
@@ -28,7 +28,7 @@
     if(m.setupComplete){ready=true;reconnects=0;emit('ready',true);return}
     if(m.sessionResumptionUpdate?.resumable&&m.sessionResumptionUpdate.newHandle)resumeHandle=m.sessionResumptionUpdate.newHandle;
     if(m.goAway){emit('trace','go-away '+(m.goAway.timeLeft||''));reconnect();return}
-    if(m.toolCall){for(const call of m.toolCall.functionCalls||[]){pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,request:call.args?.request||''})}return}
+    if(m.toolCall){for(const call of m.toolCall.functionCalls||[]){pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,args:call.args||{}})}return}
     if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
@@ -112,10 +112,13 @@
       connect();if(capture)await setMicrophone(true,deviceName);
     },
     stop,setMicrophone,
-    toolResult(id,text,failed=false){
+    toolResult(id,response){
       const name=pendingTools.get(id);if(!name)return;pendingTools.delete(id);
-      send({toolResponse:{functionResponses:[{id,name,response:failed?{error:text}:{answer:text}}]}});
+      send({toolResponse:{functionResponses:[{id,name,response}]}});
     },
+    // The current game screen, about once a second, so answers use what the
+    // player sees now.
+    frame(jpeg){send({realtimeInput:{video:{data:jpeg,mimeType:'image/jpeg'}}})},
     // Application cues are spoken; context is quiet background.
     cue(text){send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},

@@ -118,7 +118,7 @@ Item {
             voice.currentIndex=2;voice.activated(2);page.save()
             saved=JSON.parse(backend.settings_json)
             compare(saved.speech,"gemini_live");compare(saved.vision.kind,"anthropic")
-            compare(saved.live_voice.model,"gemini-3.1-flash-live-preview");compare(saved.live_voice.api_key_env,"GEMINI_API_KEY")
+            compare(saved.live_voice.model,"gemini-3.8-live");compare(saved.live_voice.api_key_env,"GEMINI_API_KEY")
         }
     }
 }

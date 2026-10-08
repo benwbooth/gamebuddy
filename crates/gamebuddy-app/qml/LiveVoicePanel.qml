@@ -2,9 +2,9 @@ import QtQuick
 import QtWebEngine
 import GameBuddy
 
-// Gemini Live speech-to-speech. Gemini listens and speaks; every game
-// question is answered by the configured reasoning provider (buddy.ask)
-// and returned to Gemini as an ask_gamebuddy tool result.
+// Gemini Live speech-to-speech. Gemini listens, speaks and reasons: it sees
+// the game through frames streamed about once a second and calls
+// GameBuddy's tools (route, location, next action and arrow, journal).
 WebEngineView {
     id: panel
     required property var buddy
@@ -29,8 +29,8 @@ WebEngineView {
     property string voiceGame: ""
     property string captionText: ""
     property bool captionStreaming: false
-    property string pendingTool: ""
-    property var queuedTools: []
+    property int runningTools: 0
+    property double lastFrameAt: 0
     property string lastContextKey: ""
     property double lastContextAt: 0
     property string activeAdviceStep: ""
@@ -54,7 +54,7 @@ WebEngineView {
     }
     // The live map match agrees with the current step's place, or the player
     // reported where they are. Otherwise the saved step may be for another
-    // area, so it is neither repeated nor announced without Claude checking.
+    // area, so it is not announced unprompted.
     function placeAgrees() {
         const map = session.navigation?.map
         return session.navigation?.location?.status === "reported" || !map?.current_place
@@ -63,12 +63,7 @@ WebEngineView {
     function briefContext() {
         const scene = session.screen?.scene
         const guidance = session.navigation?.guidance
-        // next_action is the step GameBuddy's assistant last published; Gemini
-        // may repeat it for a plain "what's next?" only while it is ready.
-        return JSON.stringify({game: session.game, current_task: session.current?.title, next_action: guidance?.now?.instructions,
-            // Only when the map match agrees with the step's place (or the
-            // player reported it); otherwise Claude must look at the screen.
-            next_action_ready: guidance?.status === "ready" && !!guidance?.now?.instructions && placeAgrees(),
+        return JSON.stringify({game: session.game, current_task: session.current?.title, saved_next_action: guidance?.now?.instructions,
             place: session.navigation?.map?.current_place?.label, scene: scene?.fresh ? (scene.summary || "").slice(0, 400) : null})
     }
     function updateStatus() {
@@ -93,8 +88,7 @@ WebEngineView {
     }
     function shutdown(message) {
         started = false; connected = false; assistantSpeaking = false; workPending = false; captionStreaming = false
-        if (pendingTool.length) pendingTool = ""
-        queuedTools = []
+        runningTools = 0; lastFrameAt = 0
         runJavaScript("gamebuddyGemini.stop()")
         status = message
     }
@@ -108,24 +102,21 @@ WebEngineView {
         if (enabledBackend && voice.active) voice.toggle_listening()
         if (started) shutdown("Voice paused · choose Listen or turn Voice on to resume")
     }
-    function finishTool(text, failedRequest) {
-        if (!pendingTool.length) return
-        const id = pendingTool; pendingTool = ""; workPending = false
-        runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(id) + "," + JSON.stringify(text) + "," + failedRequest + ")")
-        Qt.callLater(startQueuedTool)
+    function runTool(call) {
+        runningTools++; workPending = true
+        gemini.call_tool(session.data_dir || "", call.id, call.name, JSON.stringify(call.args || {}))
     }
-    // Requests made while GameBuddy is busy wait their turn. Refusing them
-    // made Gemini improvise answers (prices, items) instead of waiting.
-    function startQueuedTool() {
-        if (pendingTool.length || !queuedTools.length) return
-        if (buddy.busy) { Qt.callLater(startQueuedTool); return }
-        const next = queuedTools[0]
-        queuedTools = queuedTools.slice(1)
-        if (buddy.ask(next.request)) { pendingTool = next.id; workPending = true }
-        else runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(next.id) + "," + JSON.stringify("GameBuddy could not start that request. Ask the player to repeat it.") + ",true)")
+    // The newest captured frame, so Gemini sees what the player sees now.
+    function sendFrame() {
+        if (!connected) return
+        const serialized = gemini.latest_frame(session.data_dir || "", lastFrameAt)
+        if (!serialized.length) return
+        const frame = JSON.parse(serialized)
+        lastFrameAt = frame.at
+        runJavaScript("gamebuddyGemini.frame(" + JSON.stringify(frame.jpeg) + ")")
     }
     function narrate() {
-        if (!connected || !spokenReplies || proactivePaused || assistantSpeaking || workPending || userSpeaking || buddy.busy || !placeAgrees()) return
+        if (!connected || !spokenReplies || proactivePaused || assistantSpeaking || workPending || userSpeaking || !placeAgrees()) return
         const serialized = transport.next_narration(context())
         if (!serialized.length) return
         const cue = JSON.parse(serialized)
@@ -145,21 +136,23 @@ WebEngineView {
     }
     Timer { interval: 250; repeat: true; running: panel.started && panel.automaticSession; onTriggered: panel.narrate() }
     Timer { interval: 1000; repeat: true; running: panel.started; onTriggered: panel.shareContext() }
-    // Never leave the player waiting on a request that stalled.
-    Timer {
-        interval: 90000; running: panel.pendingTool.length > 0
-        onTriggered: panel.finishTool("GameBuddy took too long to answer. Ask the player to try again.", true)
-    }
+    Timer { interval: 1000; repeat: true; running: panel.connected; onTriggered: panel.sendFrame() }
     Timer { interval: 250; repeat: true; running: panel.userSpeaking; onTriggered: if (Date.now() - panel.inputAt > 1500) panel.userSpeaking = false }
-    GeminiVoice { id: gemini }
+    GeminiVoice {
+        id: gemini
+        onTool_event_jsonChanged: {
+            const event = JSON.parse(tool_event_json)
+            if (panel.trace) console.warn("GAMEBUDDY_GEMINI_TOOL name=" + event.name + " ms=" + event.elapsed_ms + " error=" + !!event.response.error)
+            panel.runningTools = Math.max(0, panel.runningTools - 1)
+            panel.workPending = panel.runningTools > 0
+            if (!panel.started) return
+            panel.runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(event.id) + "," + JSON.stringify(event.response) + ")")
+            // Published actions update the Now card, outline and arrow.
+            panel.buddy.poll_widgets()
+        }
+    }
     // Only its narrator is used; the Codex transport never connects here.
     RealtimeVoice { id: transport }
-    Connections {
-        target: panel.buddy
-        function onAnswerChanged() { if (panel.pendingTool.length && panel.buddy.answer.length && panel.buddy.answer !== panel.ownAnswer) panel.finishTool(panel.buddy.answer, false) }
-        function onChat_errorChanged() { if (panel.pendingTool.length && panel.buddy.chat_error.length) panel.finishTool(panel.buddy.chat_error, true) }
-        function onBusyChanged() { if (!panel.buddy.busy && panel.pendingTool.length) Qt.callLater(function() { panel.finishTool("GameBuddy could not answer that request.", true) }) }
-    }
     Component.onCompleted: {
         const page = gemini.page_url()
         pageOrigin = page.slice(0, page.lastIndexOf('/') + 1)
@@ -177,7 +170,7 @@ WebEngineView {
         const event = JSON.parse(message.slice(17)), v = event.value
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
-        if (event.type === "ready") { connected = true; updateStatus(); if (automaticSession) narrate() }
+        if (event.type === "ready") { connected = true; updateStatus(); sendFrame(); if (automaticSession) narrate() }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") fail("Gemini voice: " + v)
         else if (event.type === "microphone-error") { if (voice.active) voice.toggle_listening(); status = "Microphone: " + v }
@@ -188,8 +181,7 @@ WebEngineView {
         else if (event.type === "output-final") {
             captionStreaming = false
             gemini.record(session.data_dir || "", session.game, "assistant", v)
-            // A filler spoken while the reasoning provider works is not its answer.
-            if (!pendingTool.length) { ownAnswer = v; panel.answer(v) }
+            ownAnswer = v; panel.answer(v)
         }
         else if (event.type === "output-active") {
             if (v && !assistantSpeaking && activeAdviceStep.length && activeAdviceStep === session.navigation?.guidance?.now?.id) transport.advice_spoken(context())
@@ -197,15 +189,7 @@ WebEngineView {
             if (!v) captionStreaming = false
         }
         else if (event.type === "interrupted") { captionStreaming = false; activeAdviceStep = "" }
-        else if (event.type === "tool-call") {
-            queuedTools = queuedTools.concat([{id: v.id, request: v.request}])
-            workPending = true
-            startQueuedTool()
-        }
-        else if (event.type === "tool-cancel") {
-            queuedTools = queuedTools.filter(t => t.id !== v)
-            if (pendingTool === v) { pendingTool = ""; workPending = queuedTools.length > 0; Qt.callLater(startQueuedTool) }
-        }
+        else if (event.type === "tool-call") runTool(v)
     }
     onEnabledBackendChanged: update()
     onSpokenRepliesChanged: { if (spokenReplies) { failed = false; proactivePaused = false }; if (loaded) runJavaScript("gamebuddyGemini.muteOutput(" + (!spokenReplies) + ")"); update() }

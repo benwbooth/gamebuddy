@@ -20,7 +20,7 @@ ScrollView {
         automaticPlanning.checked = !settings.planning
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : settings.speech === "gemini_live" ? 2 : 0
-        liveModel.text = settings.live_voice?.model || "gemini-3.1-flash-live-preview"
+        liveModel.text = settings.live_voice?.model || "gemini-3.8-live"
         liveVoiceName.text = settings.live_voice?.voice || "Charon"
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         preparedVoice.enabled=!!settings.prepared_speech
@@ -130,7 +130,7 @@ ScrollView {
                 GbButton { text:"Save key"; enabled:geminiKey.text.trim().length>0; onClicked:{ const error=geminiKeys.save_api_key(geminiKey.text); geminiKeyStatus.text=error.length ? error : "Key saved privately on this computer."; if(!error.length)geminiKey.text="" } }
             }
         }
-        Text { id:geminiKeyStatus; visible:voice.currentIndex===2; text:"Gemini listens and speaks; game questions go to the assistant above. The key comes from GEMINI_API_KEY, or the private key file ~/.config/gamebuddy/gemini-api-key. Reconnect voice after saving."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
+        Text { id:geminiKeyStatus; visible:voice.currentIndex===2; text:"Gemini listens, watches the game and answers using GameBuddy's walkthrough tools; the assistant above prepares walkthroughs. The key comes from GEMINI_API_KEY, or the private key file ~/.config/gamebuddy/gemini-api-key. Reconnect voice after saving."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:duck; text:"Lower game volume during conversations"; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { text:page.audioStatus; color:"#a3b4c7"; font.pixelSize:12; Layout.leftMargin:24; Layout.rightMargin:24; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         RowLayout {

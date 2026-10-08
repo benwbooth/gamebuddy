@@ -73,7 +73,7 @@ pub struct LiveVoice {
 impl Default for LiveVoice {
     fn default() -> Self {
         Self {
-            model: "gemini-3.1-flash-live-preview".into(),
+            model: "gemini-3.8-live".into(),
             voice: "Charon".into(),
             api_key_env: "GEMINI_API_KEY".into(),
         }
