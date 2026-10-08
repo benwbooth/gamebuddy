@@ -77,12 +77,21 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             !label.is_empty() && label.len() <= 120,
             "Supply the player's exact area name in place_label when its place ID is unknown"
         );
+        // The area must come from the player's words or from the place the
+        // live map match currently shows; never from the model's guess.
+        let mapped_area = store
+            .get::<PlaceTracker>(&format!("world-place-tracker:{}", guide.id))?
+            .filter(|t| t.status == "estimated")
+            .and_then(|t| t.place_id)
+            .and_then(|id| atlas.places.iter().find(|p| p.id == id))
+            .is_some_and(|p| p.label.to_lowercase().contains(&label.to_lowercase()));
         ensure!(
-            report
-                .player_report
-                .to_lowercase()
-                .contains(&label.to_lowercase()),
-            "Use an area name actually stated in player_report"
+            mapped_area
+                || report
+                    .player_report
+                    .to_lowercase()
+                    .contains(&label.to_lowercase()),
+            "Use an area name actually stated in player_report or shown by the current map match"
         );
         ensure!(
             report.step_id.is_none(),
@@ -125,7 +134,16 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             "Task is not bound to the reported place. Omit step_id to record the place alone, or choose a task explicitly bound to this place in get_atlas."
         );
     }
-    let arrival = match (&report.step_id, report.place_label.as_deref()) {
+    // The area may arrive as a new label or as a known place (including one
+    // the player reported earlier); both name where the player now is.
+    let area = report.place_label.clone().or_else(|| {
+        atlas
+            .places
+            .iter()
+            .find(|p| p.id == report.place_id)
+            .map(|p| p.label.clone())
+    });
+    let arrival = match (&report.step_id, area.as_deref()) {
         (None, Some(area)) => arrival_step(store, guide, &atlas, &progress, area)?,
         _ => None,
     };
@@ -167,7 +185,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             },
         )?;
     }
-    let arrival_note = arrival.as_ref().map(|id| format!("The player's arrival moved the route cursor to {id}, the first step the source places in {}. Steps before it were not marked complete; earlier unconfirmed prerequisites stay listed. Publish the next action here rather than sending the player back.", report.place_label.as_deref().unwrap_or_default()));
+    let arrival_note = arrival.as_ref().map(|id| format!("The player's arrival moved the route cursor to {id}, the first step the source places in {}. Steps before it were not marked complete; earlier unconfirmed prerequisites stay listed. Publish the next action here rather than sending the player back.", area.as_deref().unwrap_or_default()));
     Ok(
         json!({"progress":progress,"evidence_kind":"player_report","arrival_step_id":arrival,"arrival_note":arrival_note,
         "navigation":context(store, guide, &progress, &SyncEstimate::default())?}),
@@ -177,7 +195,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
 /// "I'm in Mascon" names an area, not a task. Move the route cursor to the
 /// first unfinished step ahead on the authored route that the source places
 /// in that area. Steps in between are not marked complete.
-fn arrival_step(
+pub(crate) fn arrival_step(
     store: &Store,
     guide: &Guide,
     atlas: &gamebuddy_core::Atlas,
@@ -191,6 +209,7 @@ fn arrival_step(
     if area.chars().count() < 3 {
         return Ok(None);
     }
+    // A town shown by the live map match is evidence for the whole town.
     let in_area = |id: &str| {
         atlas
             .place_for_step(guide, id)
@@ -438,6 +457,21 @@ mod tests {
             json!({"place_label":"Mascon","player_report":"Still in Mascon","expected_revision":guide.revision,"epoch":saved.epoch}),
         )?;
         assert!(again["arrival_step_id"].is_null());
+        // Reusing the earlier reported place by ID still follows the player.
+        let place = again["navigation"]["location"]["place_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut moved_back = store.progress(&guide)?;
+        moved_back.current_step = Some(guide.steps[0].id.clone());
+        store.save_progress(&guide, &moved_back, "fixture")?;
+        let epoch = store.progress(&guide)?.epoch;
+        let by_id = call_tool(
+            &store,
+            "report_location",
+            json!({"place_id":place,"player_report":"I'm not there, I'm in Mascon","expected_revision":guide.revision,"epoch":epoch}),
+        )?;
+        assert_eq!(by_id["arrival_step_id"], arrival);
         Ok(())
     }
     fn report(store: &Store, guide: &Guide, place: &str, step: &str, epoch: u64) -> Result<Value> {

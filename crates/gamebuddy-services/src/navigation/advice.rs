@@ -157,6 +157,47 @@ pub(crate) fn can_reanchor(
     true
 }
 
+/// The live map match places the player in an area (the words its place
+/// shares with the candidate's place, such as a town name) and the candidate
+/// is the first unfinished step ahead in that area. Geometric map evidence
+/// can establish arriving in a town without naming which visit a room is.
+fn mapped_arrival(
+    store: &Store,
+    guide: &Guide,
+    progress: &Progress,
+    candidate: &str,
+) -> Result<bool> {
+    let Some(seen) = store
+        .get::<gamebuddy_core::PlaceTracker>(&format!("world-place-tracker:{}", guide.id))?
+        .filter(|t| t.status == "estimated")
+        .and_then(|t| t.place_id)
+    else {
+        return Ok(false);
+    };
+    let atlas = super::atlas(store, guide)?;
+    let (Some(seen), Some(target)) = (
+        atlas.places.iter().find(|p| p.id == seen),
+        atlas.place_for_step(guide, candidate),
+    ) else {
+        return Ok(false);
+    };
+    let area: Vec<_> = seen
+        .label
+        .split_whitespace()
+        .zip(target.label.split_whitespace())
+        .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+        .map(|(a, _)| a)
+        .collect();
+    let area = area.join(" ");
+    if area.chars().count() < 3 {
+        return Ok(false);
+    }
+    Ok(
+        super::tracking::arrival_step(store, guide, &atlas, progress, &area)?.as_deref()
+            == Some(candidate),
+    )
+}
+
 fn key(guide: &Guide) -> String {
     format!("next-action:{}", guide.id)
 }
@@ -356,7 +397,9 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     // moves the route there without completing the steps in between.
     let reported_task = tracker.status == "reported"
         && tracker.reference_step_id.as_deref() == Some(action.step_id.as_str());
+    let mapped_arrival = mapped_arrival(store, guide, &progress, &action.step_id)?;
     let reanchor = reported_task
+        || mapped_arrival
         || (reported_place.is_some() || location_supported)
             && can_reanchor(
                 guide,
@@ -374,7 +417,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
             || reanchor
             || existing.is_some()
             || branch_choice,
-        "Follow the authored walkthrough route. The next action is {} ({}); choosing {} would leave that route unfinished. A matching room does not establish the visit or complete intervening pickups. Use confirmed progress, an explicit current task report, or a source-supported conditional bypass before changing the route.",
+        "Follow the authored walkthrough route. The next action is {} ({}); choosing {} would leave that route unfinished. A matching room does not establish the visit or complete intervening pickups. Use confirmed progress, an explicit current task report, or a source-supported conditional bypass before changing the route. If the player says, or the current map match shows, that they are in a different area, first call report_location with that area's name as place_label; it moves the route to that area's first unfinished step.",
         route
             .now
             .as_ref()
@@ -387,6 +430,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         location_supported
             || reported_place.is_some()
             || reported_task
+            || mapped_arrival
             || existing.is_some()
             || guidance
                 .now

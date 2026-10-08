@@ -51,13 +51,23 @@ WebEngineView {
         value.player_speaking = userSpeaking
         return JSON.stringify(value)
     }
+    // The live map match agrees with the current step's place, or the player
+    // reported where they are. Otherwise the saved step may be for another
+    // area, so it is neither repeated nor announced without Claude checking.
+    function placeAgrees() {
+        const map = session.navigation?.map
+        return session.navigation?.location?.status === "reported" || !map?.current_place
+            || !map?.target_place || map.current_place.id === map.target_place.id
+    }
     function briefContext() {
         const scene = session.screen?.scene
         const guidance = session.navigation?.guidance
         // next_action is the step GameBuddy's assistant last published; Gemini
         // may repeat it for a plain "what's next?" only while it is ready.
         return JSON.stringify({game: session.game, current_task: session.current?.title, next_action: guidance?.now?.instructions,
-            next_action_ready: guidance?.status === "ready" && !!guidance?.now?.instructions,
+            // Only when the map match agrees with the step's place (or the
+            // player reported it); otherwise Claude must look at the screen.
+            next_action_ready: guidance?.status === "ready" && !!guidance?.now?.instructions && placeAgrees(),
             place: session.navigation?.map?.current_place?.label, scene: scene?.fresh ? (scene.summary || "").slice(0, 400) : null})
     }
     function updateStatus() {
@@ -102,7 +112,7 @@ WebEngineView {
         runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(id) + "," + JSON.stringify(text) + "," + failedRequest + ")")
     }
     function narrate() {
-        if (!connected || !spokenReplies || proactivePaused || assistantSpeaking || workPending || userSpeaking || buddy.busy) return
+        if (!connected || !spokenReplies || proactivePaused || assistantSpeaking || workPending || userSpeaking || buddy.busy || !placeAgrees()) return
         const serialized = transport.next_narration(context())
         if (!serialized.length) return
         const cue = JSON.parse(serialized)
