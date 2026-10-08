@@ -418,6 +418,24 @@ Item {
                 GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
             }
             RowLayout {
+                Text { text: "Voice"; color: "#c7fff0"; font.pixelSize: 14 }
+                ComboBox {
+                    id: voiceBackend
+                    objectName: "companionVoiceBackend"
+                    Layout.fillWidth: true
+                    readonly property var values: ["local", "gemini_live", "codex_realtime"]
+                    model: ["Local · assistant + Ryan voice", "Gemini Live", "Codex live voice"]
+                    currentIndex: Math.max(0, values.indexOf(JSON.parse(buddy.settings_json).speech || "local"))
+                    Accessible.name: "Voice backend"
+                    onActivated: index => {
+                        const settings = JSON.parse(buddy.settings_json)
+                        if (settings.speech === values[index]) return
+                        settings.speech = values[index]
+                        buddy.save_settings(JSON.stringify(settings))
+                    }
+                }
+            }
+            RowLayout {
                 GbButton { id:widgetsAllButton; text: companion.widgetsVisible ? "Hide widgets" : "Show widgets"; Layout.fillWidth: true; onClicked: { companion.widgetsVisible = !companion.widgetsVisible; companion.widgetsToggled(companion.widgetsVisible) } }
                 GbButton { id:optionsButton; text: "Options"; onClicked: { controlsTray.close(); companion.workbenchRequested() } }
                 GbButton { id:controlsDoneButton; text: "Done"; onClicked: controlsTray.close() }

@@ -89,26 +89,26 @@ Item {
             compare(subscription.kind,"claude_code");compare(subscription.model,"sonnet")
             compare(subscription.endpoint,"");compare(subscription.api_key_env,"")
         }
-        function test_claude_takes_every_role_and_replaces_codex_voice() {
+        function test_claude_takes_every_role_and_the_voice_stays_independent() {
             const provider=findChild(page,"reasoningProvider")
             provider.currentIndex=1;provider.activated(1)
             const scope=findChild(page,"singleProvider")
             scope.checked=true;scope.clicked()
             const voice=findChild(page,"speechBackend")
-            compare(voice.currentIndex,0)
+            voice.currentIndex=0;voice.activated(0)
             page.save()
             let saved=JSON.parse(backend.settings_json)
             verify(saved.single_provider)
             compare(saved.reasoning.kind,"claude_code");compare(saved.vision.kind,"claude_code")
             compare(saved.vision.model,"sonnet");compare(saved.planning,null);compare(saved.speech,"local")
-            // Later model/provider changes must update every role, including audio.
+            // Later model/provider changes update every role but not the voice.
             const model=findChild(page,"reasoningModel")
             model.text="opus";model.editingFinished();page.save()
             saved=JSON.parse(backend.settings_json)
             compare(saved.vision.model,"opus")
             provider.currentIndex=0;provider.activated(0);page.save()
             saved=JSON.parse(backend.settings_json)
-            compare(saved.vision.kind,"codex");compare(saved.speech,"codex_realtime")
+            compare(saved.vision.kind,"codex");compare(saved.speech,"local")
             provider.currentIndex=6;provider.activated(6)
             model.text="claude-fixture";model.editingFinished();page.save()
             saved=JSON.parse(backend.settings_json)

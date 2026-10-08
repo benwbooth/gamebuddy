@@ -38,8 +38,7 @@ ScrollView {
         if (!singleProvider.checked) return
         const config = reasoning.configuration()
         vision.load(config); planning.load(config); automaticPlanning.checked = true
-        // Gemini Live only voices the assistant, so it survives this choice.
-        if (voice.currentIndex !== 2) voice.currentIndex = config.kind === "codex" ? 1 : 0
+        // The voice backend stays an independent choice, for easy comparison.
     }
     function save() {
         applySingleProvider()

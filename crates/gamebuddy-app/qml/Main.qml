@@ -34,6 +34,9 @@ ApplicationWindow {
     // the selected assistant, and try Gemini again after a pause.
     property bool geminiFallback: false
     readonly property bool geminiEnabled: geminiChosen && !geminiFallback
+    // Switching backends from the companion starts each one fresh.
+    onGeminiChosenChanged: { geminiFallback = false; liveVoice.failed = false }
+    onRealtimeEnabledChanged: if (realtimeEnabled) realtimeVoice.failed = false
     // Either live backend owns listening and speech; local audio stays quiet.
     readonly property bool liveVoiceEnabled: realtimeEnabled || geminiEnabled
     property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false

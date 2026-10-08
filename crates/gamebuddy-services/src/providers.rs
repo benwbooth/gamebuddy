@@ -147,14 +147,8 @@ impl Settings {
         if self.single_provider {
             self.vision = self.reasoning.clone();
             self.planning = None;
-            // Gemini Live is an explicit choice and only voices the assistant.
-            if self.speech != SpeechBackend::GeminiLive {
-                self.speech = if self.reasoning.kind == ProviderKind::Codex {
-                    SpeechBackend::CodexRealtime
-                } else {
-                    SpeechBackend::Local
-                };
-            }
+            // The voice backend is chosen separately so backends can be
+            // compared; Codex voice with Claude reasoning is a valid setup.
         }
     }
 
@@ -814,7 +808,7 @@ pub fn ask(
 mod tests {
     use super::*;
     #[test]
-    fn single_provider_replaces_codex_in_every_role_and_audio() -> Result<()> {
+    fn single_provider_replaces_codex_in_every_role_but_keeps_the_chosen_voice() -> Result<()> {
         let mut settings: Settings = serde_json::from_value(json!({
             "single_provider":true,
             "reasoning":{"kind":"claude_code","endpoint":"","model":"sonnet","api_key_env":"","reasoning_effort":"low"},
@@ -824,7 +818,8 @@ mod tests {
         }))?;
         settings.apply_provider_scope();
         assert_eq!(settings.vision.kind, ProviderKind::ClaudeCode);
-        assert_eq!(settings.speech, SpeechBackend::Local);
+        // The voice backend is an independent choice (Codex audio, Claude reasoning).
+        assert_eq!(settings.speech, SpeechBackend::CodexRealtime);
         assert!(settings.planning.is_none());
         assert_eq!(settings.planning_config().kind, ProviderKind::ClaudeCode);
         assert_eq!(settings.planning_config().model, "sonnet");
@@ -833,11 +828,11 @@ mod tests {
         settings.reasoning.api_key_env = "ANTHROPIC_API_KEY".into();
         settings.apply_provider_scope();
         assert_eq!(settings.vision.api_key_env, "ANTHROPIC_API_KEY");
-        assert_eq!(settings.speech, SpeechBackend::Local);
+        settings.speech = SpeechBackend::Local;
         settings.reasoning.kind = ProviderKind::Codex;
         settings.reasoning.model = "chosen-model".into();
         settings.apply_provider_scope();
-        assert_eq!(settings.speech, SpeechBackend::CodexRealtime);
+        assert_eq!(settings.speech, SpeechBackend::Local);
         assert_eq!(settings.planning_config().model, "chosen-model");
         // A chosen Gemini Live voice survives; it only voices the assistant.
         settings.reasoning.kind = ProviderKind::ClaudeCode;
