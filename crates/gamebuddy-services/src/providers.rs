@@ -152,6 +152,46 @@ impl Settings {
         }
     }
 
+    /// One-click setups. Keeps voice, audio and key preferences; replaces the
+    /// assistant and voice backend:
+    /// - "openai": Codex live voice with Codex reasoning (the original setup)
+    /// - "gemini": Gemini Live voice and reasoning; Claude Code prepares guides
+    /// - "local": Claude Code reasoning with local speech
+    pub fn with_preset(&self, preset: &str) -> Result<Settings> {
+        let claude = ProviderConfig {
+            kind: ProviderKind::ClaudeCode,
+            endpoint: String::new(),
+            model: "sonnet".into(),
+            api_key_env: String::new(),
+            reasoning_effort: "low".into(),
+        };
+        let mut settings = self.clone();
+        let (reasoning, speech) = match preset {
+            "openai" => (
+                ProviderConfig {
+                    kind: ProviderKind::Codex,
+                    endpoint: String::new(),
+                    model: String::new(),
+                    api_key_env: String::new(),
+                    reasoning_effort: String::new(),
+                },
+                SpeechBackend::CodexRealtime,
+            ),
+            "gemini" => (claude, SpeechBackend::GeminiLive),
+            "local" => (claude, SpeechBackend::Local),
+            other => anyhow::bail!("Unknown setup: {other}"),
+        };
+        settings.single_provider = true;
+        settings.reasoning = reasoning;
+        settings.speech = speech;
+        settings.planning = None;
+        if preset == "openai" {
+            settings.fast_voice = true;
+        }
+        settings.apply_provider_scope();
+        Ok(settings)
+    }
+
     pub fn planning_config(&self) -> ProviderConfig {
         if self.single_provider {
             return self.reasoning.clone();
@@ -1023,6 +1063,22 @@ mod tests {
                 .to_string()
                 .starts_with(OUT_OF_TOKENS)
         );
+    }
+    #[test]
+    fn presets_restore_each_complete_setup() -> Result<()> {
+        let mut base = Settings::default();
+        base.live_voice.voice = "Algenib".into();
+        let openai = base.with_preset("openai")?;
+        assert_eq!(openai.reasoning.kind, ProviderKind::Codex);
+        assert_eq!(openai.vision.kind, ProviderKind::Codex);
+        assert_eq!(openai.speech, SpeechBackend::CodexRealtime);
+        let gemini = openai.with_preset("gemini")?;
+        assert_eq!(gemini.speech, SpeechBackend::GeminiLive);
+        assert_eq!(gemini.reasoning.kind, ProviderKind::ClaudeCode);
+        assert_eq!(gemini.live_voice.voice, "Algenib");
+        assert_eq!(gemini.with_preset("local")?.speech, SpeechBackend::Local);
+        assert!(base.with_preset("other").is_err());
+        Ok(())
     }
     #[test]
     fn parses_fences_but_rejects_trailing_prose() {

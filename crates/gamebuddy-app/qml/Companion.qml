@@ -418,21 +418,22 @@ Item {
                 GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
             }
             RowLayout {
-                Text { text: "Voice"; color: "#c7fff0"; font.pixelSize: 14 }
+                Text { text: "Setup"; color: "#c7fff0"; font.pixelSize: 14 }
                 ComboBox {
-                    id: voiceBackend
-                    objectName: "companionVoiceBackend"
+                    id: setupPreset
+                    objectName: "companionSetup"
                     Layout.fillWidth: true
-                    readonly property var values: ["local", "gemini_live", "codex_realtime"]
-                    model: ["Local · assistant + Ryan voice", "Gemini Live", "Codex live voice"]
-                    currentIndex: Math.max(0, values.indexOf(JSON.parse(buddy.settings_json).speech || "local"))
-                    Accessible.name: "Voice backend"
-                    onActivated: index => {
-                        const settings = JSON.parse(buddy.settings_json)
-                        if (settings.speech === values[index]) return
-                        settings.speech = values[index]
-                        buddy.save_settings(JSON.stringify(settings))
+                    readonly property var values: ["openai", "gemini", "local"]
+                    model: ["OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Local · Claude + Ryan voice", "Custom (Options)"]
+                    currentIndex: {
+                        const s = JSON.parse(buddy.settings_json)
+                        if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 0
+                        if (s.speech === "gemini_live") return 1
+                        if (s.speech === "local" && s.reasoning?.kind === "claude_code") return 2
+                        return 3
                     }
+                    Accessible.name: "Assistant and voice setup"
+                    onActivated: index => { if (index < 3) buddy.apply_preset(values[index]); else { controlsTray.close(); companion.workbenchRequested() } }
                 }
             }
             RowLayout {

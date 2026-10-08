@@ -60,6 +60,13 @@ ScrollView {
         Text { text:"Models & speed"; color:"#eaf2fa"; font.pixelSize:28; Layout.margins:24; Layout.bottomMargin:0 }
         Text { text:"Choose who answers and how much time they spend thinking. Map tracking runs independently on this computer."; color:"#a3b4c7"; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         RowLayout {
+            Layout.leftMargin:24; Layout.rightMargin:24; spacing:8
+            Text { text:"Quick setup"; color:"#a3b4c7"; font.pixelSize:12 }
+            GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("openai") }
+            GbButton { objectName:"presetGemini"; text:"Gemini Live"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("gemini") }
+            GbButton { objectName:"presetLocal"; text:"Local (Claude + Ryan)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("local") }
+        }
+        RowLayout {
             Layout.leftMargin:24
             GbButton { objectName:"saveModels"; text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty && !page.backend.busy; onClicked:page.save() }
             GbButton { text:"Discard changes"; enabled:page.dirty; onClicked:page.reload() }

@@ -75,6 +75,8 @@ pub mod ffi {
         #[qinvokable]
         fn save_settings(self: Pin<&mut Buddy>, json: QString);
         #[qinvokable]
+        fn apply_preset(self: Pin<&mut Buddy>, preset: QString);
+        #[qinvokable]
         fn provider_request(
             self: Pin<&mut Buddy>,
             id: QString,
@@ -1314,6 +1316,15 @@ impl ffi::Buddy {
     }
     pub fn reset_progress(self: Pin<&mut Self>) {
         self.change_progress("reload");
+    }
+    pub fn apply_preset(self: Pin<&mut Self>, preset: QString) {
+        let result = serde_json::from_str::<Settings>(&self.settings_json().to_string())
+            .map_err(anyhow::Error::from)
+            .and_then(|s| s.with_preset(&preset.to_string()));
+        match result {
+            Ok(settings) => self.save_settings(q(serde_json::to_string(&settings).unwrap())),
+            Err(e) => self.set_message(q(format!("Setup: {e:#}"))),
+        }
     }
     pub fn save_settings(mut self: Pin<&mut Self>, json: QString) {
         if *self.busy() {
