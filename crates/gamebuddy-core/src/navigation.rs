@@ -675,6 +675,13 @@ fn guidance_with_priorities(
                 .filter(|s| !missing.iter().any(|r: &Step| r.id == s.id))
                 .collect::<Vec<_>>(),
         );
+        // The player's own report of this task, or of arriving in its area,
+        // outranks earlier unconfirmed prerequisites; they stay listed.
+        if location.status == "reported"
+            && location.reference_step_id.as_deref() == Some(selected.id.as_str())
+        {
+            break;
+        }
         let Some(first) = required.first() else {
             break;
         };

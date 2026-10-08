@@ -280,12 +280,17 @@ pub trait ReasoningProvider {
 pub trait Conversation {
     /// The first request's system prompt applies to the whole conversation.
     fn send(&mut self, request: ModelRequest) -> Result<String>;
+    /// True when no earlier turn is held, so the next request needs full context.
+    fn is_fresh(&self) -> bool;
 }
 struct ClaudeConversation<'a> {
     config: &'a ProviderConfig,
     session: Option<crate::subscription::claude::Session>,
 }
 impl Conversation for ClaudeConversation<'_> {
+    fn is_fresh(&self) -> bool {
+        self.session.is_none()
+    }
     fn send(&mut self, request: ModelRequest) -> Result<String> {
         if self.session.is_none() {
             self.session = Some(crate::subscription::claude::Session::take(
@@ -295,7 +300,9 @@ impl Conversation for ClaudeConversation<'_> {
             )?);
         }
         let result = self.session.as_mut().unwrap().send(request);
-        if result.is_err() {
+        // A stalled, crashed or cut-off process loses this conversation; the
+        // next send starts a fresh one.
+        if result.is_err() || self.session.as_ref().is_some_and(|s| s.finished) {
             self.session = None;
         }
         result
@@ -568,7 +575,8 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
     {
         fenced.trim().strip_suffix("```").unwrap_or(fenced).trim()
     } else {
-        text
+        // A closing fence without its opening one is formatting, not prose.
+        text.strip_suffix("```").map(str::trim).unwrap_or(text)
     };
     serde_json::from_str(text).context("Model output did not match the requested JSON structure")
 }
@@ -976,6 +984,8 @@ mod tests {
         let v: Value = parse_json("```json\n{\"a\":1}\n```").unwrap();
         assert_eq!(v["a"], 1);
         assert!(parse_json::<Value>("{} and more").is_err());
+        let v: Value = parse_json("{\"a\":1}\n```").unwrap();
+        assert_eq!(v["a"], 1);
     }
     #[test]
     fn ollama_wire_contract_uses_images_and_no_thinking() {

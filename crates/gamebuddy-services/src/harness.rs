@@ -705,10 +705,26 @@ pub fn chat(
     Ok(answer)
 }
 
+/// A reply that wraps the requested object in other text: use the first
+/// fenced block or line that parses as a tool call or answer object.
+fn embedded_json(text: &str) -> Option<Value> {
+    let fenced = text
+        .split("```")
+        .skip(1)
+        .step_by(2)
+        .map(|block| block.trim_start_matches("json").trim());
+    fenced
+        .chain(text.lines().map(str::trim).filter(|l| l.starts_with('{')))
+        .filter_map(|candidate| serde_json::from_str::<Value>(candidate).ok())
+        .find(|v| v.get("tool").is_some() || v.get("answer").is_some())
+}
+
 /// Claude sometimes writes a listed tool in its native markup
 /// (`<invoke name="…"><parameter name="…">…</parameter></invoke>`) instead of
 /// the requested JSON. Read exactly one such call; anything else is rejected.
 fn invoke_markup(text: &str) -> Option<Value> {
+    // Tags sometimes carry a namespace prefix.
+    let text = &text.replace(concat!("ant", "ml:"), "");
     let start = text.find("<invoke name=\"")? + "<invoke name=\"".len();
     let name = &text[start..start + text[start..].find('"')?];
     let body = &text[start..start + text[start..].find("</invoke>")?];
@@ -819,7 +835,7 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
         let full = ModelRequest {
             system: coach_system(),
             prompt: format!(
-                "Current game screen: {screen_status}. The first {screen_images} image is the actual current game screenshot; inspect it for screen questions. Additional images are reference evidence from the latest image tool: {image_context}. Map camera boxes are not exact player coordinates. Otherwise explain the capture status without pretending to see it.\nRecent conversation: {}\nPlayer: {question}\nAvailable tools: {}\nEvidence and tool results: {}\nThe harness supplies expected_revision only for edit_plan, restore_plan and add_reference; omit it for those tools. For report_step_complete, report_location and set_next_action, supply expected_revision and epoch from fresh game context. Round {} of 8. Return either {{\"tool\":\"search_guide\",\"arguments\":{{\"query\":string}}}} (or another listed tool), or {{\"answer\":string,\"widgets\":[widget objects]}}. When a tool call is your last step (for example set_next_action), include the answer in the same object, {{\"tool\":...,\"arguments\":...,\"answer\":string}}; it is used only if the tool succeeds. Answer in one or two short sentences unless the player asks for detail. Put longer instructions and lists in a useful widget. Do not repeat advice or add follow-up questions by default. On round 8 return an answer; there are no more tool calls. Do not invent URLs.",
+                "Current game screen: {screen_status}. The first {screen_images} image is the actual current game screenshot; inspect it for screen questions. Additional images are reference evidence from the latest image tool: {image_context}. Map camera boxes are not exact player coordinates. Otherwise explain the capture status without pretending to see it.\nRecent conversation: {}\nPlayer: {question}\nAvailable tools: {}\nEvidence and tool results: {}\nThe harness supplies expected_revision only for edit_plan, restore_plan and add_reference; omit it for those tools. For report_step_complete, report_location and set_next_action, supply expected_revision and epoch from fresh game context. Round {} of 8. Return either {{\"tool\":\"search_guide\",\"arguments\":{{\"query\":string}}}} (or another listed tool), or {{\"answer\":string,\"widgets\":[widget objects]}}. When a tool call is your last step (for example set_next_action), include the answer in the same object, {{\"tool\":...,\"arguments\":...,\"answer\":string}}; it is used only if the tool succeeds. Combine only when that answer fully gives the player what they asked, including the next action; never promise to do something in a later reply. Answer in one or two short sentences unless the player asks for detail. Put longer instructions and lists in a useful widget. Do not repeat advice or add follow-up questions by default. On round 8 return an answer; there are no more tool calls. Do not invent URLs.",
                 serde_json::to_string(&history)?,
                 if round == 7 {
                     json!([])
@@ -835,7 +851,7 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
         // A kept conversation already holds the earlier rounds; send only
         // what changed since the last turn.
         let request = match conversation.as_ref() {
-            Some(_) if round > 0 => {
+            Some(c) if round > 0 && !c.is_fresh() => {
                 let mut images = vec![];
                 let mut notes = vec![];
                 if let Some(screen) = &screen
@@ -873,18 +889,25 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
         let asked = std::time::Instant::now();
         let text = match conversation.as_mut().map(|c| c.send(request)) {
             Some(Ok(text)) => text,
-            // A broken conversation falls back to the complete stateless request.
-            Some(Err(_)) => {
-                conversation = None;
-                provider.complete(full)?
-            }
+            // A stalled conversation is retried once on a fresh process with
+            // the complete context, keeping the turn inside the voice limit.
+            Some(Err(_)) => conversation.as_mut().unwrap().send(full)?,
             None => provider.complete(full)?,
         };
         round_ms.push(asked.elapsed().as_millis() as u64);
         if let Some(screen) = &screen {
             let _ = crate::screen::seen::record(store, screen, "assistant");
         }
-        let value: Value = match parse_json(&text).or_else(|e| invoke_markup(&text).ok_or(e)) {
+        let value: Value = match parse_json(&text).or_else(|e| {
+            embedded_json(&text)
+                .or_else(|| invoke_markup(&text))
+                .map(|mut call| {
+                    // Keep the raw markup to diagnose unusual tool formats.
+                    call["markup"] = json!(text.chars().take(600).collect::<String>());
+                    call
+                })
+                .ok_or(e)
+        }) {
             Ok(value) => value,
             // A prose reply wastes the round but must not lose the request.
             Err(error) if round < 7 => {
@@ -952,14 +975,22 @@ pub fn coach(provider: &impl ReasoningProvider, store: &Store, question: &str) -
                     mutation_errors.remove(name);
                 }
             }
-            evidence.push(json!({"tool":name,"arguments":arguments,"result":result}));
+            evidence.push(json!({"tool":name,"arguments":arguments,"result":result,"markup":value.get("markup")}));
             store.put(
                 "coach:last_trace",
                 &json!({"question":question,"evidence":evidence,"context_ms":context_ms,"round_ms":round_ms}),
             )?;
             // A last tool call may carry the answer, saving a model round
             // trip. It counts only when that tool succeeded.
+            // Reports change the guidance the answer should describe, so they
+            // never end the turn; publishing or display tools can.
             if result.get("error").is_some()
+                || [
+                    "report_location",
+                    "report_step_complete",
+                    "report_world_state",
+                ]
+                .contains(&name)
                 || !value["answer"]
                     .as_str()
                     .is_some_and(|answer| !answer.trim().is_empty())
@@ -1175,6 +1206,15 @@ mod tests {
         assert_eq!(value["arguments"]["instructions"], "Climb up.");
         assert!(value["arguments"]["screen_direction"].is_null());
         assert!(invoke_markup("Got it, you're in town.").is_none());
+        let mixed = "<invoke name=\"get_atlas\">\n</invoke>\n```json\n{\"tool\":\"report_location\",\"arguments\":{\"place_label\":\"Mascon\"}}\n```";
+        assert_eq!(
+            embedded_json(mixed).unwrap()["arguments"]["place_label"],
+            "Mascon"
+        );
+        assert!(embedded_json("{\"unrelated\":1}").is_none());
+        let ns = concat!("ant", "ml:");
+        let prefixed = invoke_markup(&format!("<{ns}invoke name=\"report_location\"><{ns}parameter name=\"place_label\">Mascon</{ns}parameter></{ns}invoke>")).unwrap();
+        assert_eq!(prefixed["arguments"]["place_label"], "Mascon");
     }
     #[test]
     fn a_prose_reply_is_retried_instead_of_failing_the_request() {

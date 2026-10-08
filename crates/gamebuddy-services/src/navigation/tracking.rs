@@ -125,13 +125,17 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             "Task is not bound to the reported place. Omit step_id to record the place alone, or choose a task explicitly bound to this place in get_atlas."
         );
     }
+    let arrival = match (&report.step_id, report.place_label.as_deref()) {
+        (None, Some(area)) => arrival_step(store, guide, &atlas, &progress, area)?,
+        _ => None,
+    };
     let mut tracker = PlaceTracker::for_session(
         screen::status(store)?["session_id"]
             .as_str()
             .unwrap_or_default()
             .into(),
     );
-    if let Some(step) = report.step_id.as_deref() {
+    if let Some(step) = report.step_id.as_deref().or(arrival.as_deref()) {
         tracker.report(
             &report.place_id,
             step,
@@ -163,8 +167,47 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             },
         )?;
     }
-    Ok(json!({"progress":progress,"evidence_kind":"player_report",
-        "navigation":context(store, guide, &progress, &SyncEstimate::default())?}))
+    let arrival_note = arrival.as_ref().map(|id| format!("The player's arrival moved the route cursor to {id}, the first step the source places in {}. Steps before it were not marked complete; earlier unconfirmed prerequisites stay listed. Publish the next action here rather than sending the player back.", report.place_label.as_deref().unwrap_or_default()));
+    Ok(
+        json!({"progress":progress,"evidence_kind":"player_report","arrival_step_id":arrival,"arrival_note":arrival_note,
+        "navigation":context(store, guide, &progress, &SyncEstimate::default())?}),
+    )
+}
+
+/// "I'm in Mascon" names an area, not a task. Move the route cursor to the
+/// first unfinished step ahead on the authored route that the source places
+/// in that area. Steps in between are not marked complete.
+fn arrival_step(
+    store: &Store,
+    guide: &Guide,
+    atlas: &gamebuddy_core::Atlas,
+    progress: &gamebuddy_core::Progress,
+    area: &str,
+) -> Result<Option<String>> {
+    let area = area.trim().to_lowercase();
+    let Some(start) = progress.current_step.as_deref() else {
+        return Ok(None);
+    };
+    if area.chars().count() < 3 {
+        return Ok(None);
+    }
+    let in_area = |id: &str| {
+        atlas
+            .place_for_step(guide, id)
+            .is_some_and(|place| place.label.to_lowercase().contains(&area))
+    };
+    if in_area(start) {
+        return Ok(None);
+    }
+    let prepared = crate::outcomes::prepared(store, guide)?;
+    let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
+    let view = prepared
+        .as_ref()
+        .map_or(&fallback, |p| &p.model)
+        .view(guide, progress);
+    let route =
+        gamebuddy_core::route::authored_route(guide, progress, &view, start, guide.steps.len());
+    Ok(route.step_ids.into_iter().find(|id| in_area(id)))
 }
 
 /// Keep both the overlay and MCP on the same tracker. A screenshot observer can
@@ -364,6 +407,38 @@ mod tests {
         }
         store.put(&format!("atlas:{}", guide.id), &atlas).unwrap();
         (dir, store, guide)
+    }
+    #[test]
+    fn a_town_arrival_moves_the_route_ahead_without_completing_steps() -> Result<()> {
+        let (_dir, store, guide) = fixture();
+        screen::start(&store, &guide.game, true)?;
+        let mut atlas = atlas(&store, &guide)?;
+        atlas.places[2].label = "Mascon tool shop".into();
+        store.put(&format!("atlas:{}", guide.id), &atlas)?;
+        let progress = Progress {
+            current_step: Some(guide.steps[0].id.clone()),
+            ..Default::default()
+        };
+        store.save_progress(&guide, &progress, "fixture")?;
+        let epoch = store.progress(&guide)?.epoch;
+        let result = call_tool(
+            &store,
+            "report_location",
+            json!({"place_label":"Mascon","player_report":"I'm in Mascon","expected_revision":guide.revision,"epoch":epoch}),
+        )?;
+        let arrival = guide.steps[2].id.as_str();
+        assert_eq!(result["arrival_step_id"], arrival);
+        assert_eq!(result["navigation"]["guidance"]["now"]["id"], arrival);
+        let saved = store.progress(&guide)?;
+        assert!(saved.completed.is_empty() && saved.reported_completed.is_empty());
+        // Already in the area: a repeated report does not move the cursor.
+        let again = call_tool(
+            &store,
+            "report_location",
+            json!({"place_label":"Mascon","player_report":"Still in Mascon","expected_revision":guide.revision,"epoch":saved.epoch}),
+        )?;
+        assert!(again["arrival_step_id"].is_null());
+        Ok(())
     }
     fn report(store: &Store, guide: &Guide, place: &str, step: &str, epoch: u64) -> Result<Value> {
         call_tool(

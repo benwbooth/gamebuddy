@@ -352,16 +352,21 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     if let Some(accepted) = &accepted {
         route_progress.current_step = Some(accepted.step_id.clone());
     }
-    let reanchor = (reported_place.is_some() || location_supported)
-        && can_reanchor(
-            guide,
-            &route_progress,
-            &super::atlas(store, guide)?,
-            &tracker,
-            expected,
-            &action.step_id,
-            &view,
-        );
+    // The player's own report of this task (or of arriving in its area)
+    // moves the route there without completing the steps in between.
+    let reported_task = tracker.status == "reported"
+        && tracker.reference_step_id.as_deref() == Some(action.step_id.as_str());
+    let reanchor = reported_task
+        || (reported_place.is_some() || location_supported)
+            && can_reanchor(
+                guide,
+                &route_progress,
+                &super::atlas(store, guide)?,
+                &tracker,
+                expected,
+                &action.step_id,
+                &view,
+            );
     let branch_choice =
         route.status == "route_choice" && route.next.iter().any(|s| s.id == action.step_id);
     ensure!(
@@ -381,6 +386,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     ensure!(
         location_supported
             || reported_place.is_some()
+            || reported_task
             || existing.is_some()
             || guidance
                 .now

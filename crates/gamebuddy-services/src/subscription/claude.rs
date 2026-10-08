@@ -13,7 +13,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-const TURN_TIMEOUT: Duration = Duration::from_secs(120);
+// Partial messages stream continuously while Claude thinks or writes. The
+// service sometimes stops mid-reply; a fresh process then answers in seconds.
+// Detect that silence quickly and let the caller retry, keeping a voice
+// answer inside its time limit.
+const TURN_TIMEOUT: Duration = Duration::from_secs(60);
+const SILENCE_TIMEOUT: Duration = Duration::from_secs(12);
+const RUNAWAY_BYTES: usize = 6000;
+const RUNAWAY_TIME: Duration = Duration::from_secs(8);
+
+/// A complete tool call or answer is already present in the streamed text.
+fn holds_reply(text: &str) -> bool {
+    text.contains("</invoke>")
+        || text.lines().map(str::trim).any(|line| {
+            line.starts_with('{')
+                && serde_json::from_str::<Value>(line)
+                    .is_ok_and(|v| v.get("tool").is_some() || v.get("answer").is_some())
+        })
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct Key {
@@ -28,6 +45,8 @@ pub struct Session {
     output: mpsc::Receiver<std::io::Result<String>>,
     _directory: tempfile::TempDir,
     started: Instant,
+    /// A runaway reply was cut off; this process is still mid-turn.
+    pub finished: bool,
 }
 static SPARE: Mutex<Option<Session>> = Mutex::new(None);
 
@@ -59,6 +78,7 @@ impl Session {
                 "--verbose",
                 "--safe-mode",
                 "--no-session-persistence",
+                "--include-partial-messages",
                 "--input-format",
                 "stream-json",
                 "--output-format",
@@ -108,6 +128,7 @@ impl Session {
             output,
             _directory: directory,
             started: Instant::now(),
+            finished: false,
         })
     }
     fn alive(&mut self) -> bool {
@@ -154,15 +175,49 @@ impl Session {
         )?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
+        ensure!(!self.finished, "Claude session ended");
         let deadline = Instant::now() + TURN_TIMEOUT;
+        let mut written = String::new();
+        let mut text_started = None;
         loop {
+            let wait = deadline
+                .saturating_duration_since(Instant::now())
+                .min(SILENCE_TIMEOUT);
             let line = self
                 .output
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .context("Claude response timed out or the process exited")??;
+                .recv_timeout(wait)
+                .context("Claude stopped responding or the process exited")??;
+            if let Some(path) = std::env::var_os("GAMEBUDDY_CLAUDE_TRACE") {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| {
+                        writeln!(
+                            f,
+                            "{} {}",
+                            crate::screen::now_ms(),
+                            line.chars().take(400).collect::<String>()
+                        )
+                    });
+            }
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if let Some(delta) = value["event"]["delta"]["text"].as_str() {
+                written.push_str(delta);
+                // A reply is a short JSON object. Claude occasionally repeats
+                // itself until its output limit, which takes minutes. Stop at
+                // a runaway length; the caller reads the first call from it.
+                let started = *text_started.get_or_insert_with(Instant::now);
+                if written.len() > RUNAWAY_BYTES
+                    || (started.elapsed() > RUNAWAY_TIME || written.len() > 2000)
+                        && holds_reply(&written)
+                {
+                    self.finished = true;
+                    return Ok(written);
+                }
+            }
             if value["type"] != "result" {
                 continue;
             }
