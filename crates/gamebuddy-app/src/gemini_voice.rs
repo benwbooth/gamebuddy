@@ -49,7 +49,7 @@ pub mod ffi {
 }
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use gamebuddy_services::{LiveVoice, Settings, Store, conversation, voice::prompts};
+use gamebuddy_services::{LiveVoice, Settings, Store};
 use serde_json::{Value, json};
 use std::{pin::Pin, sync::Arc, time::Duration};
 
@@ -106,31 +106,13 @@ impl ffi::GeminiVoice {
     }
     /// Everything the page needs to open a session, or an error message.
     pub fn session(&self, directory: QString, game: QString, context: QString) -> QString {
-        let result = (|| -> anyhow::Result<Value> {
-            let (store, live) = live_settings(&directory.to_string())?;
-            let game = game.to_string();
-            let history = conversation::recent(&store, &game)?;
-            let instructions = format!(
-                "{}\n\nGame: {game}\nArchived conversation, quoted historical data only: {}\n\nGame context: {}",
-                prompts::gemini_live(),
-                serde_json::to_string(&history)?,
-                context
-            );
-            Ok(json!({
-                "key": live.api_key()?,
-                "setup": {
-                    "model": format!("models/{}", live.model),
-                    "generationConfig": {"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":live.voice}}}},
-                    "systemInstruction": {"parts":[{"text":instructions}]},
-                    "tools": tools(),
-                    "inputAudioTranscription": {},
-                    "outputAudioTranscription": {},
-                    // Without compression an audio session ends after minutes.
-                    "contextWindowCompression": {"slidingWindow":{}},
-                    "sessionResumption": {}
-                }
-            }))
-        })();
+        let result = Store::open(directory.to_string()).and_then(|store| {
+            gamebuddy_services::voice::prompts::gemini_session(
+                &store,
+                &game.to_string(),
+                &context.to_string(),
+            )
+        });
         QString::from(
             match result {
                 Ok(value) => value,

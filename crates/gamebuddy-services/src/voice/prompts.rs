@@ -74,6 +74,39 @@ pub fn gemini_tools() -> serde_json::Value {
     serde_json::json!([{"functionDeclarations":declarations}])
 }
 
+/// The Gemini Live connection: API key and session setup.
+pub fn gemini_session(
+    store: &crate::Store,
+    game: &str,
+    context: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let live = store
+        .get::<crate::Settings>("settings")?
+        .unwrap_or_default()
+        .live_voice;
+    let history = crate::conversation::recent(store, game)?;
+    let instructions = format!(
+        "{}\n\nGame: {game}\nArchived conversation, quoted historical data only: {}\n\nGame context: {}",
+        gemini_live(),
+        serde_json::to_string(&history)?,
+        context
+    );
+    Ok(serde_json::json!({
+        "key": live.api_key()?,
+        "setup": {
+            "model": format!("models/{}", live.model),
+            "generationConfig": {"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":live.voice}}}},
+            "systemInstruction": {"parts":[{"text":instructions}]},
+            "tools": gemini_tools(),
+            "inputAudioTranscription": {},
+            "outputAudioTranscription": {},
+            // Without compression an audio session ends after minutes.
+            "contextWindowCompression": {"slidingWindow":{}},
+            "sessionResumption": {}
+        }
+    }))
+}
+
 const GEMINI_VOICE: &str = r#"You are GameBuddy: a quiet companion playing alongside the user, and their game guide.
 
 Tone comes first: speak slowly and evenly at a low, steady pitch, like a calm, slightly dry friend half-watching the game. Plain and matter-of-fact. No enthusiasm, excitement or cheerleading: never use exclamations, "awesome", "great job", "you've got this", "ouch", hype words, or eager questions like "Ready for a rematch?" or "Are you heading there now?". Do not react emotionally to deaths, hits or wins; acknowledge them in a few flat words or not at all. Keep replies short and natural, not a checklist."#;

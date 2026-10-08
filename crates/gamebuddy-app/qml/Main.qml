@@ -29,12 +29,20 @@ ApplicationWindow {
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
     property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
-    property bool geminiEnabled: JSON.parse(buddy.settings_json).speech === "gemini_live"
+    property bool geminiChosen: JSON.parse(buddy.settings_json).speech === "gemini_live"
+    // When Google's service fails, keep answering with the local voice and
+    // the selected assistant, and try Gemini again after a pause.
+    property bool geminiFallback: false
+    readonly property bool geminiEnabled: geminiChosen && !geminiFallback
     // Either live backend owns listening and speech; local audio stays quiet.
     readonly property bool liveVoiceEnabled: realtimeEnabled || geminiEnabled
     property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false
     property string captureError: ""
     property string tokenAlert: ""
+    Timer {
+        interval: 120000; running: root.geminiFallback
+        onTriggered: { liveVoice.failed = false; root.geminiFallback = false }
+    }
     function noteOutOfTokens(text) {
         if (!text || !text.startsWith("Out of tokens:") || text === root.tokenAlert) return
         root.tokenAlert = text
@@ -165,6 +173,11 @@ ApplicationWindow {
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
         onOutOfTokens: message => root.noteOutOfTokens(message)
+        onUnavailable: message => {
+            root.geminiFallback = true
+            if (message.length && !root.tokenAlert.startsWith("Out of tokens:"))
+                root.tokenAlert = "Voice unavailable: Gemini Live is not responding (" + message + "). GameBuddy is using the local voice and will try Gemini again in 2 minutes."
+        }
     }
     VoiceInput {
         id: voice

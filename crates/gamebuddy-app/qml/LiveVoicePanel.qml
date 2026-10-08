@@ -39,6 +39,8 @@ WebEngineView {
     readonly property bool conversationActive: started && (assistantSpeaking || workPending || userSpeaking)
     signal transcript(string text)
     signal outOfTokens(string message)
+    // The live service failed; the app falls back to local voice and retries.
+    signal unavailable(string message)
     signal answer(string text)
     width: 1; height: 1; visible: true; opacity: 0.01
     lifecycleState: WebEngineView.Active
@@ -173,8 +175,8 @@ WebEngineView {
         if (!started) return
         if (event.type === "ready") { connected = true; updateStatus(); sendFrame(); if (automaticSession) narrate() }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
-        else if (event.type === "error") fail("Gemini voice: " + v)
-        else if (event.type === "quota") { fail("Gemini voice is out of tokens"); panel.outOfTokens("Out of tokens: Gemini has no tokens or quota left. " + (v || "")) }
+        else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }
+        else if (event.type === "quota") { fail("Gemini voice is out of tokens"); panel.outOfTokens("Out of tokens: Gemini has no tokens or quota left. " + (v || "")); panel.unavailable("") }
         else if (event.type === "microphone-error") { if (voice.active) voice.toggle_listening(); status = "Microphone: " + v }
         else if (event.type === "capture") capturing = v
         else if (event.type === "input-text") { inputAt = Date.now(); userSpeaking = true }

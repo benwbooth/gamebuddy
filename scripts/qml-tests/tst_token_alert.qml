@@ -20,5 +20,10 @@ Item {
             waitForRendering(alert)
             grabImage(alert).save("/tmp/gamebuddy-token-alert.png")
         }
+        function test_voice_outage_has_its_own_title() {
+            alert.message = "Voice unavailable: Gemini Live is not responding (Internal error encountered.). GameBuddy is using the local voice."
+            compare(findChild(alert, "tokenAlertTitle").text, "Voice unavailable")
+            verify(findChild(alert, "tokenAlertMessage").text.startsWith("Gemini Live is not responding"))
+        }
     }
 }
