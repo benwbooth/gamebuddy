@@ -35,6 +35,11 @@ pub struct Progress {
     /// Kept distinct from the companion's direct confirmation controls.
     #[serde(default)]
     pub reported_completed: HashSet<String>,
+    /// Route steps the player went past on the way to a reported area. They
+    /// are no longer the next action, but are not completed: no rewards or
+    /// world facts follow from them.
+    #[serde(default)]
+    pub passed: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -57,6 +62,7 @@ impl Synchronizer {
         self.progress.current_step = None;
         self.progress.completed.clear();
         self.progress.reported_completed.clear();
+        self.progress.passed.clear();
         self.progress.world.facts.clear();
         self.last_observation = None;
         self.pending_step = None;

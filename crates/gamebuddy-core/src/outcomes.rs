@@ -314,6 +314,12 @@ impl OutcomeModel {
     }
     pub fn view(&self, guide: &Guide, progress: &Progress) -> PlanningView {
         let mut view = PlanningView::default();
+        for id in &progress.passed {
+            view.skipped.insert(
+                id.clone(),
+                "Passed on the way to the player's reported location; not completed.".into(),
+            );
+        }
         let nodes: HashMap<_, _> = guide.steps.iter().map(|s| (s.id.as_str(), s)).collect();
         let ancestry: HashMap<_, Vec<_>> = guide
             .steps

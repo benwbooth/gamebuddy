@@ -143,9 +143,10 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .find(|p| p.id == report.place_id)
             .map(|p| p.label.clone())
     });
-    let arrival = match (&report.step_id, area.as_deref()) {
-        (None, Some(area)) => arrival_step(store, guide, &atlas, &progress, area)?,
-        _ => None,
+    let (arrival, passed) = match (&report.step_id, area.as_deref()) {
+        (None, Some(area)) => arrival(store, guide, &atlas, &progress, area)?
+            .map_or((None, vec![]), |(step, passed)| (Some(step), passed)),
+        _ => (None, vec![]),
     };
     let mut tracker = PlaceTracker::for_session(
         screen::status(store)?["session_id"]
@@ -175,6 +176,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
         tracker,
         &report.player_report,
         new_place,
+        &passed,
     )?;
     if let Some(frame) = screen::movement_frame(store, screen::now_ms())? {
         store.put(
@@ -185,7 +187,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             },
         )?;
     }
-    let arrival_note = arrival.as_ref().map(|id| format!("The player's arrival moved the route cursor to {id}, the first step the source places in {}. Steps before it were not marked complete; earlier unconfirmed prerequisites stay listed. Publish the next action here rather than sending the player back.", area.as_deref().unwrap_or_default()));
+    let arrival_note = arrival.as_ref().map(|id| format!("The player's arrival moved the route cursor to {id}, the first step the source places in {}. Route steps on the way there were recorded as passed (no items or world facts were assumed). Publish the next action here rather than sending the player back.", area.as_deref().unwrap_or_default()));
     Ok(
         json!({"progress":progress,"evidence_kind":"player_report","arrival_step_id":arrival,"arrival_note":arrival_note,
         "navigation":context(store, guide, &progress, &SyncEstimate::default())?}),
@@ -202,6 +204,18 @@ pub(crate) fn arrival_step(
     progress: &gamebuddy_core::Progress,
     area: &str,
 ) -> Result<Option<String>> {
+    Ok(arrival(store, guide, atlas, progress, area)?.map(|(step, _)| step))
+}
+
+/// The first step ahead in the area and the unfinished route steps the
+/// player passed on the way there.
+fn arrival(
+    store: &Store,
+    guide: &Guide,
+    atlas: &gamebuddy_core::Atlas,
+    progress: &gamebuddy_core::Progress,
+    area: &str,
+) -> Result<Option<(String, Vec<String>)>> {
     let area = area.trim().to_lowercase();
     let Some(start) = progress.current_step.as_deref() else {
         return Ok(None);
@@ -226,7 +240,12 @@ pub(crate) fn arrival_step(
         .view(guide, progress);
     let route =
         gamebuddy_core::route::authored_route(guide, progress, &view, start, guide.steps.len());
-    Ok(route.step_ids.into_iter().find(|id| in_area(id)))
+    let Some(index) = route.step_ids.iter().position(|id| in_area(id)) else {
+        return Ok(None);
+    };
+    let mut steps = route.step_ids;
+    let passed = steps.drain(..index).collect();
+    Ok(Some((steps.swap_remove(0), passed)))
 }
 
 /// Keep both the overlay and MCP on the same tracker. A screenshot observer can
@@ -449,7 +468,12 @@ mod tests {
         assert_eq!(result["arrival_step_id"], arrival);
         assert_eq!(result["navigation"]["guidance"]["now"]["id"], arrival);
         let saved = store.progress(&guide)?;
+        // Steps on the way are passed, so they cannot become the next action
+        // again once the town's steps are done; no world facts are assumed.
         assert!(saved.completed.is_empty() && saved.reported_completed.is_empty());
+        assert!(saved.passed.contains(&guide.steps[0].id));
+        assert!(saved.passed.contains(&guide.steps[1].id));
+        assert!(saved.world.facts.is_empty());
         // Already in the area: a repeated report does not move the cursor.
         let again = call_tool(
             &store,

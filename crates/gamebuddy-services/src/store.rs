@@ -566,6 +566,7 @@ impl Store {
         mut tracker: gamebuddy_core::PlaceTracker,
         report: &str,
         new_place: Option<gamebuddy_core::Place>,
+        passed: &[String],
     ) -> Result<Progress> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.connection,
@@ -583,6 +584,9 @@ impl Store {
         if tracker.reference_step_id.is_some() {
             progress.current_step = tracker.reference_step_id.clone();
         }
+        // Arriving further along the route passes the steps on the way. They
+        // are not completed, and pickups there are not assumed to be held.
+        progress.passed.extend(passed.iter().cloned());
         progress.epoch += 1;
         tracker.epoch = progress.epoch;
         if let Some(place) = new_place {
