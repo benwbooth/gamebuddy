@@ -11,6 +11,8 @@ Item {
     required property var session
     property var startup: null
     property var preparation: null
+    property string tokenAlert: ""
+    signal tokenAlertDismissed()
     property bool expanded: false
     property bool recording: false
     property bool pendingRecording: false
@@ -47,8 +49,8 @@ Item {
     property string lastLayoutTrace: ""
     readonly property real maximumPanelWidth: embedded && parent ? parent.width : Screen.desktopAvailableWidth
     readonly property real maximumPanelHeight: embedded && parent ? parent.height : Screen.desktopAvailableHeight
-    width: expanded ? Math.min(expandedWidth, maximumPanelWidth) : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0, compactPreparation.visible ? compactPreparation.x + compactPreparation.width + 8 : 0)
-    height: expanded ? Math.min(expandedHeight, maximumPanelHeight) : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0, compactPreparation.visible ? compactPreparation.y + compactPreparation.height + 8 : 0)
+    width: expanded ? Math.min(expandedWidth, maximumPanelWidth) : Math.max(interactionHint.visible ? interactionHint.x + interactionHint.width + 8 : 80, compactStartup.visible ? compactStartup.x + compactStartup.width + 8 : 0, compactPreparation.visible ? compactPreparation.x + compactPreparation.width + 8 : 0, compactTokenAlert.visible ? compactTokenAlert.x + compactTokenAlert.width + 8 : 0)
+    height: expanded ? Math.min(expandedHeight, maximumPanelHeight) : Math.max(80, compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 0, compactPreparation.visible ? compactPreparation.y + compactPreparation.height + 8 : 0, compactTokenAlert.visible ? compactTokenAlert.y + compactTokenAlert.height + 8 : 0)
     onWidthChanged: if (embedded && parent && parent.width > 0 && width > 0) x = Math.max(0, Math.min(parent.width - width, x))
     onHeightChanged: if (embedded && parent && parent.height > 0 && height > 0) y = Math.max(0, Math.min(parent.height - height, y))
     Settings {
@@ -240,6 +242,15 @@ Item {
         width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
         MouseArea { anchors.fill: parent; onClicked: companion.expanded = true }
     }
+    TokenAlert {
+        id: compactTokenAlert
+        objectName: "companionTokenAlert"
+        message: companion.expanded ? "" : companion.tokenAlert
+        x: 8
+        y: compactPreparation.visible ? compactPreparation.y + compactPreparation.height + 8 : compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 80
+        width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
+        onDismissed: companion.tokenAlertDismissed()
+    }
     PreparationStatus {
         id: compactPreparation
         objectName: "companionPreparation"
@@ -292,6 +303,12 @@ Item {
             GbButton { text: "A−"; implicitWidth: 38; enabled: companion.dialogueFontSize > 16; onClicked: companion.dialogueFontSize -= 2; Accessible.name: "Smaller dialogue text" }
             GbButton { objectName: "companionLargerText"; text: "A+"; implicitWidth: 38; enabled: companion.dialogueFontSize < 40; onClicked: companion.dialogueFontSize += 2; Accessible.name: "Larger dialogue text" }
             GbButton { text: "−"; implicitWidth: 34; onClicked: companion.expanded = false; Accessible.name: "Minimize companion" }
+        }
+        TokenAlert {
+            objectName: "companionExpandedTokenAlert"
+            message: companion.tokenAlert
+            Layout.fillWidth: true
+            onDismissed: companion.tokenAlertDismissed()
         }
         StartupStatus {
             objectName: "companionExpandedStartup"

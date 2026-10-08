@@ -218,8 +218,23 @@ impl Session {
                     return Ok(written);
                 }
             }
+            if value["type"] == "rate_limit_event"
+                && value["rate_limit_info"]["status"] == "rejected"
+            {
+                return Err(crate::out_of_tokens(
+                    "Claude",
+                    &format!(
+                        "Your Claude plan's limit resets at Unix time {}.",
+                        value["rate_limit_info"]["resetsAt"]
+                    ),
+                ));
+            }
             if value["type"] != "result" {
                 continue;
+            }
+            let failure = value["result"].as_str().unwrap_or_default();
+            if value["is_error"] == true && crate::is_quota_error(failure) {
+                return Err(crate::out_of_tokens("Claude", failure));
             }
             ensure!(value["is_error"] != true, "Claude: {}", value["result"]);
             let answer = value["result"]

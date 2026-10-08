@@ -454,6 +454,10 @@ pub fn claude_complete_structured(
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|v| v["type"] == "result")
         .context("Claude returned no result; check `claude auth status`")?;
+    let failure = value["result"].as_str().unwrap_or_default();
+    if value["is_error"] == true && crate::is_quota_error(failure) {
+        return Err(crate::out_of_tokens("Claude", failure));
+    }
     ensure!(value["is_error"] != true, "Claude: {}", value["result"]);
     if schema.is_some() {
         let output = value

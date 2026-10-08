@@ -12,6 +12,7 @@ fn main() {
         "qml/PreparationStatus.qml",
         "qml/SpeechOutput.qml",
         "qml/LiveVoicePanel.qml",
+        "qml/TokenAlert.qml",
         "qml/RealtimePanel.qml",
         "qml/VoiceCaptions.qml",
         "qml/NavigationArrow.qml",

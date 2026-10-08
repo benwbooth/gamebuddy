@@ -34,6 +34,13 @@ ApplicationWindow {
     readonly property bool liveVoiceEnabled: realtimeEnabled || geminiEnabled
     property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false
     property string captureError: ""
+    property string tokenAlert: ""
+    function noteOutOfTokens(text) {
+        if (!text || !text.startsWith("Out of tokens:") || text === root.tokenAlert) return
+        root.tokenAlert = text
+        // The live voice may be the thing that ran out; say it locally.
+        speech.say("Heads up: " + text.replace(/^Out of tokens:\s*/, "").split(".")[0] + ".")
+    }
     property string smokePath: arg("--smoke-test")
     property string replayPath: arg("--replay")
     property bool editOverlay: false
@@ -114,6 +121,8 @@ ApplicationWindow {
         onState_jsonChanged: root.session = JSON.parse(state_json)
         onMap_preview_ready: (id, preview) => widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
         Component.onCompleted: initialize()
+        onChat_errorChanged: root.noteOutOfTokens(chat_error)
+        onMessageChanged: root.noteOutOfTokens(message)
         onAnswerChanged: { if (!root.liveVoiceEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
         onVoice_command: action => root.overlayAction(action)
         onBusyChanged: if (!busy) root.voiceTurnRunning = false
@@ -155,6 +164,7 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
+        onOutOfTokens: message => root.noteOutOfTokens(message)
     }
     VoiceInput {
         id: voice
@@ -202,6 +212,8 @@ ApplicationWindow {
         syncActive: root.autoSync
         startup: JSON.parse(buddy.startup_json)
         preparation: JSON.parse(buddy.preparation_json)
+        tokenAlert: root.tokenAlert
+        onTokenAlertDismissed: root.tokenAlert = ""
         onPreparationRetryRequested: buddy.prepare_game()
         x: compositor.active ? 36 : 0
         y: compositor.active ? 90 : 0

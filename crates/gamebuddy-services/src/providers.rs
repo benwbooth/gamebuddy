@@ -500,6 +500,12 @@ impl HttpProvider {
             .context("Could not reach the model provider")?;
         let status = response.status();
         let text = response.text()?;
+        if status.as_u16() == 429
+            || status.as_u16() == 402
+            || (!status.is_success() && is_quota_error(&text))
+        {
+            return Err(out_of_tokens(&format!("{:?}", self.config.kind), &text));
+        }
         ensure!(
             status.is_success(),
             "Model provider returned HTTP {status}: {}",
@@ -565,6 +571,36 @@ pub fn image_base64(path: impl AsRef<Path>) -> Result<String> {
     let mut bytes = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85).encode_image(&image)?;
     Ok(STANDARD.encode(bytes))
+}
+
+/// Errors meaning the account is out of tokens, quota or credit start with
+/// this, so the app can tell the player instead of showing a generic failure.
+pub const OUT_OF_TOKENS: &str = "Out of tokens:";
+
+pub fn is_quota_error(text: &str) -> bool {
+    let text = text.to_lowercase();
+    [
+        "usage limit",
+        "rate limit",
+        "rate_limit",
+        "quota",
+        "resource_exhausted",
+        "resource exhausted",
+        "credit balance",
+        "out of credits",
+        "exceeded your current",
+        "limit reached",
+    ]
+    .iter()
+    .any(|pattern| text.contains(pattern))
+}
+
+/// The player-facing message for an exhausted account.
+pub fn out_of_tokens(provider: &str, detail: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{OUT_OF_TOKENS} {provider} has no tokens or quota left. {}",
+        detail.chars().take(300).collect::<String>()
+    )
 }
 
 pub fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
@@ -978,6 +1014,20 @@ mod tests {
         assert!(p.validate().is_err());
         p.endpoint = "http://127.0.0.1:11434".into();
         assert!(p.validate().is_ok());
+    }
+    #[test]
+    fn quota_errors_are_recognized_for_the_out_of_tokens_notice() {
+        assert!(is_quota_error("Claude AI usage limit reached|1791480000"));
+        assert!(is_quota_error(
+            "You exceeded your current quota, please check your plan"
+        ));
+        assert!(is_quota_error("RESOURCE_EXHAUSTED"));
+        assert!(!is_quota_error("The model returned an empty answer"));
+        assert!(
+            out_of_tokens("Claude", "x")
+                .to_string()
+                .starts_with(OUT_OF_TOKENS)
+        );
     }
     #[test]
     fn parses_fences_but_rejects_trailing_prose() {
