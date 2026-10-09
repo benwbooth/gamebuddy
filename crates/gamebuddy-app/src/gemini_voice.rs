@@ -46,6 +46,8 @@ pub mod ffi {
         fn latest_frame(self: &GeminiVoice, directory: QString, after_ms: f64) -> QString;
         #[qinvokable]
         fn scene_changed(self: Pin<&mut GeminiVoice>, directory: QString) -> bool;
+        #[qinvokable]
+        fn note(self: &GeminiVoice, directory: QString, kind: QString, value: QString);
     }
     impl cxx_qt::Threading for GeminiVoice {}
 }
@@ -213,6 +215,21 @@ impl ffi::GeminiVoice {
                 changed
             }
             Err(_) => false,
+        }
+    }
+    /// Keep the last 200 live-session events (frames sent, tool calls) for
+    /// diagnosing a session afterwards.
+    pub fn note(&self, directory: QString, kind: QString, value: QString) {
+        if let Ok(store) = Store::open(directory.to_string()) {
+            let mut notes: Vec<Value> = store
+                .get("gemini-diagnostics")
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            notes.push(json!({"at_ms":gamebuddy_services::screen::now_ms(),"kind":kind.to_string(),"value":serde_json::from_str::<Value>(&value.to_string()).unwrap_or(Value::Null)}));
+            let excess = notes.len().saturating_sub(200);
+            notes.drain(..excess);
+            let _ = store.put("gemini-diagnostics", &notes);
         }
     }
     pub fn has_api_key(&self, directory: QString) -> bool {

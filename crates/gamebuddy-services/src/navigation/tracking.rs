@@ -85,8 +85,16 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .and_then(|t| t.place_id)
             .and_then(|id| atlas.places.iter().find(|p| p.id == id))
             .is_some_and(|p| p.label.to_lowercase().contains(&label.to_lowercase()));
+        // A live voice model watching the feed may report a known walkthrough
+        // area it sees ("Screen: ..."), never an invented place name.
+        let seen_known_area = report.player_report.starts_with("Screen:")
+            && atlas
+                .places
+                .iter()
+                .any(|p| p.label.to_lowercase().contains(&label.to_lowercase()));
         ensure!(
             mapped_area
+                || seen_known_area
                 || report
                     .player_report
                     .to_lowercase()

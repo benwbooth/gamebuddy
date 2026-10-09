@@ -8,7 +8,7 @@
   let ws=null,config=null,generation=0,resumeHandle=null,reconnects=0,ready=false,stopping=false;
   let mic=null,micContext=null,micNodes=null,captureGeneration=0;
   let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,meterTimer=null;
-  let inputText='',outputText='',pendingTools=new Map();
+  let inputText='',outputText='',pendingTools=new Map(),framesSent=0;
   const emit=(type,value)=>console.info('GAMEBUDDY_GEMINI '+JSON.stringify({type,value,at:Date.now()}));
   const send=message=>{if(ws?.readyState===WebSocket.OPEN&&ready)ws.send(JSON.stringify(message))};
   function base64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(s)}
@@ -119,7 +119,7 @@
     },
     // The current game screen, about once a second, so answers use what the
     // player sees now.
-    frame(jpeg){send({realtimeInput:{video:{data:jpeg,mimeType:'image/jpeg'}}})},
+    frame(jpeg){if(ws?.readyState===WebSocket.OPEN&&ready){send({realtimeInput:{video:{data:jpeg,mimeType:'image/jpeg'}}});framesSent++;if(framesSent%30===1)emit('frames',framesSent)}},
     // Application cues are spoken; context is quiet background.
     cue(text){send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},

@@ -161,6 +161,7 @@ WebEngineView {
         onTool_event_jsonChanged: {
             const event = JSON.parse(tool_event_json)
             if (panel.trace) console.warn("GAMEBUDDY_GEMINI_TOOL name=" + event.name + " ms=" + event.elapsed_ms + " error=" + !!event.response.error)
+            gemini.note(panel.session.data_dir || "", "tool-result", JSON.stringify({name: event.name, ms: event.elapsed_ms, error: event.response.error || null}))
             panel.runningTools = Math.max(0, panel.runningTools - 1)
             panel.workPending = panel.runningTools > 0
             if (!panel.started) return
@@ -188,6 +189,8 @@ WebEngineView {
         const event = JSON.parse(message.slice(17)), v = event.value
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
+        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final"].includes(event.type))
+            gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args} : v))
         if (event.type === "ready") { connected = true; updateStatus(); sendFrame() }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }
