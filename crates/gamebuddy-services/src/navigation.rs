@@ -934,7 +934,7 @@ pub fn context(
     if let Some(off) = follow::off_route(store, guide)?
         && value["guidance"]["now"].is_object()
     {
-        let path = follow::return_path(guide, &off);
+        let path = follow::return_path(store, guide, &off)?;
         let area = if off.map_title.is_empty() {
             "an earlier area".to_owned()
         } else {

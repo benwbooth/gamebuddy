@@ -308,7 +308,7 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     // the walkthrough's return path. Accept those steps without changing
     // progress (they were done before); refuse steps for elsewhere.
     if let Some(off) = super::follow::off_route(store, guide)? {
-        let path = super::follow::return_path(guide, &off);
+        let path = super::follow::return_path(store, guide, &off)?;
         ensure!(
             path.contains(&action.step_id),
             "The screen shows the player back in {} (where \"{}\" happens), away from that step. Publish a step from guidance.return_path to lead them back from where they are.",

@@ -80,17 +80,40 @@ fn title(atlas: &Atlas, map: &str) -> String {
 
 /// The walkthrough's own path from the step the screen shows back to the
 /// route step: what a friend would walk the player through after a death.
-pub fn return_path(guide: &Guide, off: &OffRoute) -> Vec<String> {
+/// Lasting changes already made (a raised ladder, a bought shield) stay done
+/// and are left out; travel steps and anything whose effect a later action
+/// can undo (a key that gets used up) remain.
+pub fn return_path(store: &Store, guide: &Guide, off: &OffRoute) -> Result<Vec<String>> {
     if off.seen_step_id.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
+    let model = crate::outcomes::prepared(store, guide)?
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let lasting = |id: &str| {
+        model.actions.iter().any(|rule| {
+            rule.step_id == id
+                && !rule.effects.is_empty()
+                && rule.invalidate_facts.is_empty()
+                && rule.effects.iter().all(|effect| {
+                    effect.value
+                        && !model
+                            .actions
+                            .iter()
+                            .any(|other| other.invalidate_facts.contains(&effect.id))
+                })
+        })
+    };
     let fresh = gamebuddy_core::Progress::default();
     let view = gamebuddy_core::outcomes::OutcomeModel::default().view(guide, &fresh);
-    gamebuddy_core::route::authored_route(guide, &fresh, &view, &off.seen_step_id, 60)
-        .step_ids
-        .into_iter()
-        .take_while(|id| *id != off.route_step_id)
-        .collect()
+    Ok(
+        gamebuddy_core::route::authored_route(guide, &fresh, &view, &off.seen_step_id, 60)
+            .step_ids
+            .into_iter()
+            .take_while(|id| *id != off.route_step_id)
+            .filter(|id| !lasting(id))
+            .collect(),
+    )
 }
 
 pub fn off_route(store: &Store, guide: &Guide) -> Result<Option<OffRoute>> {
@@ -287,7 +310,7 @@ mod tests {
         assert_eq!(off["kind"], "off_route");
         assert_eq!(store.progress(&guide)?.current_step, progress.current_step);
         assert_eq!(off_route(&store, &guide)?.unwrap().seen_step_title, "Town");
-        let path = return_path(&guide, &off_route(&store, &guide)?.unwrap());
+        let path = return_path(&store, &guide, &off_route(&store, &guide)?.unwrap())?;
         assert_eq!(
             path,
             vec![guide.steps[0].id.clone(), guide.steps[1].id.clone()]
