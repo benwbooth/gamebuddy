@@ -37,6 +37,7 @@ WebEngineView {
     property double lastContextAt: 0
     property string activeAdviceStep: ""
     property bool userSpeaking: false
+    property bool greeted: false
     property string ownAnswer: ""
     readonly property bool conversationActive: started && (assistantSpeaking || workPending || userSpeaking)
     signal transcript(string text)
@@ -86,7 +87,7 @@ WebEngineView {
         if (started && voiceGame !== session.game) shutdown("Voice stopped")
         const wanted = enabledBackend && !failed && !!session.game && (voice.active || (automaticSession && spokenReplies && !proactivePaused))
         if (wanted && !started) {
-            started = true; connected = false; voiceGame = session.game; updateStatus()
+            started = true; connected = false; greeted = false; voiceGame = session.game; updateStatus()
             const setup = gemini.session(session.data_dir || "", session.game, briefContext())
             runJavaScript("gamebuddyGemini.muteOutput(" + (!spokenReplies) + ");gamebuddyGemini.start(" + setup + "," + JSON.stringify(voice.device_name) + "," + voice.active + ")")
         } else if (!wanted && started) shutdown("Voice stopped")
@@ -199,7 +200,14 @@ WebEngineView {
             gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args}
                 // How old the newest frame Gemini had was when the player spoke.
                 : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
-        if (event.type === "ready") { connected = true; updateStatus(); sendFrame() }
+        if (event.type === "ready") {
+            connected = true; updateStatus(); sendFrame()
+            // Say hello once per session, not after reconnects.
+            if (!greeted && spokenReplies && !proactivePaused) {
+                greeted = true
+                runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next.") + ")")
+            }
+        }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }
         else if (event.type === "quota") { fail("Gemini voice is out of tokens"); panel.outOfTokens("Out of tokens: Gemini has no tokens or quota left. " + (v || "")); panel.unavailable("") }

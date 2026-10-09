@@ -20,6 +20,10 @@ const BEHIND_MS: u64 = 60_000;
 const HOLD_MS: u64 = 3_000;
 /// Hypotheses within this score of the best are equally plausible.
 const SCORE_SLACK: f64 = 0.05;
+/// Equally plausible moments further apart than this mean the scenery
+/// repeats (town streets, shop interiors), so it says nothing about where
+/// the player is in the walkthrough.
+const AMBIGUOUS_SPAN_MS: u64 = 3 * 60_000;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct OffRoute {
@@ -179,6 +183,11 @@ pub fn observed(
         store.put(&candidate_key, &Candidate::default())?;
         return Ok(None);
     }
+    let span = plausible.iter().max().unwrap_or(&0) - plausible.iter().min().unwrap_or(&0);
+    if span > AMBIGUOUS_SPAN_MS {
+        store.put(&candidate_key, &Candidate::default())?;
+        return Ok(None);
+    }
     let view = gamebuddy_core::outcomes::OutcomeModel::default().view(guide, &progress);
     let route = gamebuddy_core::route::authored_route(guide, &progress, &view, &current, 120);
     let ahead = plausible
@@ -296,12 +305,17 @@ mod tests {
         // On the current step's moment: nothing changes.
         assert!(observed(&store, &guide, epoch, &[(130_000, 0.8)], None, 0)?.is_none());
         // Ahead (the cave): must hold before moving.
-        let cave = [(250_000, 0.8), (900_000, 0.79)];
+        let cave = [(250_000, 0.8), (900_000, 0.7)];
         assert!(observed(&store, &guide, epoch, &cave, None, 1_000)?.is_none());
         let moved = observed(&store, &guide, epoch, &cave, None, 5_000)?.unwrap();
         assert_eq!(moved["step_id"], guide.steps[2].id.as_str());
         let progress = store.progress(&guide)?;
         assert!(progress.passed.contains(&guide.steps[1].id) && progress.completed.is_empty());
+        // Scenery seen at distant moments (a look-alike town) moves nothing.
+        let alike = [(20_000, 0.8), (500_000, 0.78)];
+        observed(&store, &guide, progress.epoch, &alike, None, 5_500)?;
+        assert!(observed(&store, &guide, progress.epoch, &alike, None, 9_000)?.is_none());
+        assert!(off_route(&store, &guide)?.is_none());
         // Back in town after a death: keep progress, flag off route.
         let epoch = progress.epoch;
         let town = [(20_000, 0.8)];
