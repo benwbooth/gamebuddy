@@ -426,6 +426,37 @@ Item {
                 palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
             }
             RowLayout {
+                id: geminiChoices
+                readonly property var live: JSON.parse(buddy.settings_json).live_voice || ({})
+                visible: JSON.parse(buddy.settings_json).speech === "gemini_live"
+                function save(field, value) {
+                    const settings = JSON.parse(buddy.settings_json)
+                    settings.live_voice = Object.assign({model: "gemini-3.8-live", voice: "Charon", api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {})
+                    if (settings.live_voice[field] === value) return
+                    settings.live_voice[field] = value
+                    buddy.save_settings(JSON.stringify(settings))
+                }
+                Text { text: "Gemini"; color: "#c7fff0"; font.pixelSize: 14 }
+                ComboBox {
+                    objectName: "companionGeminiModel"
+                    Layout.fillWidth: true
+                    readonly property var values: ["gemini-3.8-live", "gemini-3.1-flash-live-preview"]
+                    model: ["3.8 Live (smarter)", "3.1 Flash Live (faster)"]
+                    currentIndex: Math.max(0, values.indexOf(geminiChoices.live.model || "gemini-3.8-live"))
+                    Accessible.name: "Gemini model"
+                    onActivated: index => geminiChoices.save("model", values[index])
+                }
+                ComboBox {
+                    objectName: "companionGeminiVoice"
+                    Layout.fillWidth: true
+                    readonly property var values: ["Charon", "Schedar", "Iapetus", "Algenib", "Orus", "Umbriel", "Sulafat", "Achernar", "Kore", "Aoede", "Puck", "Fenrir"]
+                    model: ["Charon · calm", "Schedar · even", "Iapetus · clear", "Algenib · gravelly", "Orus · firm", "Umbriel · easy-going", "Sulafat · warm", "Achernar · soft", "Kore · firm", "Aoede · breezy", "Puck · upbeat", "Fenrir · excitable"]
+                    currentIndex: Math.max(0, values.indexOf(geminiChoices.live.voice || "Charon"))
+                    Accessible.name: "Gemini voice"
+                    onActivated: index => geminiChoices.save("voice", values[index])
+                }
+            }
+            RowLayout {
                 Text { text: "Setup"; color: "#c7fff0"; font.pixelSize: 14 }
                 ComboBox {
                     id: setupPreset

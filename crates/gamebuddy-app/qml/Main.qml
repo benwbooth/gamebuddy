@@ -37,6 +37,9 @@ ApplicationWindow {
     // Switching backends from the companion starts each one fresh.
     onGeminiChosenChanged: { geminiFallback = false; liveVoice.failed = false }
     onRealtimeEnabledChanged: if (realtimeEnabled) realtimeVoice.failed = false
+    // A new Gemini voice or model takes effect by reconnecting the session.
+    readonly property string geminiVoiceChoice: JSON.stringify(JSON.parse(buddy.settings_json).live_voice || {})
+    onGeminiVoiceChoiceChanged: if (liveVoice.started) { liveVoice.shutdown("Switching Gemini voice…"); liveVoice.update() }
     // Either live backend owns listening and speech; local audio stays quiet.
     readonly property bool liveVoiceEnabled: realtimeEnabled || geminiEnabled
     property bool duckGameAudio: JSON.parse(buddy.settings_json).duck_game_audio !== false

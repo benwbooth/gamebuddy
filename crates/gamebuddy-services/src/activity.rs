@@ -156,16 +156,9 @@ pub fn prepare(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Res
             ids.push(id.to_owned());
         }
     }
-    for id in nav["spatial"]["observation"]["related_step_ids"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        if !ids.iter().any(|i| i == id) {
-            ids.push(id.to_owned());
-        }
-    }
+    // Only the route's current and next actions are candidates. Steps that
+    // merely share scenery (repeated visits, similar later areas) once let
+    // look-alike frames complete a later chapter and moved the whole plan.
     let mut actions = vec![];
     for id in ids {
         for step in &guide.steps {
