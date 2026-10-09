@@ -111,6 +111,10 @@ WebEngineView {
         runningTools++; workPending = true
         gemini.call_tool(session.data_dir || "", call.id, call.name, JSON.stringify(call.args || {}))
     }
+    function attachStill() {
+        const serialized = gemini.latest_frame(session.data_dir || "", 0)
+        if (serialized.length) runJavaScript("gamebuddyGemini.still(" + JSON.stringify(JSON.parse(serialized).jpeg) + ")")
+    }
     // The newest captured frame, so Gemini sees what the player sees now.
     function sendFrame() {
         if (!connected) return
@@ -166,10 +170,7 @@ WebEngineView {
             panel.workPending = panel.runningTools > 0
             if (!panel.started) return
             // Tool results carry no images; attach the current screen itself.
-            if (["get_game_screen", "get_game_context"].includes(event.name)) {
-                const serialized = gemini.latest_frame(panel.session.data_dir || "", 0)
-                if (serialized.length) panel.runJavaScript("gamebuddyGemini.still(" + JSON.stringify(JSON.parse(serialized).jpeg) + ")")
-            }
+            if (["get_game_screen", "get_game_context"].includes(event.name)) panel.attachStill()
             panel.runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(event.id) + "," + JSON.stringify(event.response) + ")")
             // Published actions update the Now card, outline and arrow.
             panel.buddy.poll_widgets()
@@ -195,14 +196,21 @@ WebEngineView {
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
         if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final"].includes(event.type))
-            gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args} : v))
+            gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args}
+                // How old the newest frame Gemini had was when the player spoke.
+                : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
         if (event.type === "ready") { connected = true; updateStatus(); sendFrame() }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }
         else if (event.type === "quota") { fail("Gemini voice is out of tokens"); panel.outOfTokens("Out of tokens: Gemini has no tokens or quota left. " + (v || "")); panel.unavailable("") }
         else if (event.type === "microphone-error") { if (voice.active) voice.toggle_listening(); status = "Microphone: " + v }
         else if (event.type === "capture") capturing = v
-        else if (event.type === "input-text") { inputAt = Date.now(); userSpeaking = true }
+        else if (event.type === "input-text") {
+            // A fresh full-quality still with every question, so answers
+            // about the screen use what is there now.
+            if (!userSpeaking) attachStill()
+            inputAt = Date.now(); userSpeaking = true
+        }
         else if (event.type === "input-final") { userSpeaking = false; gemini.record(session.data_dir || "", session.game, "user", v); panel.transcript(v) }
         else if (event.type === "caption") { captionText = v; captionStreaming = true }
         else if (event.type === "output-final") {
