@@ -536,7 +536,27 @@ ApplicationWindow {
                                         height: width / (sourceRect.height > 0 ? sourceRect.width / sourceRect.height : 1.7778)
                                         visible: replay.source.toString().length > 0
                                     }
-                                    Image { anchors.fill: parent; fillMode: Image.PreserveAspectFit; source: !capture.active && !replay.source.toString().length && root.session.frame_url ? root.session.frame_url + "?v=" + (root.session.estimate ? root.session.estimate.observed_at_ms : 0) : "" }
+                                    // Exactly what the AI sees: the newest cropped capture,
+                                    // refreshed every second.
+                                    Image {
+                                        id: seenFrame
+                                        property double capturedAt: 0
+                                        property string jpeg: ""
+                                        anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false
+                                        visible: !capture.active && !replay.source.toString().length
+                                        source: jpeg.length ? "data:image/jpeg;base64," + jpeg : (root.session.frame_url || "")
+                                        GeminiVoice { id: seenFrameSource }
+                                        Timer {
+                                            interval: 1000; repeat: true; triggeredOnStart: true
+                                            running: seenFrame.visible && root.visible && !!root.session.data_dir
+                                            onTriggered: {
+                                                const serialized = seenFrameSource.latest_frame(root.session.data_dir, seenFrame.capturedAt)
+                                                if (!serialized.length) return
+                                                const frame = JSON.parse(serialized)
+                                                seenFrame.capturedAt = frame.at; seenFrame.jpeg = frame.jpeg
+                                            }
+                                        }
+                                    }
                                     Column {
                                         anchors.centerIn: parent; spacing: 14
                                         visible: !capture.active && !replay.source.toString().length && !root.session.frame_url

@@ -256,17 +256,17 @@
         body.classList.add('seen-screen');
         const picker=document.createElement('select'),img=document.createElement('img'),caption=text('small',''),empty=text('div','','seen-empty');
         picker.setAttribute('aria-label','Screenshot reader');
-        for(const [value,label] of [['latest','Most recently seen'],['assistant','Sent for answer'],['observer','Screen watcher']]){const option=text('option',label);option.value=value;picker.append(option)}
+        for(const [value,label] of [['latest','Most recently seen'],['live','Sent to live voice'],['assistant','Sent for answer'],['observer','Screen watcher']]){const option=text('option',label);option.value=value;picker.append(option)}
         img.alt='Exact game screenshot shared with GameBuddy';body.append(picker,img,empty,caption);
         let latest={};
         node.refreshScreen=seen=>{
           latest=seen||{};
-          const readers=['assistant','observer'].filter(r=>latest[r]?.image_id);
+          const readers=['live','assistant','observer'].filter(r=>latest[r]?.image_id);
           const reader=picker.value==='latest'?readers.sort((a,b)=>(latest[b].shared_at_ms||0)-(latest[a].shared_at_ms||0))[0]:picker.value;
           const frame=latest[reader],id=frame?.image_id;
           img.hidden=!id;empty.hidden=!!id;caption.hidden=!id;
-          if(img.dataset.imageId!==(id||'')){img.dataset.imageId=id||'';img.removeAttribute('src');if(id)queueMicrotask(()=>console.info('GAMEBUDDY_MAP_REQUEST '+id));}
-          const label=reader==='assistant'?'Sent for answer':'Analyzed by screen watcher';
+          if(img.dataset.imageId!==(id||'')){const sameReader=id&&img.dataset.reader===reader;img.dataset.imageId=id||'';img.dataset.reader=reader||'';if(!sameReader)img.removeAttribute('src');if(id)queueMicrotask(()=>console.info('GAMEBUDDY_MAP_REQUEST '+id));}
+          const label=reader==='live'?'Sent to live voice':reader==='assistant'?'Sent for answer':'Analyzed by screen watcher';
           caption.dataset.capturedAt=frame?.captured_at_ms||'';caption.dataset.label=label;
           empty.textContent=latest.status==='paused'?'Screen watching is paused.':latest.status==='unavailable'?'Launch or share a game to see its screenshot.':'Waiting for a screenshot to be shared with GameBuddy.';
           updateSeenAge(caption);

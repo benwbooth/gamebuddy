@@ -198,10 +198,15 @@ impl ffi::GeminiVoice {
     }
     /// The current game frame as base64 JPEG when it is newer than after_ms.
     pub fn latest_frame(&self, directory: QString, after_ms: f64) -> QString {
-        let frame = Store::open(directory.to_string())
-            .ok()
-            .and_then(|store| gamebuddy_services::screen::snapshot(&store).ok())
+        let store = Store::open(directory.to_string()).ok();
+        let frame = store
+            .as_ref()
+            .and_then(|store| gamebuddy_services::screen::snapshot(store).ok())
             .filter(|s| s.captured_at_ms as f64 > after_ms);
+        // The screenshot widget shows exactly what the live voice was sent.
+        if let (Some(store), Some(frame)) = (&store, &frame) {
+            let _ = gamebuddy_services::screen::seen::record(store, frame, "live");
+        }
         QString::from(
             frame
                 .map(|s| json!({"at":s.captured_at_ms,"jpeg":s.jpeg}).to_string())

@@ -27,7 +27,7 @@ pub fn record(store: &Store, snapshot: &Snapshot, reader: &str) -> Result<()> {
     static WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = WRITES.lock().unwrap_or_else(|error| error.into_inner());
     anyhow::ensure!(
-        matches!(reader, "assistant" | "observer"),
+        matches!(reader, "assistant" | "observer" | "live"),
         "Unknown screen reader"
     );
     let key = format!("seen-screen:{reader}");
@@ -69,7 +69,7 @@ pub fn record(store: &Store, snapshot: &Snapshot, reader: &str) -> Result<()> {
 
 pub fn context(store: &Store, screen: &Value) -> Result<Value> {
     let mut result = json!({"status":screen["status"]});
-    for reader in ["assistant", "observer"] {
+    for reader in ["assistant", "observer", "live"] {
         let Some(seen) = store.get::<Seen>(&format!("seen-screen:{reader}"))? else {
             continue;
         };
@@ -90,7 +90,7 @@ pub fn context(store: &Store, screen: &Value) -> Result<Value> {
 /// exact image identity through the existing native image bridge.
 pub fn image(store: &Store, id: &str) -> Result<String> {
     let current = context(store, &super::status(store)?)?;
-    for reader in ["assistant", "observer"] {
+    for reader in ["assistant", "observer", "live"] {
         if current[reader]["image_id"] == id {
             let seen: Seen = store
                 .get(&format!("seen-screen:{reader}"))?
