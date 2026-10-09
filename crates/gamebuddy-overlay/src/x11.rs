@@ -1,7 +1,7 @@
 //! Gamescope's supported Steam overlay properties on its private Xwayland.
 //! No desktop-global hooks and no injection into the game's graphics process.
 use anyhow::{Context, Result, ensure};
-use image::{Rgb, RgbImage};
+use image::{ImageEncoder, Rgb, RgbImage};
 use std::path::Path;
 use x11rb::{
     connection::Connection,
@@ -339,8 +339,16 @@ pub fn capture_game(pid: u32, output: &Path) -> Result<Window> {
         pixels.data.len() >= stride * usize::from(geo.height),
         "Truncated X image"
     );
-    let mut image = RgbImage::new(u32::from(geo.width), u32::from(geo.height));
+    // Every consumer works at or below 1280 px wide; an ultrawide 5120 px
+    // surface converted and PNG-compressed at full size cost most of a second
+    // per frame. Keep every Nth pixel up to 2560 px wide.
+    let step = u32::from(geo.width).div_ceil(CAPTURE_MAX_WIDTH).max(1);
+    let mut image = RgbImage::new(
+        u32::from(geo.width).div_ceil(step),
+        u32::from(geo.height).div_ceil(step),
+    );
     for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let (x, y) = (x * step, y * step);
         let offset = y as usize * stride + x as usize * 4;
         let bytes = pixels.data[offset..offset + 4].try_into()?;
         let value = if setup.image_byte_order == ImageOrder::LSB_FIRST {
@@ -357,9 +365,21 @@ pub fn capture_game(pid: u32, output: &Path) -> Result<Window> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    image.save(output)?;
+    let file = std::io::BufWriter::new(std::fs::File::create(output)?);
+    image::codecs::png::PngEncoder::new_with_quality(
+        file,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Sub,
+    )
+    .write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgb8,
+    )?;
     Ok(window)
 }
+const CAPTURE_MAX_WIDTH: u32 = 2560;
 fn channel(pixel: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;

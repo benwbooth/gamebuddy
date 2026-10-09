@@ -888,13 +888,22 @@ impl ffi::Buddy {
                     },
                     captured_at,
                 )?;
+                let (capture_ms, publish_ms) = (
+                    captured_done.saturating_sub(captured_at),
+                    services::screen::now_ms().saturating_sub(captured_done),
+                );
                 if std::env::args().any(|a| a == "--ui-trace") {
-                    eprintln!(
-                        "GAMEBUDDY_CAPTURE capture_ms={} publish_ms={}",
-                        captured_done.saturating_sub(captured_at),
-                        services::screen::now_ms().saturating_sub(captured_done)
-                    );
+                    eprintln!("GAMEBUDDY_CAPTURE capture_ms={capture_ms} publish_ms={publish_ms}");
                 }
+                // A short history for diagnosing screen lag after a session.
+                let mut timing: Vec<serde_json::Value> =
+                    store.get("capture-timing")?.unwrap_or_default();
+                timing.push(
+                    json!({"at":captured_at,"capture_ms":capture_ms,"publish_ms":publish_ms}),
+                );
+                let excess = timing.len().saturating_sub(300);
+                timing.drain(..excess);
+                store.put("capture-timing", &timing)?;
                 if let Ok(snapshot) = services::screen::snapshot(&store) {
                     services::fast_perception::schedule(
                         &store,

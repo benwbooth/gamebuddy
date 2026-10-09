@@ -241,7 +241,7 @@ WebEngineView {
     onJavaScriptConsoleMessage: (level,message,line,source) => {
         if(!message.startsWith("GAMEBUDDY_VOICE "))return
         const event=JSON.parse(message.slice(16))
-        if(["capture","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-pending"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
+        if(["capture","microphone-error","input-active","output-active","reply-pending","cue-timeout","connection","ready","work-pending"].includes(event.type))transport.trace_event(event.type,JSON.stringify(event.value))
         if(trace && !["input-pcm","input-text","input-final","output-active","offer"].includes(event.type))console.warn("GAMEBUDDY_VOICE_EVENT "+JSON.stringify(event))
         if(event.type==="capture"){capturing=event.value;if(!capturing){userSpeaking=false;detectedSpeech=false;transport.reset_speech();runJavaScript("gamebuddyVoice.playerSpeech(false)")};return}
         if(!started)return
@@ -308,6 +308,7 @@ WebEngineView {
     onEnabledBackendChanged: update()
     onSpokenRepliesChanged: { if(spokenReplies){failed=false;proactivePaused=false};if(loaded)runJavaScript("gamebuddyVoice.muteOutput("+(!spokenReplies)+")");update() }
     onCapturingChanged: updateStatus()
+    Connections { target: panel.voice; function onStatusChanged() { if(panel.started)transport.trace_event("mic-status",JSON.stringify(panel.voice.status)) } }
     Connections { target: panel.voice; function onActiveChanged(){
         if(panel.voice.active){panel.failed=false;panel.proactivePaused=false}
         const wasStarted=panel.started
