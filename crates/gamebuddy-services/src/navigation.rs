@@ -929,6 +929,31 @@ pub fn context(
             "instruction":"Follow these authored steps in order. Later steps are previews, not eligible immediate actions. Preserve required pickups and return-visit identity. Only confirmed progress, explicit current task reports, or supported optional/conditional bypasses change this sequence. This is objective order, not a verified physical path."})
     });
     let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    // Away from the route: the Now card and every voice say so first.
+    if let Some(off) = value["off_route"].as_object().cloned()
+        && value["guidance"]["now"].is_object()
+    {
+        let note = format!(
+            "You're back {} (where \"{}\" happens in the walkthrough). Head back toward: {}. ",
+            off.get("area")
+                .and_then(Value::as_str)
+                .filter(|a| !a.is_empty())
+                .map(|a| format!("in {a}"))
+                .unwrap_or_else(|| "in an earlier area".into()),
+            off.get("seen_step")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            off.get("route_step")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
+        let instructions = value["guidance"]["now"]["instructions"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        value["guidance"]["now"]["instructions"] = json!(format!("{note}Then: {instructions}"));
+        value["guidance"]["off_route"] = json!(true);
+    }
     if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
         value["guidance"]["warning"] = json!(
             hazards::readiness(guide, progress, &advice, outcome_model, &outcome_view)
