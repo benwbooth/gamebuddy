@@ -559,6 +559,39 @@ impl Store {
     }
     /// Commit a player location and its task cursor together. Incrementing the
     /// epoch rejects any screen comparison that began before this report.
+    /// The live map match placed the player further along the route.
+    pub(crate) fn observed_arrival(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        step: &str,
+        passed: &[String],
+        map: &str,
+    ) -> Result<Progress> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut progress = self.progress(guide)?;
+        ensure!(progress.epoch == epoch, "Game progress changed");
+        progress.current_step = Some(step.into());
+        progress.passed.extend(passed.iter().cloned());
+        progress.epoch += 1;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        tx.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'observed_arrival',?2)",
+            params![
+                guide.id,
+                serde_json::json!({"step_id":step,"passed":passed,"map":map,"progress":progress})
+                    .to_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(progress)
+    }
     pub(crate) fn report_location(
         &self,
         guide: &Guide,

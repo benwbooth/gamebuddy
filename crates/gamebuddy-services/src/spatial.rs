@@ -1557,6 +1557,20 @@ pub fn observe(
         json!(screen::now_ms().saturating_sub(snapshot.captured_at_ms));
     store.put(&format!("world-observation:{}", guide.id), &result)?;
     store.put(&format!("world-error:{}", guide.id), &String::new())?;
+    // Keep the walkthrough position on where the screen shows the player.
+    if result["tracker"]["status"] == "tracked"
+        && let Err(error) = crate::navigation::follow::observed(
+            store,
+            guide,
+            progress.epoch,
+            &crate::navigation::follow::video_matches(&result),
+            crate::navigation::follow::map_title(store, guide, &result["map_registration"])
+                .as_deref(),
+            snapshot.captured_at_ms,
+        )
+    {
+        eprintln!("Route follow: {error:#}");
+    }
     ground_observation(
         store,
         guide,

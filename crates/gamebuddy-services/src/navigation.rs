@@ -19,6 +19,7 @@ use std::{
 
 pub mod advice;
 mod direction;
+pub mod follow;
 pub mod hazards;
 pub mod placement;
 pub mod tracking;
@@ -927,7 +928,7 @@ pub fn context(
         json!({"next_step_id":now.id,"steps":trace.step_ids.iter().filter_map(|id| guide.step(id)).map(|s| json!({"id":s.id,"title":s.title,"anchors":s.anchors})).collect::<Vec<_>>(),"stop":trace.stop,"choices":trace.choices,
             "instruction":"Follow these authored steps in order. Later steps are previews, not eligible immediate actions. Preserve required pickups and return-visit identity. Only confirmed progress, explicit current task reports, or supported optional/conditional bypasses change this sequence. This is objective order, not a verified physical path."})
     });
-    let mut value = json!({"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
     if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
         value["guidance"]["warning"] = json!(
             hazards::readiness(guide, progress, &advice, outcome_model, &outcome_view)
