@@ -304,6 +304,25 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
                 .any(|s| s.parent_id.as_deref() == Some(&action.step_id)),
         "Choose an enabled player action, not a chapter"
     );
+    // Away from the route: the Now card already leads the player back along
+    // the walkthrough's return path. Accept those steps without changing
+    // progress (they were done before); refuse steps for elsewhere.
+    if let Some(off) = super::follow::off_route(store, guide)? {
+        let path = super::follow::return_path(guide, &off);
+        ensure!(
+            path.contains(&action.step_id),
+            "The screen shows the player back in {} (where \"{}\" happens), away from that step. Publish a step from guidance.return_path to lead them back from where they are.",
+            if off.map_title.is_empty() {
+                "an earlier area"
+            } else {
+                &off.map_title
+            },
+            off.seen_step_title
+        );
+        return Ok(
+            json!({"accepted":true,"return_path":true,"step_id":action.step_id,"instruction":"This step is on the way back to the saved route; the Now card shows the return path. Tell the player."}),
+        );
+    }
     let progress = store.progress(guide)?;
     ensure!(
         progress.epoch == action.epoch

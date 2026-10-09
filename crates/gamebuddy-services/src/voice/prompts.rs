@@ -133,6 +133,16 @@ pub fn game_briefing(store: &crate::Store) -> anyhow::Result<String> {
             gamebuddy_core::route::authored_route(&guide, &progress, &view, start, 40).step_ids
         })
         .unwrap_or_default();
+    // After a death or detour the screen shows the player behind the saved
+    // step; brief the walkthrough's way back from there instead.
+    let off = crate::navigation::follow::off_route(store, &guide)?;
+    let ahead: Vec<String> = match &off {
+        Some(off) => crate::navigation::follow::return_path(&guide, off)
+            .into_iter()
+            .chain(ahead)
+            .collect(),
+        None => ahead,
+    };
     let route: Vec<_> = ahead
         .iter()
         .filter_map(|id| guide.step(id))
@@ -173,7 +183,8 @@ pub fn game_briefing(store: &crate::Store) -> anyhow::Result<String> {
         .collect();
     let journal = crate::journal::summary(store, &guide).unwrap_or_default();
     Ok(format!(
-        "Walkthrough route from the player's saved position (source reference, in order):\n{}\n\nEvery walkthrough mention of keys, doors and required items (use this to warn about requirements before the player needs them, especially after a death or a return to town):\n{}\n\nRun journal (what has happened in this run): {}\n",
+        "{}Walkthrough route from where the player is (source reference, in order):\n{}\n\nEvery walkthrough mention of keys, doors and required items (use this to warn about requirements before the player needs them, especially after a death or a return to town):\n{}\n\nRun journal (what has happened in this run): {}\n",
+        off.map(|o| format!("The screen shows the player back in {} (where \"{}\" happens), behind the saved step \"{}\"; the route below starts with the way back.\n", if o.map_title.is_empty() { "an earlier area".into() } else { o.map_title }, o.seen_step_title, o.route_step_title)).unwrap_or_default(),
         route.join("\n"),
         requirements.join("\n"),
         serde_json::to_string(&journal)?
@@ -184,7 +195,7 @@ const GEMINI_VOICE: &str = r#"You are GameBuddy: a quiet companion playing along
 
 Tone comes first: speak slowly and evenly at a low, steady pitch, like a calm, slightly dry friend half-watching the game. Plain and matter-of-fact. No enthusiasm, excitement or cheerleading: never use exclamations, "awesome", "great job", "you've got this", "ouch", hype words, or eager questions like "Ready for a rematch?" or "Are you heading there now?". Do not react emotionally to deaths, hits or wins; acknowledge them in a few flat words or not at all. Keep replies short and natural, not a checklist."#;
 
-const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For any question about what to do or where to go, call get_game_context first, follow its navigation.authored_route, publish the step with set_next_action (with screen_direction for movement, which drives the on-screen arrow), and then tell the player the destination and which way to head. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
+const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For any question about what to do or where to go, call get_game_context first and give navigation.guidance.now: GameBuddy has already matched the screen to the walkthrough, and when guidance.off_route is true, guidance.now and guidance.return_path lead the player back from where they really are. Never substitute an older saved step. Then follow its navigation.authored_route, publish the step with set_next_action (with screen_direction for movement, which drives the on-screen arrow), and then tell the player the destination and which way to head. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
 
 You are watching continuously, like a friend on the couch who knows this game. Work out where the player is from the frames, not from saved advice; if the screen shows a different area than the route position, report it as described below before advising. Anticipate requirements: when the player dies, respawns, returns to a town or heads for a door, check the requirements list above and say what they need first (for example a key to buy before leaving town). Keep the run memory: when you see an item gained or used, a key consumed, a death, a boss defeated or a new area reached, call record_journal with a one-line note (no announcement needed).
 

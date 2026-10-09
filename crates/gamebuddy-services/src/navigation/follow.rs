@@ -78,6 +78,21 @@ fn title(atlas: &Atlas, map: &str) -> String {
         .unwrap_or_else(|| map.to_owned())
 }
 
+/// The walkthrough's own path from the step the screen shows back to the
+/// route step: what a friend would walk the player through after a death.
+pub fn return_path(guide: &Guide, off: &OffRoute) -> Vec<String> {
+    if off.seen_step_id.is_empty() {
+        return vec![];
+    }
+    let fresh = gamebuddy_core::Progress::default();
+    let view = gamebuddy_core::outcomes::OutcomeModel::default().view(guide, &fresh);
+    gamebuddy_core::route::authored_route(guide, &fresh, &view, &off.seen_step_id, 60)
+        .step_ids
+        .into_iter()
+        .take_while(|id| *id != off.route_step_id)
+        .collect()
+}
+
 pub fn off_route(store: &Store, guide: &Guide) -> Result<Option<OffRoute>> {
     Ok(store
         .get::<Option<OffRoute>>(&format!("off-route:{}", guide.id))?
@@ -272,6 +287,11 @@ mod tests {
         assert_eq!(off["kind"], "off_route");
         assert_eq!(store.progress(&guide)?.current_step, progress.current_step);
         assert_eq!(off_route(&store, &guide)?.unwrap().seen_step_title, "Town");
+        let path = return_path(&guide, &off_route(&store, &guide)?.unwrap());
+        assert_eq!(
+            path,
+            vec![guide.steps[0].id.clone(), guide.steps[1].id.clone()]
+        );
         // Back at the route's moment clears it.
         observed(&store, &guide, epoch, &[(250_000, 0.8)], None, 11_000)?;
         assert!(off_route(&store, &guide)?.is_none());
