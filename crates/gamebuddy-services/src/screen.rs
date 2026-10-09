@@ -488,6 +488,16 @@ pub fn status(store: &Store) -> Result<Value> {
         .unwrap_or_else(|| json!({"status":"unavailable","screen_tool":"get_game_screen"})))
 }
 
+/// A coarse signature of the latest frame and whether it shows a different
+/// scene than `previous` (a room or screen change, not sprite animation).
+pub fn scene_change(store: &Store, previous: Option<&[u8]>) -> Result<(Vec<u8>, bool)> {
+    let snapshot = snapshot(store)?;
+    let image = image::load_from_memory(&STANDARD.decode(&snapshot.jpeg)?)?;
+    let signature = frame_signature(&image);
+    let changed = previous.is_none_or(|p| !same_scene(p, &signature));
+    Ok((signature, changed))
+}
+
 pub fn snapshot(store: &Store) -> Result<Snapshot> {
     snapshot_at(store, now_ms())
 }

@@ -14,6 +14,8 @@ WebEngineView {
     property bool enabledBackend: false
     property bool spokenReplies: true
     property bool automaticSession: false
+    // Unprompted remarks after scene changes (experimental, off by default).
+    property bool commentary: false
     property bool trace: false
     property bool loaded: false
     property bool started: false
@@ -137,9 +139,22 @@ WebEngineView {
         lastContextKey = key; lastContextAt = Date.now()
         runJavaScript("gamebuddyGemini.context(" + JSON.stringify(briefContext()) + ")")
     }
-    Timer { interval: 250; repeat: true; running: panel.started && panel.automaticSession; onTriggered: panel.narrate() }
+    // Gemini watches the feed and speaks up itself (watch checks below);
+    // route-based narration cues could describe a stale position.
     Timer { interval: 1000; repeat: true; running: panel.started; onTriggered: panel.shareContext() }
     Timer { interval: 1000; repeat: true; running: panel.connected; onTriggered: panel.sendFrame() }
+    // Like a friend watching along: after the scene changes, let Gemini say
+    // something if it matters. It stays silent otherwise.
+    property double lastWatchAt: 0
+    Timer {
+        interval: 2000; repeat: true; running: panel.commentary && panel.connected && panel.spokenReplies && !panel.proactivePaused
+        onTriggered: {
+            if (panel.assistantSpeaking || panel.userSpeaking || panel.workPending || Date.now() - panel.lastWatchAt < 6000) return
+            if (!gemini.scene_changed(panel.session.data_dir || "")) return
+            panel.lastWatchAt = Date.now()
+            panel.runJavaScript("gamebuddyGemini.watch()")
+        }
+    }
     Timer { interval: 250; repeat: true; running: panel.userSpeaking; onTriggered: if (Date.now() - panel.inputAt > 1500) panel.userSpeaking = false }
     GeminiVoice {
         id: gemini
@@ -173,7 +188,7 @@ WebEngineView {
         const event = JSON.parse(message.slice(17)), v = event.value
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
-        if (event.type === "ready") { connected = true; updateStatus(); sendFrame(); if (automaticSession) narrate() }
+        if (event.type === "ready") { connected = true; updateStatus(); sendFrame() }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }
         else if (event.type === "quota") { fail("Gemini voice is out of tokens"); panel.outOfTokens("Out of tokens: Gemini has no tokens or quota left. " + (v || "")); panel.unavailable("") }

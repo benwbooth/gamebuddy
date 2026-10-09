@@ -170,6 +170,7 @@ ApplicationWindow {
         parent: compositor.active ? overlayScene : companionWindow.contentItem
         buddy: root.buddyObject; voice: voice; session: root.session
         contextSource: realtimeVoice
+        commentary: companion.liveCommentary
         enabledBackend: root.geminiEnabled; spokenReplies: companion.spokenReplies
         automaticSession: compositor.active
         trace: root.appArguments.indexOf("--voice-trace") >= 0

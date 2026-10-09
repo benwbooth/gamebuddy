@@ -12,6 +12,7 @@ Item {
     property var startup: null
     property var preparation: null
     property string tokenAlert: ""
+    property bool liveCommentary: false
     signal tokenAlertDismissed()
     property bool expanded: false
     property bool recording: false
@@ -58,6 +59,7 @@ Item {
         property alias panelWidth: companion.expandedWidth
         property alias panelHeight: companion.expandedHeight
         property alias dialogueTextSize: companion.dialogueFontSize
+        property alias liveCommentary: companion.liveCommentary
     }
     function resizePanel(w, h) {
         expandedWidth = Math.max(Math.min(440, maximumPanelWidth), Math.min(w, maximumPanelWidth - (embedded ? x : 0)))
@@ -416,6 +418,12 @@ Item {
                 GbButton { text: companion.embedded ? (companion.syncActive ? "Pause watching" : "Resume watching") : "Share game"; Layout.fillWidth: true; onClicked: companion.captureRequested() }
                 GbButton { text: companion.spokenReplies ? "Voice on" : "Voice off"; onClicked: { companion.spokenReplies = !companion.spokenReplies; if (!companion.spokenReplies) companion.stopSpeaking() } }
                 GbButton { text: "Stop"; onClicked: companion.stopSpeaking() }
+            }
+            CheckBox {
+                objectName: "companionLiveCommentary"
+                text: "Live commentary (Gemini, experimental)"; font.pixelSize: 14
+                checked: companion.liveCommentary; onToggled: companion.liveCommentary = checked
+                palette.windowText: "#c7fff0"; palette.text: "#c7fff0"; palette.base: "#254c49"
             }
             RowLayout {
                 Text { text: "Setup"; color: "#c7fff0"; font.pixelSize: 14 }

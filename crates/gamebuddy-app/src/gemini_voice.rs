@@ -44,6 +44,8 @@ pub mod ffi {
         );
         #[qinvokable]
         fn latest_frame(self: &GeminiVoice, directory: QString, after_ms: f64) -> QString;
+        #[qinvokable]
+        fn scene_changed(self: Pin<&mut GeminiVoice>, directory: QString) -> bool;
     }
     impl cxx_qt::Threading for GeminiVoice {}
 }
@@ -57,6 +59,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 pub struct GeminiVoiceRust {
     page_server: Option<Arc<()>>,
     tool_event_json: QString,
+    scene: Option<Vec<u8>>,
 }
 
 fn live_settings(directory: &str) -> anyhow::Result<(Store, LiveVoice)> {
@@ -196,6 +199,21 @@ impl ffi::GeminiVoice {
                 .map(|s| json!({"at":s.captured_at_ms,"jpeg":s.jpeg}).to_string())
                 .unwrap_or_default(),
         )
+    }
+    /// True once per scene change since the last call (first call too).
+    pub fn scene_changed(mut self: Pin<&mut Self>, directory: QString) -> bool {
+        let Ok(store) = Store::open(directory.to_string()) else {
+            return false;
+        };
+        match gamebuddy_services::screen::scene_change(&store, self.rust().scene.as_deref()) {
+            Ok((signature, changed)) => {
+                if changed {
+                    self.as_mut().rust_mut().scene = Some(signature);
+                }
+                changed
+            }
+            Err(_) => false,
+        }
     }
     pub fn has_api_key(&self, directory: QString) -> bool {
         live_settings(&directory.to_string()).is_ok_and(|(_, live)| live.api_key().is_ok())

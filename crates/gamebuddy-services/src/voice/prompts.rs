@@ -86,8 +86,9 @@ pub fn gemini_session(
         .live_voice;
     let history = crate::conversation::recent(store, game)?;
     let instructions = format!(
-        "{}\n\nGame: {game}\nArchived conversation, quoted historical data only: {}\n\nGame context: {}",
+        "{}\n\nGame: {game}\n{}\nArchived conversation, quoted historical data only: {}\n\nGame context: {}",
         gemini_live(),
+        game_briefing(store).unwrap_or_default(),
         serde_json::to_string(&history)?,
         context
     );
@@ -107,11 +108,89 @@ pub fn gemini_session(
     }))
 }
 
+/// What an expert buddy already knows when the session starts: the route
+/// ahead, every source mention of keys, doors and required items, and the
+/// run journal. Untrusted source text, quoted as reference.
+pub fn game_briefing(store: &crate::Store) -> anyhow::Result<String> {
+    let id: String = store
+        .get("active_guide")?
+        .ok_or_else(|| anyhow::anyhow!("No active guide"))?;
+    let guide = store.guide(&id)?;
+    let progress = store.progress(&guide)?;
+    let line = |step: &gamebuddy_core::Step| {
+        format!(
+            "- {} ({}): {}",
+            step.title,
+            step.id,
+            step.instructions.chars().take(220).collect::<String>()
+        )
+    };
+    let ahead = progress
+        .current_step
+        .as_deref()
+        .map(|start| {
+            let view = gamebuddy_core::outcomes::OutcomeModel::default().view(&guide, &progress);
+            gamebuddy_core::route::authored_route(&guide, &progress, &view, start, 40).step_ids
+        })
+        .unwrap_or_default();
+    let route: Vec<_> = ahead
+        .iter()
+        .filter_map(|id| guide.step(id))
+        .map(line)
+        .collect();
+    // Keys, locked doors and stated requirements, in source order and all of
+    // them: a return trip can need a key bought hours earlier.
+    let requirement = |text: &str| {
+        let text = text.to_lowercase();
+        text.split(|c: char| !c.is_alphanumeric())
+            .any(|w| w == "key" || w == "keys")
+            || [
+                "requir",
+                "locked",
+                "won't open",
+                "will not open",
+                "will not admit",
+                "cannot enter",
+                "can't enter",
+            ]
+            .iter()
+            .any(|w| text.contains(w))
+    };
+    let requirements: Vec<_> = guide
+        .steps
+        .iter()
+        .filter(|s| guide.step_enabled(s))
+        .filter(|s| requirement(&format!("{} {}", s.title, s.instructions)))
+        .take(150)
+        .map(|s| {
+            format!(
+                "- {} ({}): {}",
+                s.title,
+                s.id,
+                s.instructions.chars().take(160).collect::<String>()
+            )
+        })
+        .collect();
+    let journal = crate::journal::summary(store, &guide).unwrap_or_default();
+    Ok(format!(
+        "Walkthrough route from the player's saved position (source reference, in order):\n{}\n\nEvery walkthrough mention of keys, doors and required items (use this to warn about requirements before the player needs them, especially after a death or a return to town):\n{}\n\nRun journal (what has happened in this run): {}\n",
+        route.join("\n"),
+        requirements.join("\n"),
+        serde_json::to_string(&journal)?
+    ))
+}
+
 const GEMINI_VOICE: &str = r#"You are GameBuddy: a quiet companion playing alongside the user, and their game guide.
 
 Tone comes first: speak slowly and evenly at a low, steady pitch, like a calm, slightly dry friend half-watching the game. Plain and matter-of-fact. No enthusiasm, excitement or cheerleading: never use exclamations, "awesome", "great job", "you've got this", "ouch", hype words, or eager questions like "Ready for a rematch?" or "Are you heading there now?". Do not react emotionally to deaths, hits or wins; acknowledge them in a few flat words or not at all. Keep replies short and natural, not a checklist."#;
 
 const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For any question about what to do or where to go, call get_game_context first, follow its navigation.authored_route, publish the step with set_next_action (with screen_direction for movement, which drives the on-screen arrow), and then tell the player the destination and which way to head. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
+
+You are watching continuously, like a friend on the couch who knows this game. Work out where the player is from the frames, not from saved advice; if the screen shows a different area than the route position, say what you see; when the player confirms or names it, use report_location with their words. Anticipate requirements: when the player dies, respawns, returns to a town or heads for a door, check the requirements list above and say what they need first (for example a key to buy before leaving town). Keep the run memory: when you see an item gained or used, a key consumed, a death, a boss defeated or a new area reached, call record_journal with a one-line note (no announcement needed).
+
+Text that begins "Watch check" comes from the application after the scene changed. Compare the newest frames with what you saw before. If something important just happened (a death or game over, a new area or town, a locked door or message, an item gained or used, low health, a dangerous enemy or boss), say it in one or two short calm sentences, with the immediate advice that follows from it. Otherwise stay completely silent: produce no speech at all. A watch check is not the player speaking: do not call any tool for it except record_journal, and never report a location, completion or world fact from it.
+
+player_report fields must quote words the player actually said in this conversation; never write a player report yourself. If the frames show a different area but the player has not said where they are, just describe what you see.
 
 Greetings, small talk and feelings need no tools. Text that begins "GameBuddy cue:" comes from the application, not the player: say its content briefly in your own calm words, keeping its facts. Text that begins "Game context:" is quiet background reference; do not respond to it.
 

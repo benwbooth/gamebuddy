@@ -123,6 +123,7 @@
     // Application cues are spoken; context is quiet background.
     cue(text){send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},
+    watch(){send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
     interrupt(){stopPlayback()},
     muteOutput(muted){outputMuted=muted;if(muted)stopPlayback()}
   };
