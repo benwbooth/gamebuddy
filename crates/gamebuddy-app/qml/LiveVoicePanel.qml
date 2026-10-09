@@ -165,6 +165,11 @@ WebEngineView {
             panel.runningTools = Math.max(0, panel.runningTools - 1)
             panel.workPending = panel.runningTools > 0
             if (!panel.started) return
+            // Tool results carry no images; attach the current screen itself.
+            if (["get_game_screen", "get_game_context"].includes(event.name)) {
+                const serialized = gemini.latest_frame(panel.session.data_dir || "", 0)
+                if (serialized.length) panel.runJavaScript("gamebuddyGemini.still(" + JSON.stringify(JSON.parse(serialized).jpeg) + ")")
+            }
             panel.runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(event.id) + "," + JSON.stringify(event.response) + ")")
             // Published actions update the Now card, outline and arrow.
             panel.buddy.poll_widgets()

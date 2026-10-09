@@ -178,7 +178,13 @@ impl ffi::GeminiVoice {
                     serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}));
                 let output =
                     gamebuddy_services::harness::call_tool_with_images(&store, &name, arguments)?;
-                Ok(output.value)
+                let mut value = output.value;
+                if name == "get_game_screen"
+                    && let Some(object) = value.as_object_mut()
+                {
+                    object.insert("image".into(), json!("The current screenshot is the image attached just before this result. Describe the screen and the player's position from that image."));
+                }
+                Ok(value)
             })();
             let response = match result {
                 Ok(Value::Object(object)) => Value::Object(object),
