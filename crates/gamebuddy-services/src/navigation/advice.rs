@@ -309,16 +309,22 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
     // progress (they were done before); refuse steps for elsewhere.
     if let Some(off) = super::follow::off_route(store, guide)? {
         let path = super::follow::return_path(store, guide, &off)?;
-        ensure!(
-            path.contains(&action.step_id),
-            "The screen shows the player back in {} (where \"{}\" happens), away from that step. Publish a step from guidance.return_path to lead them back from where they are.",
-            if off.map_title.is_empty() {
-                "an earlier area"
-            } else {
-                &off.map_title
-            },
-            off.seen_step_title
-        );
+        if !path.contains(&action.step_id) {
+            let next = path.first().and_then(|id| guide.step(id));
+            anyhow::bail!(
+                "Refused: the screen shows the player in {}, and that step is not on their way from here, so do not tell it to the player. {}",
+                if off.map_title.is_empty() {
+                    "an earlier area"
+                } else {
+                    &off.map_title
+                },
+                next.map(|s| format!(
+                    "The next step from here is \"{}\" ({}): {} Publish that one.",
+                    s.title, s.id, s.instructions
+                ))
+                .unwrap_or_else(|| "Publish a step from guidance.return_path.".into())
+            );
+        }
         return Ok(
             json!({"accepted":true,"return_path":true,"step_id":action.step_id,"instruction":"This step is on the way back to the saved route; the Now card shows the return path. Tell the player."}),
         );
