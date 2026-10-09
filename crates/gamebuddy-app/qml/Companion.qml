@@ -431,7 +431,7 @@ Item {
                 visible: JSON.parse(buddy.settings_json).speech === "gemini_live"
                 function save(field, value) {
                     const settings = JSON.parse(buddy.settings_json)
-                    settings.live_voice = Object.assign({model: "gemini-3.8-live", voice: "Charon", api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {})
+                    settings.live_voice = Object.assign({model: "gemini-3.8-live", voice: "Achird", api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {})
                     if (settings.live_voice[field] === value) return
                     settings.live_voice[field] = value
                     buddy.save_settings(JSON.stringify(settings))
@@ -449,9 +449,9 @@ Item {
                 ComboBox {
                     objectName: "companionGeminiVoice"
                     Layout.fillWidth: true
-                    readonly property var values: ["Charon", "Schedar", "Iapetus", "Algenib", "Orus", "Umbriel", "Sulafat", "Achernar", "Kore", "Aoede", "Puck", "Fenrir"]
-                    model: ["Charon · calm", "Schedar · even", "Iapetus · clear", "Algenib · gravelly", "Orus · firm", "Umbriel · easy-going", "Sulafat · warm", "Achernar · soft", "Kore · firm", "Aoede · breezy", "Puck · upbeat", "Fenrir · excitable"]
-                    currentIndex: Math.max(0, values.indexOf(geminiChoices.live.voice || "Charon"))
+                    readonly property var values: ["Achird", "Zubenelgenubi", "Charon", "Schedar", "Iapetus", "Algenib", "Orus", "Umbriel", "Sulafat", "Achernar", "Kore", "Aoede", "Puck", "Fenrir"]
+                    model: ["Achird · friendly", "Zubenelgenubi · casual", "Charon · calm", "Schedar · even", "Iapetus · clear", "Algenib · gravelly", "Orus · firm", "Umbriel · easy-going", "Sulafat · warm", "Achernar · soft", "Kore · firm", "Aoede · breezy", "Puck · upbeat", "Fenrir · excitable"]
+                    currentIndex: Math.max(0, values.indexOf(geminiChoices.live.voice || "Achird"))
                     Accessible.name: "Gemini voice"
                     onActivated: index => geminiChoices.save("voice", values[index])
                 }

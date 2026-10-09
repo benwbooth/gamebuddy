@@ -21,7 +21,7 @@ ScrollView {
         planning.load(settings.planning || (settings.reasoning.kind === "codex" ? Object.assign({},settings.reasoning,{model:"gpt-6.1-sol", reasoning_effort:"medium"}) : settings.reasoning))
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : settings.speech === "gemini_live" ? 2 : 0
         liveModel.text = settings.live_voice?.model || "gemini-3.8-live"
-        liveVoiceName.text = settings.live_voice?.voice || "Charon"
+        liveVoiceName.text = settings.live_voice?.voice || "Achird"
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         preparedVoice.enabled=!!settings.prepared_speech
         preparedVoice.checked=!!settings.prepared_speech && settings.prepared_speech.enabled!==false

@@ -74,7 +74,7 @@ impl Default for LiveVoice {
     fn default() -> Self {
         Self {
             model: "gemini-3.8-live".into(),
-            voice: "Charon".into(),
+            voice: "Achird".into(),
             api_key_env: "GEMINI_API_KEY".into(),
         }
     }
