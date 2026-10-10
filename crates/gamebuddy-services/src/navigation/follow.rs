@@ -335,13 +335,19 @@ mod tests {
         let fixed = observed(&store, &guide, progress.epoch, &road, None, 8_500)?.unwrap();
         assert_eq!(fixed["kind"], "corrected");
         let corrected = store.progress(&guide)?;
-        assert_eq!(corrected.current_step.as_deref(), Some(guide.steps[1].id.as_str()));
+        assert_eq!(
+            corrected.current_step.as_deref(),
+            Some(guide.steps[1].id.as_str())
+        );
         assert!(corrected.passed.is_empty());
         // Ahead again for the rest of the test.
         observed(&store, &guide, corrected.epoch, &cave, None, 8_600)?;
         observed(&store, &guide, corrected.epoch, &cave, None, 12_000)?;
         let progress = store.progress(&guide)?;
-        assert_eq!(progress.current_step.as_deref(), Some(guide.steps[2].id.as_str()));
+        assert_eq!(
+            progress.current_step.as_deref(),
+            Some(guide.steps[2].id.as_str())
+        );
         // Scenery seen at distant moments (a look-alike town) moves nothing.
         let alike = [(20_000, 0.8), (500_000, 0.78)];
         observed(&store, &guide, progress.epoch, &alike, None, 5_500)?;
