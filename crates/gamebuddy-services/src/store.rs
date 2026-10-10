@@ -592,6 +592,41 @@ impl Store {
         tx.commit()?;
         Ok(progress)
     }
+    /// The screen distinctly shows a step the route only passed (inferred,
+    /// never confirmed): the earlier jump was wrong, so move back there.
+    pub(crate) fn observed_return(
+        &self,
+        guide: &Guide,
+        epoch: u64,
+        step: &str,
+        unpass: &[String],
+    ) -> Result<Progress> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut progress = self.progress(guide)?;
+        ensure!(progress.epoch == epoch, "Game progress changed");
+        let from = progress.current_step.replace(step.into());
+        for id in unpass {
+            progress.passed.remove(id);
+        }
+        progress.epoch += 1;
+        self.put(
+            &format!("progress:{}:{}", guide.id, guide.revision),
+            &progress,
+        )?;
+        tx.execute(
+            "INSERT INTO events(guide_id,kind,body) VALUES(?1,'observed_return',?2)",
+            params![
+                guide.id,
+                serde_json::json!({"step_id":step,"from":from,"unpassed":unpass,"progress":progress})
+                    .to_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(progress)
+    }
     pub(crate) fn report_location(
         &self,
         guide: &Guide,

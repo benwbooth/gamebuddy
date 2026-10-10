@@ -249,6 +249,24 @@ pub fn observed(
                 .iter()
                 .any(|c| c.parent_id.as_deref() == Some(&s.id))
     });
+    // The route only passed that step on an inferred jump: the jump was
+    // wrong (look-alike scenery), so correct it rather than treat the player
+    // as having gone back.
+    if let Some(seen) = seen.filter(|s| progress.passed.contains(&s.id)) {
+        let from = start_ms(guide, &seen.id).unwrap_or(seen_ms);
+        let unpass: Vec<String> = progress
+            .passed
+            .iter()
+            .filter(|id| start_ms(guide, id).is_some_and(|ms| ms >= from))
+            .cloned()
+            .collect();
+        let progress = store.observed_return(guide, epoch, &seen.id, &unpass)?;
+        store.put(&off_key, &Option::<OffRoute>::None)?;
+        store.put(&candidate_key, &Candidate::default())?;
+        return Ok(Some(
+            json!({"kind":"corrected","step_id":seen.id,"unpassed":unpass,"epoch":progress.epoch}),
+        ));
+    }
     let off = OffRoute {
         seen_step_id: seen.map(|s| s.id.clone()).unwrap_or_default(),
         seen_step_title: seen.map(|s| s.title.clone()).unwrap_or_default(),
@@ -311,6 +329,19 @@ mod tests {
         assert_eq!(moved["step_id"], guide.steps[2].id.as_str());
         let progress = store.progress(&guide)?;
         assert!(progress.passed.contains(&guide.steps[1].id) && progress.completed.is_empty());
+        // Distinctly back at the step the jump passed: the jump was wrong.
+        let road = [(130_000, 0.8)];
+        observed(&store, &guide, progress.epoch, &road, None, 5_200)?;
+        let fixed = observed(&store, &guide, progress.epoch, &road, None, 8_500)?.unwrap();
+        assert_eq!(fixed["kind"], "corrected");
+        let corrected = store.progress(&guide)?;
+        assert_eq!(corrected.current_step.as_deref(), Some(guide.steps[1].id.as_str()));
+        assert!(corrected.passed.is_empty());
+        // Ahead again for the rest of the test.
+        observed(&store, &guide, corrected.epoch, &cave, None, 8_600)?;
+        observed(&store, &guide, corrected.epoch, &cave, None, 12_000)?;
+        let progress = store.progress(&guide)?;
+        assert_eq!(progress.current_step.as_deref(), Some(guide.steps[2].id.as_str()));
         // Scenery seen at distant moments (a look-alike town) moves nothing.
         let alike = [(20_000, 0.8), (500_000, 0.78)];
         observed(&store, &guide, progress.epoch, &alike, None, 5_500)?;
