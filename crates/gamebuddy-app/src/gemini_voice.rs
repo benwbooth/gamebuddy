@@ -50,6 +50,8 @@ pub mod ffi {
         fn note(self: &GeminiVoice, directory: QString, kind: QString, value: QString);
         #[qinvokable]
         fn player_said(self: &GeminiVoice, directory: QString, text: QString) -> QString;
+        #[qinvokable]
+        fn located_area(self: &GeminiVoice, directory: QString) -> QString;
     }
     impl cxx_qt::Threading for GeminiVoice {}
 }
@@ -268,6 +270,26 @@ impl ffi::GeminiVoice {
                 &guide,
                 &text.to_string(),
             )
+        })();
+        QString::from(result.ok().flatten().unwrap_or_default())
+    }
+    /// The player's area once this session has evidence for it (screen map
+    /// match, their report); empty while visual tracking is still starting.
+    pub fn located_area(&self, directory: QString) -> QString {
+        let result = (|| -> anyhow::Result<Option<String>> {
+            let store = Store::open(directory.to_string())?;
+            let Some(id) = store.get::<String>("active_guide")? else {
+                return Ok(None);
+            };
+            let guide = store.guide(&id)?;
+            let atlas = gamebuddy_services::navigation::atlas(&store, &guide)?;
+            let model = gamebuddy_services::outcomes::prepared(&store, &guide)?
+                .map(|p| p.model.clone())
+                .unwrap_or_default();
+            let graph = gamebuddy_core::planner::PlanGraph::build(&guide, &atlas, &model);
+            let (area, confirmed) =
+                gamebuddy_services::navigation::planning::locate(&store, &guide, &graph)?;
+            Ok(area.filter(|_| confirmed))
         })();
         QString::from(result.ok().flatten().unwrap_or_default())
     }

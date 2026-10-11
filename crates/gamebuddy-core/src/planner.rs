@@ -288,7 +288,15 @@ impl PlanGraph {
         // Crossings: where consecutive steps change area. The steps at the
         // boundary carry the crossing's requirements (the locked door).
         let mut crossings: Vec<Crossing> = vec![];
-        for pair in leaves.windows(2) {
+        // Facts some action uses up (a key spent on a door) have to be met
+        // again on every pass, so a locked door anywhere on the way through
+        // an area belongs to the crossing out of it.
+        let consumable: BTreeSet<&str> = model
+            .actions
+            .iter()
+            .flat_map(|r| r.invalidate_facts.iter().map(String::as_str))
+            .collect();
+        for (at, pair) in leaves.windows(2).enumerate() {
             let (Some(from), Some(to)) = (
                 areas.get(pair[0].id.as_str()),
                 areas.get(pair[1].id.as_str()),
@@ -302,6 +310,17 @@ impl PlanGraph {
             for leaf in pair {
                 if let Some(requires) = rule_for(&leaf.id).and_then(|r| r.requires.as_ref()) {
                     facts(requires, &mut needed);
+                }
+            }
+            for leaf in leaves[..=at]
+                .iter()
+                .rev()
+                .take_while(|l| areas.get(l.id.as_str()) == Some(from))
+            {
+                if let Some(requires) = rule_for(&leaf.id).and_then(|r| r.requires.as_ref()) {
+                    let mut run = BTreeSet::new();
+                    facts(requires, &mut run);
+                    needed.extend(run.into_iter().filter(|f| consumable.contains(f.as_str())));
                 }
             }
             // A door that uses up its key needs one on every pass; facts

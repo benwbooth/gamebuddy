@@ -38,6 +38,7 @@ WebEngineView {
     property string activeAdviceStep: ""
     property bool userSpeaking: false
     property bool greeted: false
+    property double greetSince: 0
     property string ownAnswer: ""
     readonly property bool conversationActive: started && (assistantSpeaking || workPending || userSpeaking)
     signal transcript(string text)
@@ -160,6 +161,19 @@ WebEngineView {
             panel.runJavaScript("gamebuddyGemini.watch()")
         }
     }
+    Timer {
+        id: greetTimer
+        interval: 1000; repeat: true
+        onTriggered: {
+            if (!panel.connected || panel.greeted) { stop(); return }
+            if (panel.userSpeaking || panel.assistantSpeaking || panel.workPending) { if (panel.userSpeaking) { panel.greeted = true; stop() } return }
+            const area = gemini.located_area(panel.session.data_dir || "")
+            if (!area.length && Date.now() - panel.greetSince < 30000) return
+            panel.greeted = true; stop()
+            gemini.note(panel.session.data_dir || "", "greeting", JSON.stringify({area: area, waited_ms: Date.now() - panel.greetSince}))
+            panel.runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next" + (area.length ? " (GameBuddy located them in " + area + " from the screen)." : "; GameBuddy could not locate them from the screen yet, so look at the newest frame yourself, and only ask where they are if you cannot tell.")) + ")")
+        }
+    }
     // Gemini sometimes goes silent after a tool result; prompt it to answer
     // rather than leave the player waiting.
     property int nudges: 0
@@ -232,11 +246,9 @@ WebEngineView {
                 : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
         if (event.type === "ready") {
             connected = true; updateStatus(); sendFrame()
-            // Say hello once per session, not after reconnects.
-            if (!greeted && spokenReplies && !proactivePaused) {
-                greeted = true
-                runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next, or ask where they are if plan.area_confirmed is false.") + ")")
-            }
+            // Say hello once per session, after visual tracking has located
+            // the player (or it gives up), not before.
+            if (!greeted && spokenReplies && !proactivePaused) { greetSince = Date.now(); greetTimer.start() }
         }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
         else if (event.type === "error") { fail("Gemini voice: " + v); panel.unavailable(v || "Gemini Live closed the session.") }

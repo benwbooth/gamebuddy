@@ -36,12 +36,25 @@ pub fn locate(store: &Store, guide: &Guide, graph: &PlanGraph) -> Result<(Option
         store.get(&format!("world-place-tracker:{}", guide.id))?,
         "estimated",
     );
+    // The live screen registered against an area map this session.
+    let mapped = store
+        .get::<Value>(&format!("world-observation:{}", guide.id))?
+        .filter(|o| session.is_empty() || o["tracker"]["session"] == session.as_str())
+        .filter(|o| {
+            o["map_registration"]["observed_at_ms"]
+                .as_u64()
+                .is_some_and(|at| crate::screen::now_ms().saturating_sub(at) < 120_000)
+        })
+        .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
+        .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
+        .map(|m| m.title.clone())
+        .filter(|t| !t.contains(" To "));
     let step = progress
         .current_step
         .as_deref()
         .and_then(|s| graph.area_of_step(s))
         .map(str::to_owned);
-    let evidence = reported.or(off).or(seen);
+    let evidence = reported.or(off).or(mapped).or(seen);
     let confirmed = evidence.is_some();
     Ok((evidence.or(step), confirmed))
 }
