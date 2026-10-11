@@ -77,6 +77,14 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             !label.is_empty() && label.len() <= 120,
             "Supply the player's exact area name in place_label when its place ID is unknown"
         );
+        ensure!(
+            ![
+                "town", "the town", "village", "shop", "store", "building", "inside", "outside",
+                "here"
+            ]
+            .contains(&label.to_lowercase().as_str()),
+            "place_label must name the area (for example the town's name), not a generic word; ask the player which town if unsure"
+        );
         // The area must come from the player's words or from the place the
         // live map match currently shows; never from the model's guess.
         let mapped_area = store
@@ -151,10 +159,21 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .find(|p| p.id == report.place_id)
             .map(|p| p.label.clone())
     });
-    let (arrival, passed) = match (&report.step_id, area.as_deref()) {
+    let (arrival, passed, unpass) = match (&report.step_id, area.as_deref()) {
         (None, Some(area)) => arrival(store, guide, &atlas, &progress, area)?
-            .map_or((None, vec![]), |(step, passed)| (Some(step), passed)),
-        _ => (None, vec![]),
+            .map_or((None, vec![], vec![]), |(step, passed, unpass)| {
+                (Some(step), passed, unpass)
+            }),
+        _ => (None, vec![], vec![]),
+    };
+    // Back to an area the route had jumped past: undo that jump first.
+    let (progress, epoch) = match arrival.as_deref() {
+        Some(step) if !unpass.is_empty() => {
+            let progress = store.observed_return(guide, report.epoch, step, &unpass)?;
+            let epoch = progress.epoch;
+            (progress, epoch)
+        }
+        _ => (progress, report.epoch),
     };
     let mut tracker = PlaceTracker::for_session(
         screen::status(store)?["session_id"]
@@ -180,7 +199,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
     }
     let progress = store.report_location(
         guide,
-        report.epoch,
+        epoch,
         tracker,
         &report.player_report,
         new_place,
@@ -202,6 +221,74 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
     )
 }
 
+/// The area the player says they are in ("I'm in Mascon", "we're back at
+/// Forepaw"), if the words name one of the walkthrough's area maps.
+pub fn spoken_area(atlas: &gamebuddy_core::Atlas, text: &str) -> Option<String> {
+    let words: Vec<String> = text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.replace('\u{2019}', "'"))
+        .collect();
+    let speaker = [
+        "i'm", "im", "i", "we're", "were", "we", "back", "still", "now",
+    ];
+    let mut areas: Vec<&str> = atlas
+        .maps
+        .iter()
+        .map(|m| m.title.as_str())
+        .filter(|t| !t.contains(" To "))
+        .collect();
+    // Prefer the longest name ("Tower Of Mist" over "Mist").
+    areas.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    for area in areas {
+        let name: Vec<String> = area
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        for at in 0..words.len().saturating_sub(name.len() - 1) {
+            if words[at..at + name.len()] != name[..] {
+                continue;
+            }
+            // "in/at [the] [town of] <area>" said about themselves just before.
+            let before = &words[at.saturating_sub(6)..at];
+            let preposition = before.iter().rposition(|w| w == "in" || w == "at");
+            if let Some(p) = preposition
+                && before[p + 1..]
+                    .iter()
+                    .all(|w| ["the", "town", "of"].contains(&w.as_str()))
+                && before[..p].iter().any(|w| speaker.contains(&w.as_str()))
+            {
+                return Some(area.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Record a location the player stated in speech, so the route follows
+/// their word even when the live model forgets to report it.
+pub fn report_spoken_location(store: &Store, guide: &Guide, text: &str) -> Result<Option<String>> {
+    let Some(area) = spoken_area(&atlas(store, guide)?, text) else {
+        return Ok(None);
+    };
+    let progress = store.progress(guide)?;
+    report_location(
+        store,
+        guide,
+        LocationReport {
+            place_id: String::new(),
+            place_label: Some(area.clone()),
+            step_id: None,
+            player_report: text.chars().take(1000).collect(),
+            expected_revision: guide.revision,
+            epoch: progress.epoch,
+        },
+    )?;
+    Ok(Some(area))
+}
+
 /// "I'm in Mascon" names an area, not a task. Move the route cursor to the
 /// first unfinished step ahead on the authored route that the source places
 /// in that area. Steps in between are not marked complete.
@@ -212,8 +299,12 @@ pub(crate) fn arrival_step(
     progress: &gamebuddy_core::Progress,
     area: &str,
 ) -> Result<Option<String>> {
-    Ok(arrival(store, guide, atlas, progress, area)?.map(|(step, _)| step))
+    Ok(arrival(store, guide, atlas, progress, area)?.map(|(step, ..)| step))
 }
+
+/// The arrival step, the route steps passed on the way there, and passed
+/// steps to undo when the route had jumped beyond the area.
+type Arrival = (String, Vec<String>, Vec<String>);
 
 /// The first step ahead in the area and the unfinished route steps the
 /// player passed on the way there.
@@ -223,7 +314,7 @@ fn arrival(
     atlas: &gamebuddy_core::Atlas,
     progress: &gamebuddy_core::Progress,
     area: &str,
-) -> Result<Option<(String, Vec<String>)>> {
+) -> Result<Option<Arrival>> {
     let area = area.trim().to_lowercase();
     let Some(start) = progress.current_step.as_deref() else {
         return Ok(None);
@@ -248,12 +339,38 @@ fn arrival(
         .view(guide, progress);
     let route =
         gamebuddy_core::route::authored_route(guide, progress, &view, start, guide.steps.len());
-    let Some(index) = route.step_ids.iter().position(|id| in_area(id)) else {
+    if let Some(index) = route.step_ids.iter().position(|id| in_area(id)) {
+        let mut steps = route.step_ids;
+        let passed = steps.drain(..index).collect();
+        return Ok(Some((steps.swap_remove(0), passed, vec![])));
+    }
+    // Not ahead: the route may have jumped past this area on a guess. Its
+    // first step there that was only passed (never confirmed) is where the
+    // player really is; everything passed from there on is undone.
+    let order = |id: &str| guide.steps.iter().position(|s| s.id == id);
+    let Some(back) = guide
+        .steps
+        .iter()
+        .filter(|s| progress.passed.contains(&s.id) && in_area(&s.id))
+        .filter(|s| {
+            !guide
+                .steps
+                .iter()
+                .any(|c| c.parent_id.as_deref() == Some(&s.id))
+        })
+        .map(|s| s.id.clone())
+        .next()
+    else {
         return Ok(None);
     };
-    let mut steps = route.step_ids;
-    let passed = steps.drain(..index).collect();
-    Ok(Some((steps.swap_remove(0), passed)))
+    let from = order(&back);
+    let unpass = progress
+        .passed
+        .iter()
+        .filter(|id| order(id) >= from)
+        .cloned()
+        .collect();
+    Ok(Some((back, vec![], unpass)))
 }
 
 /// Keep both the overlay and MCP on the same tracker. A screenshot observer can
@@ -354,6 +471,39 @@ mod tests {
     use super::*;
     use crate::harness::call_tool;
     use gamebuddy_core::{Atlas, MapAsset, Place, PlaceBinding, Progress};
+
+    #[test]
+    fn spoken_area_finds_where_the_player_says_they_are() {
+        let map = |title: &str| MapAsset {
+            id: title.into(),
+            title: title.into(),
+            url: String::new(),
+            source_url: String::new(),
+            credit: String::new(),
+            enabled: true,
+        };
+        let atlas = Atlas {
+            maps: ["Mascon", "Forepaw To Mascon", "Tower Of Mist", "Victim"]
+                .map(map)
+                .to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            spoken_area(&atlas, "I'm in Mascon, I need to get back").as_deref(),
+            Some("Mascon")
+        );
+        assert_eq!(
+            spoken_area(&atlas, "we\u{2019}re back in the town of Victim").as_deref(),
+            Some("Victim")
+        );
+        assert_eq!(
+            spoken_area(&atlas, "I am at Tower of Mist now").as_deref(),
+            Some("Tower Of Mist")
+        );
+        // Mentions that are not about where the player is.
+        assert_eq!(spoken_area(&atlas, "How much are potions in Mascon?"), None);
+        assert_eq!(spoken_area(&atlas, "Should I go to Victim next?"), None);
+    }
 
     #[test]
     fn an_unknown_area_report_does_not_guess_an_interior_or_task() -> Result<()> {

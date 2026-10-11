@@ -28,6 +28,8 @@
     if(m.setupComplete){ready=true;reconnects=0;emit('ready',true);return}
     if(m.sessionResumptionUpdate?.resumable&&m.sessionResumptionUpdate.newHandle)resumeHandle=m.sessionResumptionUpdate.newHandle;
     if(m.goAway){emit('trace','go-away '+(m.goAway.timeLeft||''));reconnect();return}
+    // The player's words reach GameBuddy before the tools they prompted.
+    if(m.toolCall&&inputText.trim()){emit('input-final',inputText.trim());inputText=''}
     if(m.toolCall){for(const call of m.toolCall.functionCalls||[]){pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,args:call.args||{}})}return}
     if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}return}
     const c=m.serverContent;if(!c)return;

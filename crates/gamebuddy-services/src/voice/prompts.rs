@@ -55,7 +55,10 @@ pub fn gemini_live() -> String {
 /// get_game_context trimmed for the live voice: what to say next and the
 /// ids its mutations need, without the full planning and progress dumps
 /// that slow every spoken reply.
-pub fn gemini_context(full: &serde_json::Value) -> serde_json::Value {
+pub fn gemini_context(
+    full: &serde_json::Value,
+    guide: Option<&gamebuddy_core::Guide>,
+) -> serde_json::Value {
     use serde_json::{Value, json};
     let step =
         |s: &Value| json!({"id":s["id"],"title":s["title"],"instructions":s["instructions"]});
@@ -84,6 +87,7 @@ pub fn gemini_context(full: &serde_json::Value) -> serde_json::Value {
             "route_step": guidance["route_step"],
             "return_path": list(&guidance["return_path"], 8, &brief),
         },
+        "big_picture": guide.and_then(|g| big_picture(g, guidance["now"]["id"].as_str()?)),
         "authored_route": full["navigation"]["authored_route"],
         "location": full["navigation"]["location"],
         "place": full["navigation"]["map"]["current_place"]["label"],
@@ -91,8 +95,54 @@ pub fn gemini_context(full: &serde_json::Value) -> serde_json::Value {
         "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),
         "world_facts": facts,
         "journal_recent": list(&full["journal"]["recent"], 5, &|e| e.clone()),
-        "instruction": "Compact live context. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
+        "instruction": "Compact live context. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
     })
+}
+
+/// The chapter and task around a step, and the next tasks after it: the
+/// overall direction a friend would describe before the next small action.
+fn big_picture(guide: &gamebuddy_core::Guide, step: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let mut chain = vec![guide.step(step)?];
+    while let Some(parent) = chain
+        .last()?
+        .parent_id
+        .as_deref()
+        .and_then(|p| guide.step(p))
+    {
+        chain.push(parent);
+    }
+    // Root chapter, its timed part, then the task this step belongs to.
+    chain.reverse();
+    let chapter = chain.first()?;
+    let task = chain.get(2).copied().unwrap_or(chain.last()?);
+    let depth = |s: &gamebuddy_core::Step| {
+        let mut depth = 0;
+        let mut at = s.parent_id.as_deref();
+        while let Some(id) = at {
+            depth += 1;
+            at = guide.step(id).and_then(|p| p.parent_id.as_deref());
+        }
+        depth
+    };
+    let task_depth = depth(task);
+    let root = |s: &gamebuddy_core::Step| {
+        let mut top = s;
+        while let Some(parent) = top.parent_id.as_deref().and_then(|p| guide.step(p)) {
+            top = parent;
+        }
+        top.title.clone()
+    };
+    let at = guide.steps.iter().position(|s| s.id == task.id)?;
+    let upcoming: Vec<_> = guide.steps[at + 1..]
+        .iter()
+        .filter(|s| depth(s) == task_depth)
+        .take(6)
+        .map(|s| json!({"title":s.title,"chapter":root(s),"optional":s.optional || s.title.starts_with("Optionally")}))
+        .collect();
+    Some(
+        json!({"chapter":chapter.title,"task":task.title,"task_summary":task.instructions.chars().take(300).collect::<String>(),"next_tasks":upcoming}),
+    )
 }
 
 /// GameBuddy's agent tools as Gemini function declarations. Long-running
@@ -240,7 +290,7 @@ const GEMINI_VOICE: &str = r#"You are GameBuddy: a quiet companion playing along
 
 Tone comes first: sound like a friend about the player's own age hanging out on the couch: relaxed, casual and conversational, at a natural pace and pitch, the way friends talk while gaming. Use everyday words and contractions ("yeah", "okay", "you'll want to"). Not a narrator, teacher, parent or announcer, and not hyped either: no exclamations, "awesome", "great job", "you've got this", hype words or eager questions like "Ready for a rematch?". A quick dry remark on a death or a win is fine; no big emotional reactions. Keep replies short and natural, not a checklist."#;
 
-const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For prices and shop stock, the screen comes first: when a shop menu or price is visible, read it from the newest still. Otherwise use a walkthrough price only when it names this same shop in this same town, since prices differ between towns; failing that, use Google Search (for example "Faxanadu Mascon shop prices") and say it is what guides list. If none of these settles it, say you are not sure rather than guessing. For any question about what to do or where to go, call get_game_context first and give navigation.guidance.now: GameBuddy has already matched the screen to the walkthrough, and when guidance.off_route is true, guidance.now and guidance.return_path lead the player back from where they really are. Never substitute an older saved step. Before giving a step that changes the world (push, open, raise, activate, unlock), look at the newest frame: if the change is visibly done already (water flowing, a door open, a ladder down), skip it and give the step after it. Then follow its navigation.authored_route, publish the step with set_next_action (with screen_direction for movement, which drives the on-screen arrow), and then tell the player the destination and which way to head. If set_next_action returns an error, never say the refused step to the player: follow what the error says and publish the step it names before speaking. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
+const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For prices and shop stock, the screen comes first: when a shop menu or price is visible, read it from the newest still. Otherwise use a walkthrough price only when it names this same shop in this same town, since prices differ between towns; failing that, use Google Search (for example "Faxanadu Mascon shop prices") and say it is what guides list. If none of these settles it, say you are not sure rather than guessing. For "what's the goal", "what's next" or "where do I go", lead with the overall direction from get_game_context's big_picture: the task in progress and the next task or two toward beating the game (for example "head back right through the caves to the misty-area shop and buy Death"). Then give the immediate step. Present optional detours as optional, never as the goal. For any question about what to do or where to go, call get_game_context first and give navigation.guidance.now: GameBuddy has already matched the screen to the walkthrough, and when guidance.off_route is true, guidance.now and guidance.return_path lead the player back from where they really are. Never substitute an older saved step. When the newest screen clearly shows guidance.now is already done (the purchase finished, the item already held, the door already open), record it with report_step_complete, player_report starting with "Screen: " and what you see, then get the next step instead of repeating it. Before giving a step that changes the world (push, open, raise, activate, unlock), look at the newest frame: if the change is visibly done already (water flowing, a door open, a ladder down), skip it and give the step after it. Then follow its navigation.authored_route, publish the step with set_next_action (with screen_direction for movement, which drives the on-screen arrow), and then tell the player the destination and which way to head. If set_next_action returns an error, never say the refused step to the player: follow what the error says and publish the step it names before speaking. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
 
 A still marked "Current game screen" arrives as the player starts speaking and before get_game_screen and get_game_context results; it is the screen right now and outranks older frames. For "what does it say", "where am I", "what do you see", "check again" or any question about text or positions on screen, read that newest still, and call get_game_screen when you have not received one since the screen last changed. Never claim there is no text or that you checked again without looking at it. Describe the player's position only from that newest image, relative to what is visible there (left or right of a landmark, above or below it). Answer such questions from get_game_screen alone: get_game_context describes the walkthrough route and saved progress, not where the player is standing. Never repeat a position from your earlier answers or from advice you gave, and if the player corrects you, look again rather than restating it.
 
@@ -248,7 +298,7 @@ You are watching continuously, like a friend on the couch who knows this game. W
 
 Text that begins "Watch check" comes from the application after the scene changed. Compare the newest frames with what you saw before. If something important just happened (a death or game over, a new area or town, a locked door or message, an item gained or used, low health, a dangerous enemy or boss), say it in one or two short calm sentences, with the immediate advice that follows from it. Otherwise stay completely silent: produce no speech at all. A watch check is not the player speaking: do not call any tool for it except record_journal, and never report a location, completion or world fact from it.
 
-player_report fields must quote words the player actually said, with one exception: when the newest frames clearly show the player in a different area than the route position (outside the town, in another town, in a named dungeon area), call report_location with place_label set to that area's name as the walkthrough calls it and player_report starting with "Screen: " followed by what you see. That moves the saved position forward so the next step and arrow match the screen. Never tell the player to do something in a place the frames show they have already left.
+When the player says where they are ("I'm in Mascon", "I'm back in town"), call report_location first, before get_game_context or any advice, with place_label set to the area's real name (a town such as "Mascon", or a named area), never a generic word like "town"; if you cannot tell which town from the screen or their words, ask. player_report fields must quote words the player actually said, with one exception: when the newest frames clearly show the player in a different area than the route position (outside the town, in another town, in a named dungeon area), call report_location with place_label set to that area's name as the walkthrough calls it and player_report starting with "Screen: " followed by what you see. That moves the saved position forward so the next step and arrow match the screen. Never tell the player to do something in a place the frames show they have already left.
 
 Greetings, small talk and feelings need no tools. Text that begins "GameBuddy cue:" comes from the application, not the player: say its content briefly in your own calm words, keeping its facts. Text that begins "Game context:" is quiet background reference; do not respond to it.
 

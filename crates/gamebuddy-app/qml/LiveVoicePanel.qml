@@ -234,7 +234,14 @@ WebEngineView {
             if (!userSpeaking) attachStill()
             inputAt = Date.now(); userSpeaking = true; quietWatch.stop(); nudges = 0
         }
-        else if (event.type === "input-final") { userSpeaking = false; gemini.record(session.data_dir || "", session.game, "user", v); panel.transcript(v) }
+        else if (event.type === "input-final") {
+            userSpeaking = false; gemini.record(session.data_dir || "", session.game, "user", v); panel.transcript(v)
+            const area = gemini.player_said(session.data_dir || "", v)
+            if (area.length) {
+                gemini.note(session.data_dir || "", "spoken-location", JSON.stringify(area))
+                runJavaScript("gamebuddyGemini.context(" + JSON.stringify("The player said they are in " + area + "; GameBuddy moved the walkthrough position there. Call get_game_context for the updated next step.") + ")")
+            }
+        }
         else if (event.type === "caption") { captionText = v; captionStreaming = true; quietWatch.stop(); nudges = 0 }
         else if (event.type === "output-final") {
             captionStreaming = false

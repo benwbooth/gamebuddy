@@ -48,6 +48,8 @@ pub mod ffi {
         fn scene_changed(self: Pin<&mut GeminiVoice>, directory: QString) -> bool;
         #[qinvokable]
         fn note(self: &GeminiVoice, directory: QString, kind: QString, value: QString);
+        #[qinvokable]
+        fn player_said(self: &GeminiVoice, directory: QString, text: QString) -> QString;
     }
     impl cxx_qt::Threading for GeminiVoice {}
 }
@@ -180,7 +182,11 @@ impl ffi::GeminiVoice {
                     gamebuddy_services::harness::call_tool_with_images(&store, &name, arguments)?;
                 let mut value = output.value;
                 if name == "get_game_context" {
-                    value = gamebuddy_services::voice::prompts::gemini_context(&value);
+                    let guide = store
+                        .get::<String>("active_guide")?
+                        .and_then(|id| store.guide(&id).ok());
+                    value =
+                        gamebuddy_services::voice::prompts::gemini_context(&value, guide.as_ref());
                 }
                 if name == "get_game_screen"
                     && let Some(object) = value.as_object_mut()
@@ -245,6 +251,23 @@ impl ffi::GeminiVoice {
             notes.drain(..excess);
             let _ = store.put("gemini-diagnostics", &notes);
         }
+    }
+    /// Record "I'm in <area>" straight away, so the route follows the
+    /// player's word before the live model looks anything up.
+    pub fn player_said(&self, directory: QString, text: QString) -> QString {
+        let result = (|| -> anyhow::Result<Option<String>> {
+            let store = Store::open(directory.to_string())?;
+            let Some(id) = store.get::<String>("active_guide")? else {
+                return Ok(None);
+            };
+            let guide = store.guide(&id)?;
+            gamebuddy_services::navigation::tracking::report_spoken_location(
+                &store,
+                &guide,
+                &text.to_string(),
+            )
+        })();
+        QString::from(result.ok().flatten().unwrap_or_default())
     }
     pub fn has_api_key(&self, directory: QString) -> bool {
         live_settings(&directory.to_string()).is_ok_and(|(_, live)| live.api_key().is_ok())

@@ -431,6 +431,21 @@ impl Store {
         );
         let before = progress.clone();
         progress.reported_completed.insert(step_id.into());
+        // Finishing a step means the player got past the earlier steps of the
+        // same task (bought the meal, so they entered the shop). Pass them so
+        // the route does not send the player back to repeat them.
+        if let Some(parent) = guide.step(step_id).and_then(|s| s.parent_id.clone()) {
+            for sibling in guide
+                .steps
+                .iter()
+                .filter(|s| s.parent_id.as_deref() == Some(&parent))
+                .take_while(|s| s.id != step_id)
+            {
+                if !gamebuddy_core::step_complete(guide, &progress, &sibling.id) {
+                    progress.passed.insert(sibling.id.clone());
+                }
+            }
+        }
         crate::outcomes::apply_effects(
             self,
             guide,
