@@ -278,6 +278,27 @@ impl PlanGraph {
                 .max_by_key(|(_, n)| *n)
                 .map(|(a, _)| a.clone());
         }
+        // An optional detour ("Begin the optional tower detour") continues
+        // until the walkthrough is back in the area it left from.
+        let mut detour: Option<(Option<String>, bool)> = None;
+        for objective in &mut objectives {
+            if let Some((home, left)) = &mut detour {
+                if objective.area != *home {
+                    *left = true;
+                    objective.optional = true;
+                } else if *left {
+                    detour = None;
+                } else {
+                    objective.optional = true;
+                }
+            }
+            if detour.is_none()
+                && objective.optional
+                && objective.title.to_lowercase().contains("detour")
+            {
+                detour = Some((objective.area.clone(), false));
+            }
+        }
         let mut previous: Option<String> = None;
         for objective in &mut objectives {
             objective.after = previous.clone();
