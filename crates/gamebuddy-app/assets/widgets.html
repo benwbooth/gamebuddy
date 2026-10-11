@@ -108,7 +108,10 @@
   document.addEventListener('pointercancel',finish);
   document.addEventListener('lostpointercapture',finish);
   addEventListener('blur',finish);
-  addEventListener('resize',()=>{finish();for(const n of host.querySelectorAll('.widget')){const r=n.getBoundingClientRect();place(n,{...layouts[n.dataset.widgetId],x:r.x,y:r.y,width:r.width,height:r.height})}regions()});
+  // Re-place from the saved layout, not the current rectangle: the overlay
+  // can start smaller than the game display, and clamping to that first size
+  // must not stick once the full-size view arrives.
+  addEventListener('resize',()=>{finish();for(const n of host.querySelectorAll('.widget')){const r=n.getBoundingClientRect(),saved=layouts[n.dataset.widgetId];place(n,saved||{x:r.x,y:r.y,width:r.width,height:r.height})}regions()});
   function mapStructure(c){return JSON.stringify([c.guide_id,c.map?.maps,c.map?.places,c.map?.locations?.map(({current,...p})=>p)])}
   // Keep the map surface, image, menus and scroll viewport mounted across observations.
   function mountLocationMap(body,initial,titles){

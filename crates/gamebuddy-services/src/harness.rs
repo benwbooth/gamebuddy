@@ -30,6 +30,7 @@ pub fn tool_definitions() -> Value {
         {"name":"set_map_enabled","description":"Enable or disable a reference map according to player preference.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["id","enabled"],"additionalProperties":false}},
         {"name":"report_step_complete","description":"Record an explicit PLAYER statement that a task is already done. First read get_game_context. Supply the player's own report; never use your advice, walkthrough text, room similarity, or assumed inventory as a report. This is stored as player-reported progress, not independently verified completion.","inputSchema":{"type":"object","properties":{"step_id":{"type":"string"},"player_report":{"type":"string"},"expected_revision":{"type":"integer"},"epoch":{"type":"integer"}},"required":["step_id","player_report","expected_revision","epoch"],"additionalProperties":false}},
         {"name":"get_game_context","description":"Read the current game, player-location hypotheses, guide, progress and latest screenshot as native image content when capture is live. Call first for gameplay questions and player corrections; inspect the image rather than relying on an older scene summary.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"ask_brain","description":"Ask GameBuddy's brain (a stronger reasoning model) a question that needs judgement about the current screen and plan: whether the player can afford something, what they already own, what to buy or do next, why something is needed. It reads the newest screenshot with the plan and returns an answer to speak plus an updated situation. Takes several seconds; say a short filler first.","inputSchema":{"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":false}},
         {"name":"search_guide","description":"Find source-backed steps and their current action eligibility in the active walkthrough. Use this focused search when the nearby actions from get_game_context do not answer the question; no need to load the entire outline.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}},
         {"name":"show_widget","description":"Show or replace a draggable OSD widget. Widget fields: id, title, source_step_ids, item_sources, content. Cite supporting guide step IDs in source_step_ids; their original source links/timestamps appear on hover. For mixed-source tables/checklists provide item_sources entries {item_index: zero-based row/item, source_step_ids: [IDs]}. An empty per-item list explicitly means no attached reference. Never invent citations; player goals and unsourced advice are labelled accordingly. Content kind is text (body), table (columns and rows), checklist (items), image (HTTPS url and caption), or video (YouTube url and start_seconds). Never invent a map or source URL.","inputSchema":{"type":"object","properties":{"widget":{"type":"object"}},"required":["widget"],"additionalProperties":false}},
         {"name":"remove_widget","description":"Remove a model-created OSD widget by ID.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}}
@@ -554,6 +555,15 @@ pub fn call_tool(store: &Store, name: &str, arguments: Value) -> Result<Value> {
             let updated = crate::plan::attach_guide(store, &guide.id, expected, &imported)?;
             Ok(
                 json!({"revision":updated.revision,"sources":updated.sources,"coverage_notes":updated.coverage_notes}),
+            )
+        }
+        "ask_brain" => {
+            let question = arguments["question"]
+                .as_str()
+                .context("question required")?;
+            let (situation, answer) = crate::brain::think(store, &guide, Some(question))?;
+            Ok(
+                json!({"answer":answer,"situation":situation,"instruction":"Say the answer to the player in your own words."}),
             )
         }
         "search_guide" => {

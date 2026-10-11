@@ -61,6 +61,42 @@ pub struct Settings {
     pub fast_voice: bool,
     #[serde(default)]
     pub live_voice: LiveVoice,
+    #[serde(default)]
+    pub brain: BrainSettings,
+}
+
+/// The background "brain": a strong model that reads each new screen with
+/// the plan and writes the situation the live voice speaks from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrainSettings {
+    #[serde(default = "brain_enabled")]
+    pub enabled: bool,
+    /// None uses the reasoning provider.
+    #[serde(default)]
+    pub provider: Option<ProviderConfig>,
+    /// Re-read the screen at least this often even without a scene change.
+    #[serde(default = "brain_interval")]
+    pub interval_secs: u64,
+}
+fn brain_enabled() -> bool {
+    true
+}
+fn brain_interval() -> u64 {
+    30
+}
+impl Default for BrainSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: None,
+            interval_secs: 30,
+        }
+    }
+}
+impl PartialEq for ProviderConfig {
+    fn eq(&self, other: &Self) -> bool {
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
 }
 /// Gemini Live speech-to-speech. It owns listening, turn-taking and speech;
 /// game questions go to the reasoning provider through a tool call.
@@ -139,6 +175,7 @@ impl Default for Settings {
             duck_game_audio: true,
             fast_voice: true,
             live_voice: LiveVoice::default(),
+            brain: BrainSettings::default(),
         }
     }
 }
@@ -379,6 +416,13 @@ impl HttpProvider {
     fn key(&self) -> Result<Option<String>> {
         if self.config.api_key_env.is_empty() {
             return Ok(None);
+        }
+        // The Gemini key saved for live voice also serves Gemini models.
+        if self.config.api_key_env == "GEMINI_API_KEY"
+            && std::env::var_os("GEMINI_API_KEY").is_none()
+            && let Ok(key) = LiveVoice::default().api_key()
+        {
+            return Ok(Some(key));
         }
         Ok(Some(std::env::var(&self.config.api_key_env).with_context(
             || {

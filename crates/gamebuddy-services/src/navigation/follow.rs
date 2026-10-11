@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// How far ahead in the walkthrough video a match may move the route.
-const AHEAD_MS: u64 = 10 * 60_000;
+/// Short: look-alike rooms (shops, title screens) a few minutes ahead have
+/// moved the route into later chapters.
+const AHEAD_MS: u64 = 2 * 60_000;
 /// A match this far behind the current step means the player went back.
 const BEHIND_MS: u64 = 60_000;
 /// The new position must hold this long before the route follows it.
@@ -259,6 +261,22 @@ pub fn observed(
     }
     if at_ms.saturating_sub(candidate.first_at) < HOLD_MS {
         return Ok(None);
+    }
+    // Never move into another area than the one the player is confirmed in.
+    if let Some(index) = target {
+        let atlas = super::atlas(store, guide)?;
+        let model = crate::outcomes::prepared(store, guide)?
+            .map(|p| p.model.clone())
+            .unwrap_or_default();
+        let graph = gamebuddy_core::planner::PlanGraph::build(guide, &atlas, &model);
+        if let (Some(target_area), (Some(here), true)) = (
+            graph.area_of_step(&route.step_ids[index]),
+            super::planning::locate(store, guide, &graph)?,
+        ) && target_area != here
+        {
+            store.put(&candidate_key, &Candidate::default())?;
+            return Ok(None);
+        }
     }
     if let Some(index) = target {
         let mut steps = route.step_ids;

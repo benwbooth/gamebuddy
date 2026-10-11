@@ -917,6 +917,7 @@ impl ffi::Buddy {
                         spatial_notify.clone(),
                     );
                     if let Some(guide) = &guide {
+                        services::brain::schedule(&store, guide, &snapshot);
                         services::activity::schedule(&store, guide, snapshot.clone());
                         services::spatial::schedule_notifying(
                             &store,

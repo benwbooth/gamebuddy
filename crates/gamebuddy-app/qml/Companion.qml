@@ -457,6 +457,40 @@ Item {
                 }
             }
             RowLayout {
+                id: brainChoice
+                // The background brain that reads the screen and decides advice.
+                readonly property var options: [
+                    {label: "Brain · same as reasoning", enabled: true, provider: null},
+                    {label: "Brain · Claude Sonnet", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "sonnet", api_key_env: "", reasoning_effort: "low"}},
+                    {label: "Brain · Claude Opus", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "opus", api_key_env: "", reasoning_effort: "low"}},
+                    {label: "Brain · GPT (Codex)", enabled: true, provider: {kind: "codex", endpoint: "", model: "", api_key_env: "", reasoning_effort: ""}},
+                    {label: "Brain · Gemini Flash", enabled: true, provider: {kind: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.8-flash", api_key_env: "GEMINI_API_KEY", reasoning_effort: ""}},
+                    {label: "Brain · off", enabled: false, provider: null}
+                ]
+                function current() {
+                    const brain = JSON.parse(buddy.settings_json).brain || {enabled: true}
+                    if (brain.enabled === false) return options.length - 1
+                    if (!brain.provider) return 0
+                    for (let i = 1; i < options.length - 1; i++)
+                        if (options[i].provider.kind === brain.provider.kind && options[i].provider.model === brain.provider.model) return i
+                    return 0
+                }
+                Text { text: "Brain"; color: "#c7fff0"; font.pixelSize: 14 }
+                ComboBox {
+                    objectName: "companionBrain"
+                    Layout.fillWidth: true
+                    model: brainChoice.options.map(o => o.label)
+                    currentIndex: brainChoice.current()
+                    Accessible.name: "Brain model"
+                    onActivated: index => {
+                        const settings = JSON.parse(buddy.settings_json)
+                        const option = brainChoice.options[index]
+                        settings.brain = Object.assign({interval_secs: 30}, settings.brain || {}, {enabled: option.enabled, provider: option.provider})
+                        buddy.save_settings(JSON.stringify(settings))
+                    }
+                }
+            }
+            RowLayout {
                 Text { text: "Setup"; color: "#c7fff0"; font.pixelSize: 14 }
                 ComboBox {
                     id: setupPreset

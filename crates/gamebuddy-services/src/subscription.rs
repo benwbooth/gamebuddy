@@ -407,7 +407,11 @@ pub fn claude_complete_structured(
         .current_dir(directory.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(if std::env::var_os("GAMEBUDDY_TRACE_CLAUDE").is_some() {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        });
     if !model.is_empty() {
         command.args(["--model", model]);
     }
@@ -415,6 +419,12 @@ pub fn claude_complete_structured(
         command.args(["--effort", effort]);
     }
     if let Some(schema) = &schema {
+        // Claude Code rejects a schema that names a draft by URL ("$schema"),
+        // and then exits before reading the prompt (a broken pipe here).
+        let mut schema = schema.clone();
+        if let Some(object) = schema.as_object_mut() {
+            object.remove("$schema");
+        }
         command.args(["--json-schema", &schema.to_string()]);
     }
     let mut process = Process(
