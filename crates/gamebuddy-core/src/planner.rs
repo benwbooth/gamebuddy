@@ -495,7 +495,9 @@ impl PlanGraph {
         }
         needed.extend(target.requires.iter().cloned());
         let mut seen = BTreeSet::new();
-        needed.retain(|f| !have(f) && seen.insert(f.clone()));
+        // Full health or magic is topped up on the way (potions, meat), not
+        // a reason to send the player back to a shop.
+        needed.retain(|f| !have(f) && !f.ends_with("_full") && seen.insert(f.clone()));
         let order = |id: &str| {
             self.objectives
                 .iter()

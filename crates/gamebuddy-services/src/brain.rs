@@ -29,16 +29,15 @@ pub struct FactSeen {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Situation {
-    /// The area name as the plan names it (e.g. "Mascon", "Fountain Quest"),
-    /// only when this screenshot itself shows which area it is; empty for
-    /// menus, shop interiors you cannot place, or anything only the saved
-    /// route suggests.
+    /// The area only when on-screen text names it; otherwise empty. Never
+    /// infer it from scenery, the plan or earlier reports.
     pub area: String,
     pub area_evidence: String,
     /// HUD values read from this screenshot; null when not visible.
     pub gold: Option<u64>,
     pub experience: Option<u64>,
-    /// Rough fullness of the life and magic bars, 0 to 1.
+    /// Fullness of the life (P) and magic (M) bars, 0 to 1, measured as the
+    /// coloured part against the bar's whole length; null if unsure.
     pub life: Option<f64>,
     pub magic: Option<f64>,
     /// Equipment and items visible now (status screen, inventory, sprite).
@@ -255,6 +254,8 @@ fn apply(store: &Store, guide: &Guide, situation: &Situation) -> Result<()> {
         .facts
         .iter()
         .filter(|f| !known(&f.id, f.value))
+        // Meters change every few seconds; they are read fresh, not recorded.
+        .filter(|f| !f.id.ends_with("_full"))
         .map(|f| gamebuddy_core::outcomes::FactValue {
             id: f.id.clone(),
             value: f.value,
@@ -283,49 +284,9 @@ fn apply(store: &Store, guide: &Guide, situation: &Situation) -> Result<()> {
             },
         );
     }
-    let area = situation.area.trim();
-    if !area.is_empty() {
-        let atlas = crate::navigation::atlas(store, guide)?;
-        let model = crate::outcomes::prepared(store, guide)?
-            .map(|p| p.model.clone())
-            .unwrap_or_default();
-        let graph = gamebuddy_core::planner::PlanGraph::build(guide, &atlas, &model);
-        let (current, confirmed) = crate::navigation::planning::locate(store, guide, &graph)?;
-        let known_area = atlas
-            .maps
-            .iter()
-            .any(|m| m.title.eq_ignore_ascii_case(area))
-            || graph.objectives.iter().any(|o| {
-                o.area
-                    .as_deref()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(area))
-            });
-        // Repeating the saved route's own guess back would confirm a guess,
-        // so only a different area than the current one is reported.
-        let _ = confirmed;
-        if known_area
-            && !current
-                .as_deref()
-                .is_some_and(|c| c.eq_ignore_ascii_case(area))
-        {
-            let progress = store.progress(guide)?;
-            let _ = crate::navigation::report_location(
-                store,
-                guide,
-                crate::navigation::LocationReport {
-                    place_id: String::new(),
-                    place_label: Some(area.to_owned()),
-                    step_id: None,
-                    player_report: format!("Screen: {}", situation.area_evidence)
-                        .chars()
-                        .take(900)
-                        .collect(),
-                    expected_revision: guide.revision,
-                    epoch: progress.epoch,
-                },
-            );
-        }
-    }
+    // The brain does not name the area: towns and caves look alike, and it
+    // anchored on the saved route and earlier reports. The area comes from
+    // the screen's map match or the player's own words.
     Ok(())
 }
 
