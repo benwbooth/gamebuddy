@@ -160,6 +160,20 @@ WebEngineView {
             panel.runJavaScript("gamebuddyGemini.watch()")
         }
     }
+    // Gemini sometimes goes silent after a tool result; prompt it to answer
+    // rather than leave the player waiting.
+    property int nudges: 0
+    Timer {
+        id: quietWatch
+        interval: 9000
+        onTriggered: {
+            if (!panel.connected || panel.assistantSpeaking || panel.userSpeaking || panel.runningTools > 0 || panel.nudges >= 2) return
+            panel.nudges++
+            gemini.note(panel.session.data_dir || "", "nudge", JSON.stringify(panel.nudges))
+            panel.runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("You have the tool results. Answer the player now, in a sentence or two.") + ")")
+            restart()
+        }
+    }
     Timer { interval: 250; repeat: true; running: panel.userSpeaking; onTriggered: if (Date.now() - panel.inputAt > 1500) panel.userSpeaking = false }
     GeminiVoice {
         id: gemini
@@ -173,6 +187,7 @@ WebEngineView {
             // Tool results carry no images; attach the current screen itself.
             if (["get_game_screen", "get_game_context"].includes(event.name)) panel.attachStill()
             panel.runJavaScript("gamebuddyGemini.toolResult(" + JSON.stringify(event.id) + "," + JSON.stringify(event.response) + ")")
+            if (panel.runningTools === 0) quietWatch.restart()
             // Published actions update the Now card, outline and arrow.
             panel.buddy.poll_widgets()
         }
@@ -196,7 +211,7 @@ WebEngineView {
         const event = JSON.parse(message.slice(17)), v = event.value
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
-        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final"].includes(event.type))
+        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final", "capture", "microphone-error", "interrupted"].includes(event.type))
             gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args}
                 // How old the newest frame Gemini had was when the player spoke.
                 : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
@@ -217,10 +232,10 @@ WebEngineView {
             // A fresh full-quality still with every question, so answers
             // about the screen use what is there now.
             if (!userSpeaking) attachStill()
-            inputAt = Date.now(); userSpeaking = true
+            inputAt = Date.now(); userSpeaking = true; quietWatch.stop(); nudges = 0
         }
         else if (event.type === "input-final") { userSpeaking = false; gemini.record(session.data_dir || "", session.game, "user", v); panel.transcript(v) }
-        else if (event.type === "caption") { captionText = v; captionStreaming = true }
+        else if (event.type === "caption") { captionText = v; captionStreaming = true; quietWatch.stop(); nudges = 0 }
         else if (event.type === "output-final") {
             captionStreaming = false
             gemini.record(session.data_dir || "", session.game, "assistant", v)
@@ -232,7 +247,7 @@ WebEngineView {
             if (!v) captionStreaming = false
         }
         else if (event.type === "interrupted") { captionStreaming = false; activeAdviceStep = "" }
-        else if (event.type === "tool-call") runTool(v)
+        else if (event.type === "tool-call") { quietWatch.stop(); runTool(v) }
     }
     onEnabledBackendChanged: update()
     onSpokenRepliesChanged: { if (spokenReplies) { failed = false; proactivePaused = false }; if (loaded) runJavaScript("gamebuddyGemini.muteOutput(" + (!spokenReplies) + ")"); update() }

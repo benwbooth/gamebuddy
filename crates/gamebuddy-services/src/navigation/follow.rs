@@ -35,6 +35,16 @@ pub struct OffRoute {
     pub route_step_id: String,
     pub route_step_title: String,
     pub since_ms: u64,
+    /// The game capture session it was seen in; a new session starts over.
+    #[serde(default)]
+    pub session: String,
+}
+
+fn capture_session(store: &Store) -> String {
+    crate::screen::status(store)
+        .ok()
+        .and_then(|s| s["session_id"].as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -121,9 +131,11 @@ pub fn return_path(store: &Store, guide: &Guide, off: &OffRoute) -> Result<Vec<S
 }
 
 pub fn off_route(store: &Store, guide: &Guide) -> Result<Option<OffRoute>> {
+    let session = capture_session(store);
     Ok(store
         .get::<Option<OffRoute>>(&format!("off-route:{}", guide.id))?
-        .flatten())
+        .flatten()
+        .filter(|o| o.session == session))
 }
 
 /// Video moments (ms) the current screen matches, with their scores.
@@ -274,6 +286,7 @@ pub fn observed(
         route_step_title: current_step.map(|s| s.title.clone()).unwrap_or_default(),
         route_step_id: current,
         since_ms: at_ms,
+        session: capture_session(store),
     };
     if off_route(store, guide)?.is_some_and(|o| o.seen_step_id == off.seen_step_id) {
         return Ok(None);

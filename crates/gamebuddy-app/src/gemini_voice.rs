@@ -179,6 +179,9 @@ impl ffi::GeminiVoice {
                 let output =
                     gamebuddy_services::harness::call_tool_with_images(&store, &name, arguments)?;
                 let mut value = output.value;
+                if name == "get_game_context" {
+                    value = gamebuddy_services::voice::prompts::gemini_context(&value);
+                }
                 if name == "get_game_screen"
                     && let Some(object) = value.as_object_mut()
                 {

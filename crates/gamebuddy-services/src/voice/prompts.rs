@@ -52,6 +52,49 @@ pub fn gemini_live() -> String {
     format!("{GEMINI_VOICE}\n\n{REASONER}\n\n{GEMINI_RULES}")
 }
 
+/// get_game_context trimmed for the live voice: what to say next and the
+/// ids its mutations need, without the full planning and progress dumps
+/// that slow every spoken reply.
+pub fn gemini_context(full: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let step =
+        |s: &Value| json!({"id":s["id"],"title":s["title"],"instructions":s["instructions"]});
+    let brief = |s: &Value| json!({"id":s["id"],"title":s["title"]});
+    let guidance = &full["navigation"]["guidance"];
+    let list = |v: &Value, n: usize, f: &dyn Fn(&Value) -> Value| {
+        Value::Array(v.as_array().into_iter().flatten().take(n).map(f).collect())
+    };
+    let facts: serde_json::Map<String, Value> = full["planning"]["facts"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.clone(), v["value"].clone()))
+        .collect();
+    json!({
+        "game": full["game"],
+        "expected_revision": full["guide_revision"],
+        "epoch": full["progress"]["epoch"],
+        "guidance": {
+            "status": guidance["status"],
+            "now": if guidance["now"].is_object() { step(&guidance["now"]) } else { Value::Null },
+            "next": list(&guidance["next"], 3, &brief),
+            "requirements": guidance["requirements"],
+            "warning": guidance["warning"],
+            "off_route": guidance["off_route"],
+            "route_step": guidance["route_step"],
+            "return_path": list(&guidance["return_path"], 8, &brief),
+        },
+        "authored_route": full["navigation"]["authored_route"],
+        "location": full["navigation"]["location"],
+        "place": full["navigation"]["map"]["current_place"]["label"],
+        "screen": {"status": full["screen"]["status"], "age_ms": full["screen"]["age_ms"]},
+        "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),
+        "world_facts": facts,
+        "journal_recent": list(&full["journal"]["recent"], 5, &|e| e.clone()),
+        "instruction": "Compact live context. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
+    })
+}
+
 /// GameBuddy's agent tools as Gemini function declarations. Long-running
 /// preparation and source-import tools stay out of the live conversation.
 pub fn gemini_tools() -> serde_json::Value {
