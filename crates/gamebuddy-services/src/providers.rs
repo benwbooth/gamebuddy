@@ -82,14 +82,14 @@ fn brain_enabled() -> bool {
     true
 }
 fn brain_interval() -> u64 {
-    30
+    90
 }
 impl Default for BrainSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             provider: None,
-            interval_secs: 30,
+            interval_secs: 90,
         }
     }
 }

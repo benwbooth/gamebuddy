@@ -137,6 +137,14 @@ impl ffi::GeminiVoice {
         }
         if let Ok(store) = Store::open(directory.to_string()) {
             let id = format!("gemini-{}", gamebuddy_services::screen::now_ms());
+            // The brain answers the player's latest words when Gemini next
+            // looks up the game (see call_tool).
+            if role.to_string() == "user" {
+                let _ = store.put(
+                    "last-player-utterance",
+                    &json!({"text":text.trim(),"at_ms":gamebuddy_services::screen::now_ms()}),
+                );
+            }
             let _ = store.append_conversation(
                 &game.to_string(),
                 "gemini-live",
@@ -187,10 +195,36 @@ impl ffi::GeminiVoice {
                     let guide = store
                         .get::<String>("active_guide")?
                         .and_then(|id| store.guide(&id).ok());
+                    // The player's latest words, answered by the brain (a
+                    // stronger model reading the screen with the plan) rather
+                    // than left to the live voice's own reasoning.
+                    let brain_answer = guide.as_ref().and_then(|guide| {
+                        let said: Value = store.get("last-player-utterance").ok()??;
+                        let at = said["at_ms"].as_u64()?;
+                        let text = said["text"].as_str()?;
+                        let answered: u64 = store.get("brain-answered-at").ok()?.unwrap_or(0);
+                        let settings: Settings = store.get("settings").ok()?.unwrap_or_default();
+                        (settings.brain.enabled
+                            && at > answered
+                            && gamebuddy_services::screen::now_ms().saturating_sub(at) < 30_000
+                            && text.split_whitespace().count() >= 3)
+                            .then_some(())?;
+                        let _ = store.put("brain-answered-at", &at);
+                        gamebuddy_services::brain::think(&store, guide, Some(text))
+                            .ok()
+                            .and_then(|(_, answer)| answer)
+                            .map(|answer| json!({"question":text,"answer":answer}))
+                    });
                     value = gamebuddy_services::voice::prompts::gemini_context(
                         &value,
                         guide.as_ref().map(|g| (&store, g)),
                     );
+                    if let Some(answer) = brain_answer {
+                        value["brain_answer"] = answer;
+                        value["instruction"] = json!(
+                            "brain_answer is GameBuddy's brain answering what the player just said, from the screen and plan. Say it to the player in your own words; it takes precedence over your own reading."
+                        );
+                    }
                 }
                 if name == "get_game_screen"
                     && let Some(object) = value.as_object_mut()

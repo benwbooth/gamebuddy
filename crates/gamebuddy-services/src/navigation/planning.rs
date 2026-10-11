@@ -229,3 +229,67 @@ pub fn first_detour(store: &Store, guide: &Guide) -> Result<Option<(String, Stri
         _ => None,
     })
 }
+
+/// When the live screen has held a match against one area map for a few
+/// seconds and the route cursor is in another area, report that area like a
+/// player location report, once per change. This moves the cursor to the
+/// area's steps (forward, or back over steps a wrong jump only passed).
+pub fn sync_area(store: &Store, guide: &Guide, at_ms: u64) -> Result<()> {
+    let atlas = super::atlas(store, guide)?;
+    let session = crate::screen::status(store)
+        .ok()
+        .and_then(|s| s["session_id"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let Some(area) = store
+        .get::<Value>(&format!("world-observation:{}", guide.id))?
+        .filter(|o| session.is_empty() || o["tracker"]["session"] == session.as_str())
+        .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
+        .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
+        .map(|m| m.title.clone())
+        .filter(|t| !t.contains(" To "))
+    else {
+        return Ok(());
+    };
+    let key = format!("area-sync:{}", guide.id);
+    let mut state: Value = store.get(&key)?.unwrap_or_else(|| json!({}));
+    if state["candidate"] != area.as_str() {
+        store.put(
+            &key,
+            &json!({"candidate":area,"since":at_ms,"reported":state["reported"]}),
+        )?;
+        return Ok(());
+    }
+    if at_ms.saturating_sub(state["since"].as_u64().unwrap_or(at_ms)) < 4_000
+        || state["reported"] == area.as_str()
+    {
+        return Ok(());
+    }
+    let model = crate::outcomes::prepared(store, guide)?
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let graph = PlanGraph::build(guide, &atlas, &model);
+    let progress = store.progress(guide)?;
+    let cursor = progress
+        .current_step
+        .as_deref()
+        .and_then(|s| graph.area_of_step(s))
+        .map(str::to_owned);
+    state["reported"] = json!(area);
+    store.put(&key, &state)?;
+    if cursor.as_deref() == Some(area.as_str()) {
+        return Ok(());
+    }
+    super::report_location(
+        store,
+        guide,
+        super::LocationReport {
+            place_id: String::new(),
+            place_label: Some(area.clone()),
+            step_id: None,
+            player_report: format!("Screen: the live screen matches the {area} map"),
+            expected_revision: guide.revision,
+            epoch: progress.epoch,
+        },
+    )?;
+    Ok(())
+}

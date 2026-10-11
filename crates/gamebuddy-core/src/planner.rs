@@ -217,7 +217,7 @@ impl PlanGraph {
                     root = Some(parent);
                 }
                 let mut optional =
-                    step.is_some_and(|s| s.optional || s.title.starts_with("Optionally"));
+                    step.is_some_and(|s| s.optional || s.title.to_lowercase().contains("optional"));
                 let mut ancestor = step.and_then(|s| s.parent_id.as_deref());
                 while let Some(id) = ancestor {
                     optional |= guide.step(id).is_some_and(|s| s.optional);
@@ -352,6 +352,16 @@ impl PlanGraph {
     }
 
     fn done(&self, guide: &Guide, progress: &Progress, objective: &Objective) -> bool {
+        // Everything it exists to get is already had (a shop visit for a
+        // shield the player owns), so there is nothing left to do there.
+        if !objective.produces.is_empty()
+            && objective
+                .produces
+                .iter()
+                .all(|f| progress.world.facts.get(f).is_some_and(|k| k.value))
+        {
+            return true;
+        }
         objective
             .steps
             .iter()

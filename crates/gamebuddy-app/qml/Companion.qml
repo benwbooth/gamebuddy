@@ -485,7 +485,7 @@ Item {
                     onActivated: index => {
                         const settings = JSON.parse(buddy.settings_json)
                         const option = brainChoice.options[index]
-                        settings.brain = Object.assign({interval_secs: 30}, settings.brain || {}, {enabled: option.enabled, provider: option.provider})
+                        settings.brain = Object.assign({interval_secs: 90}, settings.brain || {}, {enabled: option.enabled, provider: option.provider})
                         buddy.save_settings(JSON.stringify(settings))
                     }
                 }

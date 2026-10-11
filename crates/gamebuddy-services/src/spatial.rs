@@ -1571,6 +1571,13 @@ pub fn observe(
     {
         eprintln!("Route follow: {error:#}");
     }
+    // A held match against another area map moves the route there, as if
+    // the player had said where they are (and corrects a wrong earlier jump).
+    if let Err(error) =
+        crate::navigation::planning::sync_area(store, guide, snapshot.captured_at_ms)
+    {
+        eprintln!("Area sync: {error:#}");
+    }
     ground_observation(
         store,
         guide,

@@ -308,7 +308,9 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     if job.running
-        || snapshot.captured_at_ms.saturating_sub(job.last_start) < 2_000
+        // Each review is a reasoning-model call; the brain covers moment to
+        // moment changes, so this verifier runs at most every 10 s.
+        || snapshot.captured_at_ms.saturating_sub(job.last_start) < 10_000
         || job.last_image == snapshot.jpeg
     {
         return;
