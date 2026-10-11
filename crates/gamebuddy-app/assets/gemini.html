@@ -8,7 +8,7 @@
   let ws=null,config=null,generation=0,resumeHandle=null,reconnects=0,ready=false,stopping=false;
   let mic=null,micContext=null,micNodes=null,captureGeneration=0;
   let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,meterTimer=null;
-  let inputText='',outputText='',pendingTools=new Map(),framesSent=0,silentUntil=0;
+  let inputText='',outputText='',pendingTools=new Map(),framesSent=0,silentUntil=0,quietTurn=false;
   const silent=()=>Date.now()<silentUntil;
   const emit=(type,value)=>console.info('GAMEBUDDY_GEMINI '+JSON.stringify({type,value,at:Date.now()}));
   const send=message=>{if(ws?.readyState===WebSocket.OPEN&&ready)ws.send(JSON.stringify(message))};
@@ -16,7 +16,7 @@
   function stopPlayback(){for(const s of sources){s.onended=null;try{s.stop()}catch{}}sources.clear();playAt=0;setSpeaking(false)}
   function setSpeaking(value){if(value!==speaking){speaking=value;emit('output-active',value)}}
   function play(data){
-    if(outputMuted||silent()||!speaker)return;
+    if(outputMuted||silent()||quietTurn||!speaker)return;
     const raw=atob(data),samples=new Float32Array(raw.length>>1);
     for(let i=0;i<samples.length;i++){let v=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);if(v>=32768)v-=65536;samples[i]=v/32768}
     const buffer=speaker.createBuffer(1,samples.length,24000);buffer.copyToChannel(samples,0);
@@ -35,13 +35,17 @@
     if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
-    if(c.inputTranscription?.text){silentUntil=0;inputText+=c.inputTranscription.text;emit('input-text',inputText)}
-    if(c.outputTranscription?.text&&!silent()){
+    if(c.inputTranscription?.text){silentUntil=0;quietTurn=false;inputText+=c.inputTranscription.text;emit('input-text',inputText)}
+    // A model that decides not to talk sometimes says a placeholder such
+    // as "<no speech>{pause}" out loud; cut it off and drop the rest of the turn.
+    if(c.outputTranscription?.text&&!outputText.trim()&&/^\s*[<{\[(]|no speech|\{pause\}/i.test(c.outputTranscription.text)){quietTurn=true;stopPlayback()}
+    if(c.outputTranscription?.text&&!silent()&&!quietTurn){
       if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
       outputText+=c.outputTranscription.text;emit('caption',outputText)}
     for(const part of c.modelTurn?.parts||[])if(part.inlineData?.data)play(part.inlineData.data);
     if(c.turnComplete||c.generationComplete){
       if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
+      if(c.turnComplete&&quietTurn){quietTurn=false;outputText=''}
       if(c.turnComplete&&outputText.trim()){emit('output-final',outputText.trim());outputText=''}
       // A silent check ends when Gemini finishes with no tool call pending;
       // its replies to tool results stay muted until then.
@@ -140,7 +144,7 @@
     watch(){send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
     // A silent turn: Gemini records what changed (items bought, keys used)
     // with tools; any speech it produces is dropped.
-    bookkeep(){if(speaking||silent()){emit('bookkeeping-done',false);return}silentUntil=Date.now()+25000;send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Do not speak.'}]}],turnComplete:true}})},
+    bookkeep(){if(speaking||silent()){emit('bookkeeping-done',false);return}silentUntil=Date.now()+25000;send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Your reply in this turn is not played.'}]}],turnComplete:true}})},
     interrupt(){stopPlayback()},
     muteOutput(muted){outputMuted=muted;if(muted)stopPlayback()}
   };
