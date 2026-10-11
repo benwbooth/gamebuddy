@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 /// The player's area, most direct evidence first: what they said, being
 /// back in an earlier area, the screen's place match, the current step.
 pub fn player_area(store: &Store, guide: &Guide, graph: &PlanGraph) -> Result<Option<String>> {
+    Ok(locate(store, guide, graph)?.0)
+}
+
+/// The area and whether this game session has evidence for it (otherwise
+/// it is only the current route step's area).
+pub fn locate(store: &Store, guide: &Guide, graph: &PlanGraph) -> Result<(Option<String>, bool)> {
     let atlas = super::atlas(store, guide)?;
     let progress = store.progress(guide)?;
     // Only evidence from the current game session describes where the
@@ -35,7 +41,38 @@ pub fn player_area(store: &Store, guide: &Guide, graph: &PlanGraph) -> Result<Op
         .as_deref()
         .and_then(|s| graph.area_of_step(s))
         .map(str::to_owned);
-    Ok(reported.or(off).or(seen).or(step))
+    let evidence = reported.or(off).or(seen);
+    let confirmed = evidence.is_some();
+    Ok((evidence.or(step), confirmed))
+}
+
+/// Where a death or a restart puts the player: the area of the last
+/// guru visit the player finished (the walkthrough's respawn points are the
+/// guru's chambers).
+pub fn checkpoint(
+    guide: &Guide,
+    atlas: &gamebuddy_core::Atlas,
+    progress: &gamebuddy_core::Progress,
+) -> Option<String> {
+    let current = progress
+        .current_step
+        .as_deref()
+        .and_then(|c| guide.steps.iter().position(|s| s.id == c))
+        .unwrap_or(guide.steps.len());
+    guide.steps[..current]
+        .iter()
+        .rev()
+        .filter(|s| gamebuddy_core::step_complete(guide, progress, &s.id))
+        .find_map(|s| {
+            let binding = atlas.bindings.iter().find(|b| b.step_id == s.id)?;
+            let place = atlas.places.iter().find(|p| p.id == binding.place_id)?;
+            place
+                .label
+                .to_lowercase()
+                .contains("guru")
+                .then(|| gamebuddy_core::planner::place_area(atlas, &place.id))
+                .flatten()
+        })
 }
 
 /// The plan as the live voice reads it.
@@ -46,8 +83,9 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
         .unwrap_or_default();
     let graph = PlanGraph::build(guide, &atlas, &model);
     let progress = store.progress(guide)?;
-    let area = player_area(store, guide, &graph)?;
+    let (area, confirmed) = locate(store, guide, &graph)?;
     let plan = graph.plan(guide, &progress, area.as_deref());
+    let checkpoint = checkpoint(guide, &atlas, &progress);
     let describe = |fact: &str| {
         model
             .facts
@@ -57,50 +95,59 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
             .unwrap_or_else(|| fact.replace('_', " "))
     };
     let has = |fact: &str| progress.world.facts.get(fact).is_some_and(|f| f.value);
-    let steps: Vec<String> = plan
-        .items
-        .iter()
-        .map(|item| match item {
-            gamebuddy_core::planner::PlanItem::Get {
-                need, title, area, ..
-            } => format!(
-                "Get first: {} ({}{})",
-                describe(need),
-                title,
-                area.as_deref()
-                    .map(|a| format!(", {a}"))
-                    .unwrap_or_default()
-            ),
-            gamebuddy_core::planner::PlanItem::Travel { from, to, requires } => format!(
-                "Travel {from} -> {to}{}",
-                if requires.iter().all(|r| has(r)) {
-                    String::new()
-                } else {
-                    format!(
-                        " (needs: {})",
-                        requires
-                            .iter()
-                            .map(|r| describe(r))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            ),
-            gamebuddy_core::planner::PlanItem::Do { title, area, .. } => format!(
-                "Then: {title}{}",
-                area.as_deref()
-                    .map(|a| format!(" ({a})"))
-                    .unwrap_or_default()
-            ),
-        })
-        .collect();
+    let render = |plan: &gamebuddy_core::planner::Plan| -> Vec<String> {
+        plan.items
+            .iter()
+            .map(|item| match item {
+                gamebuddy_core::planner::PlanItem::Get {
+                    need, title, area, ..
+                } => format!(
+                    "Get first: {} ({}{})",
+                    describe(need),
+                    title,
+                    area.as_deref()
+                        .map(|a| format!(", {a}"))
+                        .unwrap_or_default()
+                ),
+                gamebuddy_core::planner::PlanItem::Travel { from, to, requires } => format!(
+                    "Travel {from} -> {to}{}",
+                    if requires.iter().all(|r| has(r)) {
+                        String::new()
+                    } else {
+                        format!(
+                            " (needs: {})",
+                            requires
+                                .iter()
+                                .map(|r| describe(r))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                ),
+                gamebuddy_core::planner::PlanItem::Do { title, area, .. } => format!(
+                    "Then: {title}{}",
+                    area.as_deref()
+                        .map(|a| format!(" ({a})"))
+                        .unwrap_or_default()
+                ),
+            })
+            .collect()
+    };
+    let steps = render(&plan);
+    let at_checkpoint = checkpoint
+        .as_deref()
+        .filter(|c| !confirmed && Some(*c) != area.as_deref())
+        .map(|c| render(&graph.plan(guide, &progress, Some(c))));
     Ok(json!({
         "player_area": plan.area,
+        "area_confirmed": confirmed,
+        "checkpoint": checkpoint,
+        "plan_if_at_checkpoint": at_checkpoint,
         "steps": steps,
         "items": plan.items,
         "missing_with_no_known_source": plan.unresolved.iter().map(|f| describe(f)).collect::<Vec<_>>(),
         "after_that": plan.upcoming,
-        "instruction": "The plan from where the player is now and what they have: get what is missing first, travel, then the objective. Give its first item; say why (what it is needed for)."
+        "instruction": "The plan from where the player is now and what they have: get what is missing first, travel, then the objective. Give its first item; say why (what it is needed for). When area_confirmed is false, player_area is only the saved route's guess: a death or restart puts the player at the checkpoint, where plan_if_at_checkpoint applies."
     }))
 }
 

@@ -74,13 +74,35 @@ pub fn gemini_context(
         .flatten()
         .map(|(k, v)| (k.clone(), v["value"].clone()))
         .collect();
+    let plan =
+        profile.and_then(|(store, guide)| crate::navigation::planning::context(store, guide).ok());
+    // Not sure where the player is (just connected, restarted or died) and
+    // the checkpoint would need a different plan: ask before advising.
+    let ask_first = plan.as_ref().and_then(|p| {
+        (p["area_confirmed"] == false && p["plan_if_at_checkpoint"].is_array()).then(|| {
+            format!(
+                "Not sure where the player is. Before any directions, ask: are they back in {} (where a death or restart leaves them) or still in {}? If they are in {}, the plan is: {}",
+                p["checkpoint"].as_str().unwrap_or_default(),
+                p["player_area"].as_str().unwrap_or_default(),
+                p["checkpoint"].as_str().unwrap_or_default(),
+                p["plan_if_at_checkpoint"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        })
+    });
     json!({
+        "ask_first": ask_first,
         "game": full["game"],
         "expected_revision": full["guide_revision"],
         "epoch": full["progress"]["epoch"],
         "guidance": {
             "status": guidance["status"],
-            "now": if guidance["now"].is_object() { step(&guidance["now"]) } else { Value::Null },
+            "now": if guidance["now"].is_object() && ask_first.is_none() { step(&guidance["now"]) } else { Value::Null },
             "next": list(&guidance["next"], 3, &brief),
             "requirements": guidance["requirements"],
             "warning": guidance["warning"],
@@ -89,7 +111,7 @@ pub fn gemini_context(
             "return_path": list(&guidance["return_path"], 8, &brief),
         },
         "big_picture": guide.and_then(|g| big_picture(g, guidance["now"]["id"].as_str()?)),
-        "plan": profile.and_then(|(store, guide)| crate::navigation::planning::context(store, guide).ok()),
+        "plan": plan,
         "authored_route": if guidance["plan_detour"] == true { Value::Null } else { full["navigation"]["authored_route"].clone() },
         "location": full["navigation"]["location"],
         "place": full["navigation"]["map"]["current_place"]["label"],
@@ -97,7 +119,7 @@ pub fn gemini_context(
         "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),
         "world_facts": facts,
         "journal_recent": list(&full["journal"]["recent"], 5, &|e| e.clone()),
-        "instruction": "Compact live context. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. plan is what to do from where the player is now: missing items first, travel, then the objective. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
+        "instruction": "Compact live context. When ask_first is set, ask that question before giving any directions. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. plan is what to do from where the player is now: missing items first, travel, then the objective. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
     })
 }
 
@@ -255,7 +277,7 @@ const GEMINI_VOICE: &str = r#"You are GameBuddy: a quiet companion playing along
 
 Tone comes first: sound like a friend about the player's own age hanging out on the couch: relaxed, casual and conversational, at a natural pace and pitch, the way friends talk while gaming. Use everyday words and contractions ("yeah", "okay", "you'll want to"). Not a narrator, teacher, parent or announcer, and not hyped either: no exclamations, "awesome", "great job", "you've got this", hype words or eager questions like "Ready for a rematch?". A quick dry remark on a death or a win is fine; no big emotional reactions. Keep replies short and natural, not a checklist."#;
 
-const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For prices and shop stock, the screen comes first: when a shop menu or price is visible, read it from the newest still. Otherwise use a walkthrough price only when it names this same shop in this same town, since prices differ between towns; failing that, use Google Search (for example "Faxanadu Mascon shop prices") and say it is what guides list. If none of these settles it, say you are not sure rather than guessing. For any question about what to do, where to go or what you need, call get_game_context and follow its plan. GameBuddy builds the plan from where the player is now (plan.player_area) and what they have: anything missing comes first ("Get first"), then the travel between areas with what each crossing needs, then the objective, then plan.after_that for the overall direction. Say the first item and why it matters (what it is needed for), plus the direction in a few words, for example "Grab a Queen key at the key shop here first, since the door into the misty area eats one; then head back to the fountain and through to the mist." Present optional detours as optional, never as the goal. Publish the step you are giving with set_next_action: the first_step of the plan item, or guidance.now when it is the same objective (with screen_direction for movement, which drives the on-screen arrow). When the newest screen clearly shows a step is already done (the purchase finished, the item already held, the door already open), record it with report_step_complete, player_report starting with "Screen: " and what you see, then read the context again instead of repeating it. If plan.player_area is wrong, report where the player really is first. If set_next_action returns an error, never say the refused step to the player: follow what the error says and publish the step it names before speaking. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
+const GEMINI_RULES: &str = r#"How this live session works: you see the player's game through image frames sent about once a second; the newest frame is the current screen, so read gold, health, menus and the visible room from it directly. You call GameBuddy's tools yourself. Never state game facts from your own memory (prices, item effects, enemy behavior, locations, directions, controls or progress); use the frames, get_game_context, search_guide and the other tools. For prices and shop stock, the screen comes first: when a shop menu or price is visible, read it from the newest still. Otherwise use a walkthrough price only when it names this same shop in this same town, since prices differ between towns; failing that, use Google Search (for example "Faxanadu Mascon shop prices") and say it is what guides list. If none of these settles it, say you are not sure rather than guessing. For any question about what to do, where to go or what you need, call get_game_context and follow its plan. GameBuddy builds the plan from where the player is now (plan.player_area) and what they have: anything missing comes first ("Get first"), then the travel between areas with what each crossing needs, then the objective, then plan.after_that for the overall direction. Say the first item and why it matters (what it is needed for), plus the direction in a few words, for example "Grab a Queen key at the key shop here first, since the door into the misty area eats one; then head back to the fountain and through to the mist." Present optional detours as optional, never as the goal. Publish the step you are giving with set_next_action: the first_step of the plan item, or guidance.now when it is the same objective (with screen_direction for movement, which drives the on-screen arrow). When the newest screen clearly shows a step is already done (the purchase finished, the item already held, the door already open), record it with report_step_complete, player_report starting with "Screen: " and what you see, then read the context again instead of repeating it. If plan.player_area is wrong, report where the player really is first. When plan.area_confirmed is false (typically right after connecting, a restart or a death), the area is only the saved route's guess: look at the newest screen, and unless it clearly shows that area, ask where they are, offering plan.checkpoint ("Are you back in Forepaw, or still in Mascon?"). If plan_if_at_checkpoint needs something first (a key), say so in the same breath, since that is where a death or restart leaves them. If set_next_action returns an error, never say the refused step to the player: follow what the error says and publish the step it names before speaking. When you call tools, you may say one very short filler such as "Let me check," then wait for the results; never follow it with a guess. Ignore mentions of finish_voice_reply and CURRENT_GAME_CONTEXT: just answer aloud.
 
 A still marked "Current game screen" arrives as the player starts speaking and before get_game_screen and get_game_context results; it is the screen right now and outranks older frames. For "what does it say", "where am I", "what do you see", "check again" or any question about text or positions on screen, read that newest still, and call get_game_screen when you have not received one since the screen last changed. Never claim there is no text or that you checked again without looking at it. Describe the player's position only from that newest image, relative to what is visible there (left or right of a landmark, above or below it). Answer such questions from get_game_screen alone: get_game_context describes the walkthrough route and saved progress, not where the player is standing. Never repeat a position from your earlier answers or from advice you gave, and if the player corrects you, look again rather than restating it.
 

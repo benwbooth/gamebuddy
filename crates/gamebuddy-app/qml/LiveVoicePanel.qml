@@ -220,7 +220,7 @@ WebEngineView {
             // Say hello once per session, not after reconnects.
             if (!greeted && spokenReplies && !proactivePaused) {
                 greeted = true
-                runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next.") + ")")
+                runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next, or ask where they are if plan.area_confirmed is false.") + ")")
             }
         }
         else if (event.type === "reconnecting") { connected = false; status = "Reconnecting Gemini voice…" }
