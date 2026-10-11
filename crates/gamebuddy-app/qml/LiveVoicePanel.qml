@@ -75,7 +75,7 @@ WebEngineView {
     }
     function updateStatus() {
         if (!started || failed) return
-        status = !connected ? "Connecting Gemini voice…" : assistantSpeaking ? "Speaking · you can interrupt"
+        status = !connected ? "Connecting Gemini voice…" : greetTimer.running ? "Finding where you are in the game…" : assistantSpeaking ? "Speaking · you can interrupt"
             : workPending ? "Thinking…" : capturing ? "Live voice · speak naturally" : "Guide voice ready · mic off"
     }
     onAssistantSpeakingChanged: updateStatus()
@@ -164,6 +164,7 @@ WebEngineView {
     Timer {
         id: greetTimer
         interval: 1000; repeat: true
+        onRunningChanged: panel.updateStatus()
         onTriggered: {
             if (!panel.connected || panel.greeted) { stop(); return }
             if (panel.userSpeaking || panel.assistantSpeaking || panel.workPending) { if (panel.userSpeaking) { panel.greeted = true; stop() } return }
@@ -195,7 +196,7 @@ WebEngineView {
     Timer {
         interval: 3000; repeat: true; running: panel.connected
         onTriggered: {
-            if (panel.assistantSpeaking || panel.userSpeaking || panel.workPending || Date.now() - panel.lastBookkeepAt < 8000) return
+            if (!panel.greeted || panel.assistantSpeaking || panel.userSpeaking || panel.workPending || Date.now() - panel.lastBookkeepAt < 8000) return
             const changed = gemini.scene_changed(panel.session.data_dir || "")
             if (!changed && Date.now() - panel.lastBookkeepAt < 30000) return
             panel.lastBookkeepAt = Date.now()
