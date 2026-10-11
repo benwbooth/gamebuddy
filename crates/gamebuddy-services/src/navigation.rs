@@ -22,6 +22,7 @@ mod direction;
 pub mod follow;
 pub mod hazards;
 pub mod placement;
+pub mod planning;
 pub mod tracking;
 pub use tracking::{LocationReport, report_location};
 
@@ -962,6 +963,17 @@ pub fn context(
                 .collect::<Vec<_>>()
         );
         value["guidance"]["off_route"] = json!(true);
+    }
+    // When the dependency plan has the player get something or travel
+    // first, the Now card and arrow follow the plan's first item.
+    if let Some((step, why)) = planning::first_detour(store, guide)?
+        && let Some(first) = guide.step(&step)
+    {
+        let mut now = json!(first);
+        now["instructions"] = json!(format!("{why} {}", first.instructions));
+        value["guidance"]["now"] = now;
+        value["recommendation"] = Value::Null;
+        value["guidance"]["plan_detour"] = json!(true);
     }
     if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
         value["guidance"]["warning"] = json!(

@@ -304,6 +304,22 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
                 .any(|s| s.parent_id.as_deref() == Some(&action.step_id)),
         "Choose an enabled player action, not a chapter"
     );
+    // The dependency plan's detour (get a key first) is what the Now card
+    // shows; accept publishing it without changing progress.
+    if let Some((step, why)) = super::planning::first_detour(store, guide)? {
+        if step == action.step_id {
+            return Ok(
+                json!({"accepted":true,"plan":true,"step_id":action.step_id,"instruction":"This is the plan's first item; the Now card shows it. Tell the player, with the reason."}),
+            );
+        }
+        anyhow::bail!(
+            "Refused: the plan from where the player is has something to do first, so do not tell them that step. {why} Publish step {step} (\"{}\") and tell the player that, with the reason.",
+            guide
+                .step(&step)
+                .map(|s| s.title.as_str())
+                .unwrap_or_default()
+        );
+    }
     // Away from the route: the Now card already leads the player back along
     // the walkthrough's return path. Accept those steps without changing
     // progress (they were done before); refuse steps for elsewhere.
