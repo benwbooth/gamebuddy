@@ -45,7 +45,12 @@ pub struct Crossing {
     pub requires: Vec<String>,
     /// The walkthrough step that makes the crossing.
     pub step: String,
+    /// The last step before it, in the area being left (the way out).
+    pub exit_step: String,
 }
+
+/// One crossing on a route: from, to, what it needs, the step leading out.
+type Leg = (String, String, Vec<String>, String);
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct PlanGraph {
@@ -68,6 +73,8 @@ pub enum PlanItem {
         from: String,
         to: String,
         requires: Vec<String>,
+        /// A walkthrough step that leads out of `from` toward `to`.
+        via_step: Option<String>,
     },
     Do {
         objective: String,
@@ -315,6 +322,7 @@ impl PlanGraph {
                     to: to.clone(),
                     requires: needed,
                     step: pair[1].id.clone(),
+                    exit_step: pair[0].id.clone(),
                 });
             }
         }
@@ -333,32 +341,36 @@ impl PlanGraph {
 
     /// Areas from `from` to `to`, walking crossings in either direction (a
     /// player can walk back the way they came).
-    fn route(&self, from: &str, to: &str) -> Option<Vec<(String, String, Vec<String>)>> {
+    fn route(&self, from: &str, to: &str) -> Option<Vec<Leg>> {
         if from == to {
             return Some(vec![]);
         }
-        let mut seen: HashMap<String, (String, Vec<String>)> = HashMap::new();
+        let mut seen: HashMap<String, (String, Vec<String>, String)> = HashMap::new();
         let mut queue = VecDeque::from([from.to_owned()]);
-        seen.insert(from.to_owned(), (String::new(), vec![]));
+        seen.insert(from.to_owned(), (String::new(), vec![], String::new()));
         while let Some(area) = queue.pop_front() {
             for crossing in &self.crossings {
-                let next = if crossing.from == area {
-                    &crossing.to
+                // Walking a crossing backwards leaves through its far step.
+                let (next, exit) = if crossing.from == area {
+                    (&crossing.to, &crossing.exit_step)
                 } else if crossing.to == area {
-                    &crossing.from
+                    (&crossing.from, &crossing.step)
                 } else {
                     continue;
                 };
                 if seen.contains_key(next) {
                     continue;
                 }
-                seen.insert(next.clone(), (area.clone(), crossing.requires.clone()));
+                seen.insert(
+                    next.clone(),
+                    (area.clone(), crossing.requires.clone(), exit.clone()),
+                );
                 if next == to {
                     let mut path = vec![];
                     let mut at = to.to_owned();
                     while at != from {
-                        let (prev, requires) = seen[&at].clone();
-                        path.push((prev.clone(), at.clone(), requires));
+                        let (prev, requires, exit) = seen[&at].clone();
+                        path.push((prev.clone(), at.clone(), requires, exit));
                         at = prev;
                     }
                     path.reverse();
@@ -428,7 +440,7 @@ impl PlanGraph {
         };
         // Everything needed on the way and for the objective itself.
         let mut needed: Vec<String> = vec![];
-        for (_, _, requires) in &path {
+        for (_, _, requires, _) in &path {
             needed.extend(requires.iter().cloned());
         }
         needed.extend(target.requires.iter().cloned());
@@ -465,8 +477,13 @@ impl PlanGraph {
                 None => unresolved.push(need.clone()),
             }
         }
-        for (from, to, requires) in path {
-            items.push(PlanItem::Travel { from, to, requires });
+        for (from, to, requires, exit) in path {
+            items.push(PlanItem::Travel {
+                from,
+                to,
+                requires,
+                via_step: Some(exit),
+            });
         }
         items.push(PlanItem::Do {
             objective: target.id.clone(),

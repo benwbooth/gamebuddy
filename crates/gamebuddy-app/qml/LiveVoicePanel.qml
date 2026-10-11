@@ -167,11 +167,26 @@ WebEngineView {
         id: quietWatch
         interval: 9000
         onTriggered: {
-            if (!panel.connected || panel.assistantSpeaking || panel.userSpeaking || panel.runningTools > 0 || panel.nudges >= 2) return
+            if (!panel.connected || panel.bookkeeping || panel.assistantSpeaking || panel.userSpeaking || panel.runningTools > 0 || panel.nudges >= 2) return
             panel.nudges++
             gemini.note(panel.session.data_dir || "", "nudge", JSON.stringify(panel.nudges))
             panel.runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("You have the tool results. Answer the player now, in a sentence or two.") + ")")
             restart()
+        }
+    }
+    // Silent bookkeeping: after a scene change (or every 30 s) Gemini
+    // records items bought, found or used up, so the plan knows them.
+    property double lastBookkeepAt: 0
+    property bool bookkeeping: false
+    Timer {
+        interval: 3000; repeat: true; running: panel.connected
+        onTriggered: {
+            if (panel.assistantSpeaking || panel.userSpeaking || panel.workPending || Date.now() - panel.lastBookkeepAt < 8000) return
+            const changed = gemini.scene_changed(panel.session.data_dir || "")
+            if (!changed && Date.now() - panel.lastBookkeepAt < 30000) return
+            panel.lastBookkeepAt = Date.now()
+            panel.bookkeeping = true
+            panel.runJavaScript("gamebuddyGemini.bookkeep()")
         }
     }
     Timer { interval: 250; repeat: true; running: panel.userSpeaking; onTriggered: if (Date.now() - panel.inputAt > 1500) panel.userSpeaking = false }
@@ -232,7 +247,7 @@ WebEngineView {
             // A fresh full-quality still with every question, so answers
             // about the screen use what is there now.
             if (!userSpeaking) attachStill()
-            inputAt = Date.now(); userSpeaking = true; quietWatch.stop(); nudges = 0
+            inputAt = Date.now(); userSpeaking = true; bookkeeping = false; quietWatch.stop(); nudges = 0
         }
         else if (event.type === "input-final") {
             userSpeaking = false; gemini.record(session.data_dir || "", session.game, "user", v); panel.transcript(v)
@@ -253,6 +268,7 @@ WebEngineView {
             assistantSpeaking = v
             if (!v) captionStreaming = false
         }
+        else if (event.type === "bookkeeping-done") bookkeeping = false
         else if (event.type === "interrupted") { captionStreaming = false; activeAdviceStep = "" }
         else if (event.type === "tool-call") { quietWatch.stop(); runTool(v) }
     }

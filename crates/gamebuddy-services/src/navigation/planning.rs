@@ -102,14 +102,16 @@ pub fn context(store: &Store, guide: &Guide) -> Result<Value> {
                 gamebuddy_core::planner::PlanItem::Get {
                     need, title, area, ..
                 } => format!(
-                    "Get first: {} ({}{})",
+                    "Get first: {} ({}{}). If the player already has it (they say so, or the screen showed it), record report_world_state facts [{{id: \"{need}\", value: true}}] and read the context again.",
                     describe(need),
                     title,
                     area.as_deref()
                         .map(|a| format!(", {a}"))
                         .unwrap_or_default()
                 ),
-                gamebuddy_core::planner::PlanItem::Travel { from, to, requires } => format!(
+                gamebuddy_core::planner::PlanItem::Travel {
+                    from, to, requires, ..
+                } => format!(
                     "Travel {from} -> {to}{}",
                     if requires.iter().all(|r| has(r)) {
                         String::new()
@@ -183,7 +185,7 @@ pub fn first_detour(store: &Store, guide: &Guide) -> Result<Option<(String, Stri
         }) => Some((
             step.clone(),
             format!(
-                "Needed first ({}){}.",
+                "Needed first ({}){}. (If the player already has it, record report_world_state fact {need}=true.)",
                 describe(need),
                 target
                     .as_ref()
@@ -191,25 +193,26 @@ pub fn first_detour(store: &Store, guide: &Guide) -> Result<Option<(String, Stri
                     .unwrap_or_default()
             ),
         )),
-        Some(PlanItem::Travel { to, .. }) => {
-            // Lead with the objective's first step; say the area to head for.
-            plan.items.iter().find_map(|i| match i {
-                PlanItem::Do {
-                    first_step: Some(step),
-                    area,
-                    title,
-                    ..
-                } => Some((
-                    step.clone(),
-                    format!(
-                        "From {}, head toward {} for \"{title}\".",
-                        plan.area.as_deref().unwrap_or("here"),
-                        area.as_deref().unwrap_or(to)
-                    ),
-                )),
-                _ => None,
-            })
-        }
+        Some(PlanItem::Travel {
+            to,
+            via_step: Some(step),
+            ..
+        }) => Some((
+            step.clone(),
+            format!(
+                "From {}, head toward {to}{}.",
+                plan.area.as_deref().unwrap_or("here"),
+                target
+                    .as_ref()
+                    .map(|(t, area)| format!(
+                        " on the way to \"{t}\"{}",
+                        area.as_deref()
+                            .map(|a| format!(" in {a}"))
+                            .unwrap_or_default()
+                    ))
+                    .unwrap_or_default()
+            ),
+        )),
         _ => None,
     })
 }
