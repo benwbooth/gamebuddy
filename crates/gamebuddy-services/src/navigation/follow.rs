@@ -130,6 +130,30 @@ pub fn return_path(store: &Store, guide: &Guide, off: &OffRoute) -> Result<Vec<S
     )
 }
 
+/// The player said (or the screen shows) they are back in an earlier,
+/// finished area, e.g. a checkpoint after a death: guide them back from
+/// there, keeping progress.
+pub fn report_return(store: &Store, guide: &Guide, seen_step: &str, area: &str) -> Result<()> {
+    let progress = store.progress(guide)?;
+    let current = progress.current_step.clone().unwrap_or_default();
+    let off = OffRoute {
+        seen_step_id: seen_step.into(),
+        seen_step_title: guide
+            .step(seen_step)
+            .map(|s| s.title.clone())
+            .unwrap_or_default(),
+        map_title: area.into(),
+        route_step_title: guide
+            .step(&current)
+            .map(|s| s.title.clone())
+            .unwrap_or_default(),
+        route_step_id: current,
+        since_ms: crate::screen::now_ms(),
+        session: capture_session(store),
+    };
+    store.put(&format!("off-route:{}", guide.id), &Some(off))
+}
+
 pub fn off_route(store: &Store, guide: &Guide) -> Result<Option<OffRoute>> {
     let session = capture_session(store);
     Ok(store

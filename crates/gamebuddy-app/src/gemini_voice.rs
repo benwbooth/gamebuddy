@@ -185,8 +185,10 @@ impl ffi::GeminiVoice {
                     let guide = store
                         .get::<String>("active_guide")?
                         .and_then(|id| store.guide(&id).ok());
-                    value =
-                        gamebuddy_services::voice::prompts::gemini_context(&value, guide.as_ref());
+                    value = gamebuddy_services::voice::prompts::gemini_context(
+                        &value,
+                        guide.as_ref().map(|g| (&store, g)),
+                    );
                 }
                 if name == "get_game_screen"
                     && let Some(object) = value.as_object_mut()

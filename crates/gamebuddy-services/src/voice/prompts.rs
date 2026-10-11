@@ -57,8 +57,9 @@ pub fn gemini_live() -> String {
 /// that slow every spoken reply.
 pub fn gemini_context(
     full: &serde_json::Value,
-    guide: Option<&gamebuddy_core::Guide>,
+    profile: Option<(&crate::Store, &gamebuddy_core::Guide)>,
 ) -> serde_json::Value {
+    let guide = profile.map(|(_, g)| g);
     use serde_json::{Value, json};
     let step =
         |s: &Value| json!({"id":s["id"],"title":s["title"],"instructions":s["instructions"]});
@@ -88,6 +89,7 @@ pub fn gemini_context(
             "return_path": list(&guidance["return_path"], 8, &brief),
         },
         "big_picture": guide.and_then(|g| big_picture(g, guidance["now"]["id"].as_str()?)),
+        "requirements_ahead": profile.map(|(store, guide)| requirements_ahead(store, guide, full)),
         "authored_route": full["navigation"]["authored_route"],
         "location": full["navigation"]["location"],
         "place": full["navigation"]["map"]["current_place"]["label"],
@@ -95,8 +97,60 @@ pub fn gemini_context(
         "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),
         "world_facts": facts,
         "journal_recent": list(&full["journal"]["recent"], 5, &|e| e.clone()),
-        "instruction": "Compact live context. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
+        "instruction": "Compact live context. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. requirements_ahead lists steps on the way that need something the player does not have (a key used up, an item); mention those first. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
     })
+}
+
+/// Steps on the way ahead whose requirements are unmet (a key used up,
+/// an item never bought) and the steps that get them, so the buddy says
+/// "grab a Queen key first" before the player reaches the door.
+fn requirements_ahead(
+    store: &crate::Store,
+    guide: &gamebuddy_core::Guide,
+    full: &serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let Ok(progress) = store.progress(guide) else {
+        return Value::Null;
+    };
+    let model = crate::outcomes::prepared(store, guide)
+        .ok()
+        .flatten()
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let view = model.view(guide, &progress);
+    let guidance = &full["navigation"]["guidance"];
+    let mut ids: Vec<String> = vec![];
+    let lists = [
+        &guidance["return_path"],
+        &full["navigation"]["authored_route"]["steps"],
+        &guidance["next"],
+    ];
+    for id in std::iter::once(&guidance["now"]["id"])
+        .chain(
+            lists
+                .iter()
+                .flat_map(|l| l.as_array().into_iter().flatten().map(|s| &s["id"])),
+        )
+        .filter_map(Value::as_str)
+    {
+        if !ids.iter().any(|i| i == id) && ids.len() < 20 {
+            ids.push(id.to_owned());
+        }
+    }
+    let title = |id: &str| guide.step(id).map(|s| s.title.clone()).unwrap_or_default();
+    Value::Array(
+        ids.iter()
+            .filter_map(|id| {
+                if let Some(reason) = view.blocked.get(id) {
+                    return Some(json!({"step":title(id),"blocked":reason}));
+                }
+                let needs = view.requirements.get(id).filter(|n| !n.is_empty())?;
+                Some(json!({"step":title(id),"get_first":needs.iter().map(|n| title(n)).collect::<Vec<_>>()}))
+            })
+            .take(5)
+            .collect(),
+    )
 }
 
 /// The chapter and task around a step, and the next tasks after it: the
@@ -298,7 +352,7 @@ You are watching continuously, like a friend on the couch who knows this game. W
 
 Text that begins "Watch check" comes from the application after the scene changed. Compare the newest frames with what you saw before. If something important just happened (a death or game over, a new area or town, a locked door or message, an item gained or used, low health, a dangerous enemy or boss), say it in one or two short calm sentences, with the immediate advice that follows from it. Otherwise stay completely silent: produce no speech at all. A watch check is not the player speaking: do not call any tool for it except record_journal, and never report a location, completion or world fact from it.
 
-When the player says where they are ("I'm in Mascon", "I'm back in town"), call report_location first, before get_game_context or any advice, with place_label set to the area's real name (a town such as "Mascon", or a named area), never a generic word like "town"; if you cannot tell which town from the screen or their words, ask. player_report fields must quote words the player actually said, with one exception: when the newest frames clearly show the player in a different area than the route position (outside the town, in another town, in a named dungeon area), call report_location with place_label set to that area's name as the walkthrough calls it and player_report starting with "Screen: " followed by what you see. That moves the saved position forward so the next step and arrow match the screen. Never tell the player to do something in a place the frames show they have already left.
+When the player says where they are ("I'm in Mascon", "I'm back in town"), call report_location first, before get_game_context or any advice, with place_label set to the area's real name (a town such as "Mascon", or a named area), never a generic word like "town"; if you cannot tell which town from the screen or their words, ask. After the player dies, the game sends them back to a checkpoint, so the saved route position no longer applies: work out the town from the newest screen (shop signs, buildings, names on screen) and report it, or, if you cannot tell, ask "Which town did you wake up in?" before giving directions. Then check requirements_ahead for the way back (a key used up on an earlier door) and say what to get first. Whenever the screen contradicts guidance.now (no such enemies, no such shop here) and you cannot name the area, ask where they are rather than guessing a place. player_report fields must quote words the player actually said, with one exception: when the newest frames clearly show the player in a different area than the route position (outside the town, in another town, in a named dungeon area), call report_location with place_label set to that area's name as the walkthrough calls it and player_report starting with "Screen: " followed by what you see. That moves the saved position forward so the next step and arrow match the screen. Never tell the player to do something in a place the frames show they have already left.
 
 Greetings, small talk and feelings need no tools. Text that begins "GameBuddy cue:" comes from the application, not the player: say its content briefly in your own calm words, keeping its facts. Text that begins "Game context:" is quiet background reference; do not respond to it.
 

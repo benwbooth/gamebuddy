@@ -71,6 +71,23 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
         "Include the player's own short location statement"
     );
     let atlas = atlas(store, guide)?;
+    // "Forepaw town" or "the town of Mascon" names the area map "Forepaw".
+    if report.place_id.is_empty()
+        && let Some(label) = report.place_label.as_deref()
+        && !atlas
+            .places
+            .iter()
+            .any(|p| p.label.eq_ignore_ascii_case(label.trim()))
+        && let Some(area) = atlas
+            .maps
+            .iter()
+            .map(|m| m.title.as_str())
+            .filter(|t| !t.contains(" To "))
+            .filter(|t| label.to_lowercase().contains(&t.to_lowercase()))
+            .max_by_key(|t| t.len())
+    {
+        report.place_label = Some(area.to_owned());
+    }
     let new_place = if report.place_id.is_empty() {
         let label = report.place_label.as_deref().unwrap_or_default().trim();
         ensure!(
@@ -96,10 +113,14 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
         // A live voice model watching the feed may report a known walkthrough
         // area it sees ("Screen: ..."), never an invented place name.
         let seen_known_area = report.player_report.starts_with("Screen:")
-            && atlas
+            && (atlas
                 .places
                 .iter()
-                .any(|p| p.label.to_lowercase().contains(&label.to_lowercase()));
+                .any(|p| p.label.to_lowercase().contains(&label.to_lowercase()))
+                || atlas
+                    .maps
+                    .iter()
+                    .any(|m| m.title.eq_ignore_ascii_case(label)));
         ensure!(
             mapped_area
                 || seen_known_area
@@ -205,6 +226,15 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
         new_place,
         &passed,
     )?;
+    // Back in an area the route already finished (a checkpoint after a
+    // death, a trip back to town): lead them back from there.
+    if arrival.is_none()
+        && report.step_id.is_none()
+        && let Some(area) = area.as_deref()
+        && let Some(seen) = earlier_step_in(guide, &atlas, &progress, area)
+    {
+        super::follow::report_return(store, guide, &seen, area)?;
+    }
     if let Some(frame) = screen::movement_frame(store, screen::now_ms())? {
         store.put(
             &reported_view_key(guide),
@@ -219,6 +249,38 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
         json!({"progress":progress,"evidence_kind":"player_report","arrival_step_id":arrival,"arrival_note":arrival_note,
         "navigation":context(store, guide, &progress, &SyncEstimate::default())?}),
     )
+}
+
+/// The latest step before the current one that the source places in the
+/// area, when the current step is elsewhere.
+fn earlier_step_in(
+    guide: &Guide,
+    atlas: &gamebuddy_core::Atlas,
+    progress: &gamebuddy_core::Progress,
+    area: &str,
+) -> Option<String> {
+    let area = area.trim().to_lowercase();
+    let in_area = |id: &str| {
+        atlas
+            .place_for_step(guide, id)
+            .is_some_and(|place| place.label.to_lowercase().contains(&area))
+    };
+    let current = progress.current_step.as_deref()?;
+    if in_area(current) {
+        return None;
+    }
+    let at = guide.steps.iter().position(|s| s.id == current)?;
+    guide.steps[..at]
+        .iter()
+        .rev()
+        .filter(|s| {
+            !guide
+                .steps
+                .iter()
+                .any(|c| c.parent_id.as_deref() == Some(&s.id))
+        })
+        .find(|s| in_area(&s.id))
+        .map(|s| s.id.clone())
 }
 
 /// The area the player says they are in ("I'm in Mascon", "we're back at
