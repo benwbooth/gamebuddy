@@ -481,6 +481,28 @@ pub fn publish(store: &Store, guide: &Guide, action: NextAction) -> Result<Value
         serde_json::to_string(&guidance.requirements)?,
         progress.epoch
     );
+    // The brain judges direction by comparing the screen with where the
+    // walkthrough player went next from this spot; a guess that disagrees is
+    // refused rather than shown as an arrow.
+    if let Some(direction) = action.screen_direction {
+        let latest = crate::brain::latest(store, guide)?;
+        let judged = latest["situation"]["direction"]
+            .as_str()
+            .unwrap_or_default();
+        let given = serde_json::to_value(direction)?;
+        if !judged.is_empty()
+            && latest["age_ms"].as_u64().is_some_and(|age| age < 25_000)
+            && given.as_str() != Some(judged)
+        {
+            anyhow::bail!(
+                "The direction from here is {judged}, not {}: {}. Publish screen_direction {judged} with instructions that say the same.",
+                given.as_str().unwrap_or_default(),
+                latest["situation"]["direction_reason"]
+                    .as_str()
+                    .unwrap_or_default()
+            );
+        }
+    }
     let movement = action
         .screen_direction
         .map(|direction| -> Result<_> {

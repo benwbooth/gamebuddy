@@ -293,3 +293,21 @@ pub fn sync_area(store: &Store, guide: &Guide, at_ms: u64) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// The walkthrough step the plan's first item starts with: what to get, the
+/// way out of this area, or the objective's next step.
+pub fn next_step(store: &Store, guide: &Guide) -> Result<Option<String>> {
+    use gamebuddy_core::planner::PlanItem;
+    let atlas = super::atlas(store, guide)?;
+    let model = crate::outcomes::prepared(store, guide)?
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let graph = PlanGraph::build(guide, &atlas, &model);
+    let progress = store.progress(guide)?;
+    let area = player_area(store, guide, &graph)?;
+    let plan = graph.plan(guide, &progress, area.as_deref());
+    Ok(plan.items.iter().find_map(|item| match item {
+        PlanItem::Get { first_step, .. } | PlanItem::Do { first_step, .. } => first_step.clone(),
+        PlanItem::Travel { via_step, .. } => via_step.clone(),
+    }))
+}
