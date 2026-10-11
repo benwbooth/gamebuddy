@@ -243,7 +243,7 @@ pub fn gemini_session(
         "key": live.api_key()?,
         "setup": {
             "model": format!("models/{}", live.model),
-            "generationConfig": {"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":live.voice}}}},
+            "generationConfig": {"responseModalities":["AUDIO"],"thinkingConfig":{"thinkingBudget":8192},"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":live.voice}}}},
             "systemInstruction": {"parts":[{"text":instructions}]},
             // Google Search covers game facts the walkthrough never shows,
             // such as each town's shop prices.
