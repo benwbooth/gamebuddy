@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 /// Short: look-alike rooms (shops, title screens) a few minutes ahead have
 /// moved the route into later chapters.
 const AHEAD_MS: u64 = 2 * 60_000;
+/// When the screen's map match confirms the area, a distinct match may move
+/// further ahead, but only to steps in that same area.
+const AHEAD_IN_AREA_MS: u64 = 10 * 60_000;
 /// A match this far behind the current step means the player went back.
 const BEHIND_MS: u64 = 60_000;
 /// The new position must hold this long before the route follows it.
@@ -228,9 +231,22 @@ pub fn observed(
     }
     let view = gamebuddy_core::outcomes::OutcomeModel::default().view(guide, &progress);
     let route = gamebuddy_core::route::authored_route(guide, &progress, &view, &current, 120);
+    let reach = {
+        let atlas = super::atlas(store, guide)?;
+        let graph = gamebuddy_core::planner::PlanGraph::build(
+            guide,
+            &atlas,
+            &gamebuddy_core::outcomes::OutcomeModel::default(),
+        );
+        if super::planning::locate(store, guide, &graph)?.1 {
+            AHEAD_IN_AREA_MS
+        } else {
+            AHEAD_MS
+        }
+    };
     let ahead = plausible
         .iter()
-        .filter(|ms| **ms > current_ms && **ms <= current_ms + AHEAD_MS)
+        .filter(|ms| **ms > current_ms && **ms <= current_ms + reach)
         .min()
         .copied();
     let target = ahead.and_then(|ms| {

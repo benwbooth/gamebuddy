@@ -338,6 +338,92 @@ pub fn nearby_requirements(store: &Store, guide: &Guide) -> Result<Value> {
     Ok(json!(graph
         .nearby_requirements(guide, &progress, area.as_deref())
         .into_iter()
-        .map(|o| json!({"objective":o.title,"area":o.area,"optional":o.optional,"requires":o.requires,"walkthrough":text(o)}))
+        .map(|o| {
+            let walkthrough = text(o);
+            json!({"objective":o.title,"area":o.area,"optional":o.optional,"requires":o.requires,"walkthrough":walkthrough,"key_needed":key_lookup(store, guide, o, &walkthrough)})
+        })
         .collect::<Vec<_>>()))
+}
+
+/// Which key a place needs when the walkthrough only says "the required
+/// key": looked up once with Google Search (through Gemini) in the
+/// background and remembered, so the warning names it before the player
+/// reaches the door.
+fn key_lookup(
+    store: &Store,
+    guide: &Guide,
+    objective: &gamebuddy_core::planner::Objective,
+    walkthrough: &str,
+) -> Option<String> {
+    let lower = walkthrough.to_lowercase();
+    let named = [
+        "queen", "king", "jack", "joker", "ace", "demon", "key q", "key k", "key j",
+    ]
+    .iter()
+    .any(|k| lower.contains(k));
+    if !lower.contains("key") || named {
+        return None;
+    }
+    let key = format!("key-lookup:{}:{}", guide.id, objective.id);
+    if let Ok(Some(found)) = store.get::<Value>(&key) {
+        return found["answer"].as_str().map(str::to_owned);
+    }
+    static RUNNING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(vec![]);
+    {
+        let mut running = RUNNING.lock().ok()?;
+        if running.contains(&key) {
+            return None;
+        }
+        running.push(key.clone());
+    }
+    let root = store.root.clone();
+    let question = format!(
+        "In {} , which key (by its in-game name) is needed to enter or open this: \"{}\"? Walkthrough text: {} Answer with the key name only, or \"unknown\".",
+        guide.game, objective.title, walkthrough
+    );
+    std::thread::spawn(move || {
+        let answer = (|| -> anyhow::Result<String> {
+            let api_key = crate::LiveVoice::default().api_key()?;
+            let body =
+                json!({"contents":[{"parts":[{"text":question}]}],"tools":[{"googleSearch":{}}]});
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()?;
+            // Busy models answer 503; try the next one.
+            let mut reply = Value::Null;
+            for model in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"] {
+                reply = client
+                    .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"))
+                    .json(&body)
+                    .send()?
+                    .json()?;
+                if reply["error"].is_null() {
+                    break;
+                }
+            }
+            let text: String = reply["candidates"][0]["content"]["parts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["text"].as_str())
+                .collect();
+            anyhow::ensure!(!text.trim().is_empty(), "No answer: {}", reply["error"]);
+            Ok(text.trim().chars().take(80).collect())
+        })();
+        if let Ok(store) = Store::open(&root) {
+            match answer {
+                Ok(answer) if !answer.eq_ignore_ascii_case("unknown") => {
+                    let _ = store.put(&key, &json!({"answer":answer}));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let _ = store.put("key-lookup-error", &format!("{error:#}"));
+                }
+            }
+        }
+        if let Ok(mut running) = RUNNING.lock() {
+            running.retain(|k| *k != key);
+        }
+    });
+    None
 }
