@@ -276,6 +276,13 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--voice-trace") >= 0
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
+    // A companion launched for a game quits when that game exits; otherwise
+    // it lingers with an old build alongside the next launch's GameBuddy.
+    Timer {
+        property int missing: 0
+        interval: 2000; repeat: true; running: true
+        onTriggered: { missing = buddy.game_alive() ? 0 : missing + 1; if (missing >= 2) Qt.quit() }
+    }
     Timer { interval: 100; repeat: true; running: true; onTriggered: buddy.poll_startup() }
     Timer {
         interval: 16; repeat: true; running: root.appArguments.indexOf("--ui-trace") >= 0

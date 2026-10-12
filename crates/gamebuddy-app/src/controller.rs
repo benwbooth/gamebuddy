@@ -98,6 +98,8 @@ pub mod ffi {
         #[qinvokable]
         fn update_available(self: &Buddy) -> bool;
         #[qinvokable]
+        fn game_alive(self: &Buddy) -> bool;
+        #[qinvokable]
         fn set_widget_visible(self: Pin<&mut Buddy>, id: QString, visible: bool);
         #[qinvokable]
         fn poll_widgets(self: Pin<&mut Buddy>);
@@ -1722,6 +1724,22 @@ impl ffi::Buddy {
                 object.poll_widgets();
             });
         });
+    }
+    /// False once the game process GameBuddy was launched for (--game-pid)
+    /// has exited, so a companion does not outlive its game.
+    pub fn game_alive(&self) -> bool {
+        let Some(pid) = argument("--game-pid").and_then(|v| v.parse::<u32>().ok()) else {
+            return true;
+        };
+        #[cfg(target_os = "linux")]
+        {
+            std::path::Path::new(&format!("/proc/{pid}")).exists()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            true
+        }
     }
     /// True when GameBuddy has been rebuilt since this process started, so a
     /// long-running session tells the player to restart for the new version.
