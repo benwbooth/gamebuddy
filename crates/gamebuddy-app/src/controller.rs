@@ -96,6 +96,8 @@ pub mod ffi {
         #[qinvokable]
         fn note_widget_events(self: &Buddy, json: QString);
         #[qinvokable]
+        fn update_available(self: &Buddy) -> bool;
+        #[qinvokable]
         fn set_widget_visible(self: Pin<&mut Buddy>, id: QString, visible: bool);
         #[qinvokable]
         fn poll_widgets(self: Pin<&mut Buddy>);
@@ -1720,6 +1722,16 @@ impl ffi::Buddy {
                 object.poll_widgets();
             });
         });
+    }
+    /// True when GameBuddy has been rebuilt since this process started, so a
+    /// long-running session tells the player to restart for the new version.
+    pub fn update_available(&self) -> bool {
+        static STARTED: std::sync::OnceLock<std::time::SystemTime> = std::sync::OnceLock::new();
+        let started = *STARTED.get_or_init(std::time::SystemTime::now);
+        std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| modified > started)
     }
     /// Drag counters from the widget page, for diagnosing layout saving.
     pub fn note_widget_events(&self, json: QString) {

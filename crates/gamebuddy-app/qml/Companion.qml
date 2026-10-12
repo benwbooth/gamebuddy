@@ -340,6 +340,15 @@ Item {
                 ToolTip.visible: hovered; ToolTip.text: "Listen automatically at game launch and when you unmute your microphone."
             }
         }
+        Text {
+            // A rebuilt GameBuddy only takes effect after a restart.
+            property bool updated: false
+            Timer { interval: 60000; repeat: true; running: true; triggeredOnStart: true; onTriggered: parent.updated = buddy.update_available() }
+            visible: updated
+            Layout.fillWidth: true
+            text: "GameBuddy was updated. Quit and relaunch it to use the new version."
+            color: "#ffd38a"; font.pixelSize: 14; wrapMode: Text.WordWrap
+        }
         RowLayout {
             Layout.fillWidth: true
             Text {

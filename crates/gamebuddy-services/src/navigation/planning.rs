@@ -391,7 +391,11 @@ fn key_lookup(
                 .build()?;
             // Busy models answer 503; try the next one.
             let mut reply = Value::Null;
-            for model in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"] {
+            for model in [
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.1-pro-preview",
+            ] {
                 reply = client
                     .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"))
                     .json(&body)
