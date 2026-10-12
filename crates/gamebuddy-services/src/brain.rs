@@ -235,7 +235,7 @@ pub fn think(
     apply(store, guide, &situation)?;
     store.put(
         &key(guide),
-        &json!({"situation":situation,"captured_at_ms":snapshot.captured_at_ms,"updated_at_ms":screen::now_ms(),"elapsed_ms":started.elapsed().as_millis() as u64}),
+        &json!({"situation":situation,"session":snapshot.ticket.session,"captured_at_ms":snapshot.captured_at_ms,"updated_at_ms":screen::now_ms(),"elapsed_ms":started.elapsed().as_millis() as u64}),
     )?;
     Ok((situation, answer))
 }
@@ -298,6 +298,14 @@ pub fn latest(store: &Store, guide: &Guide) -> Result<Value> {
             let age = screen::now_ms().saturating_sub(v["captured_at_ms"].as_u64().unwrap_or(0));
             v["age_ms"] = json!(age);
             v
+        })
+        // Only a reading of this game session's recent screen describes now.
+        .filter(|v| {
+            let session = screen::status(store)
+                .ok()
+                .and_then(|s| s["session_id"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            v["session"] == session.as_str() && v["age_ms"].as_u64().is_some_and(|a| a < 120_000)
         })
         .unwrap_or(Value::Null))
 }

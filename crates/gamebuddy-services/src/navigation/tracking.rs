@@ -78,6 +78,10 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .places
             .iter()
             .any(|p| p.label.eq_ignore_ascii_case(label.trim()))
+        && !atlas
+            .maps
+            .iter()
+            .any(|m| m.title.eq_ignore_ascii_case(label.trim()))
         && let Some(area) = atlas
             .maps
             .iter()
@@ -112,15 +116,26 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .is_some_and(|p| p.label.to_lowercase().contains(&label.to_lowercase()));
         // A live voice model watching the feed may report a known walkthrough
         // area it sees ("Screen: ..."), never an invented place name.
+        // "Screen:" reports are accepted only for the area the live screen is
+        // matched to on the area maps: scenery alone (red brick, a purple
+        // cave) has named the wrong town.
+        let session = screen::status(store)?["session_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let mapped_title = store
+            .get::<Value>(&format!("world-observation:{}", guide.id))?
+            .filter(|o| session.is_empty() || o["tracker"]["session"] == session.as_str())
+            .filter(|o| {
+                o["map_registration"]["observed_at_ms"]
+                    .as_u64()
+                    .is_some_and(|at| screen::now_ms().saturating_sub(at) < 120_000)
+            })
+            .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
+            .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
+            .map(|m| m.title.to_lowercase());
         let seen_known_area = report.player_report.starts_with("Screen:")
-            && (atlas
-                .places
-                .iter()
-                .any(|p| p.label.to_lowercase().contains(&label.to_lowercase()))
-                || atlas
-                    .maps
-                    .iter()
-                    .any(|m| m.title.eq_ignore_ascii_case(label)));
+            && mapped_title.as_deref() == Some(label.to_lowercase().as_str());
         ensure!(
             mapped_area
                 || seen_known_area
@@ -260,7 +275,24 @@ fn earlier_step_in(
     area: &str,
 ) -> Option<String> {
     let area = area.trim().to_lowercase();
+    // Areas the plan knows (towns, area maps such as "Mascon To Victim")
+    // are judged per objective, so one map spanning a town does not pull in
+    // that town's steps; other names match place labels.
+    let graph = gamebuddy_core::planner::PlanGraph::build(
+        guide,
+        atlas,
+        &gamebuddy_core::outcomes::OutcomeModel::default(),
+    );
+    let plan_area = graph
+        .objectives
+        .iter()
+        .any(|o| o.area.as_deref().is_some_and(|a| a.to_lowercase() == area));
     let in_area = |id: &str| {
+        if plan_area {
+            return graph
+                .area_of_step(id)
+                .is_some_and(|a| a.to_lowercase() == area);
+        }
         atlas
             .place_for_step(guide, id)
             .is_some_and(|place| place.label.to_lowercase().contains(&area))
@@ -385,7 +417,24 @@ fn arrival(
         return Ok(None);
     }
     // A town shown by the live map match is evidence for the whole town.
+    // Areas the plan knows (towns, area maps such as "Mascon To Victim")
+    // are judged per objective, so one map spanning a town does not pull in
+    // that town's steps; other names match place labels.
+    let graph = gamebuddy_core::planner::PlanGraph::build(
+        guide,
+        atlas,
+        &gamebuddy_core::outcomes::OutcomeModel::default(),
+    );
+    let plan_area = graph
+        .objectives
+        .iter()
+        .any(|o| o.area.as_deref().is_some_and(|a| a.to_lowercase() == area));
     let in_area = |id: &str| {
+        if plan_area {
+            return graph
+                .area_of_step(id)
+                .is_some_and(|a| a.to_lowercase() == area);
+        }
         atlas
             .place_for_step(guide, id)
             .is_some_and(|place| place.label.to_lowercase().contains(&area))
@@ -401,16 +450,10 @@ fn arrival(
         .view(guide, progress);
     let route =
         gamebuddy_core::route::authored_route(guide, progress, &view, start, guide.steps.len());
-    if let Some(index) = route.step_ids.iter().position(|id| in_area(id)) {
-        let mut steps = route.step_ids;
-        let passed = steps.drain(..index).collect();
-        return Ok(Some((steps.swap_remove(0), passed, vec![])));
-    }
-    // Not ahead: the route may have jumped past this area on a guess. Its
-    // first step there that was only passed (never confirmed) is where the
-    // player really is; everything passed from there on is undone.
     let order = |id: &str| guide.steps.iter().position(|s| s.id == id);
-    let Some(back) = guide
+    // A step in the area that a guessed jump only passed comes first when it
+    // is earlier in the walkthrough than the route's next one there.
+    let first_passed = guide
         .steps
         .iter()
         .filter(|s| progress.passed.contains(&s.id) && in_area(&s.id))
@@ -421,8 +464,39 @@ fn arrival(
                 .any(|c| c.parent_id.as_deref() == Some(&s.id))
         })
         .map(|s| s.id.clone())
-        .next()
-    else {
+        .next();
+    // The next unfinished step there in walkthrough order (the authored
+    // route can stop early at a requirement the plan does not know is met).
+    let leaves: Vec<&str> = guide
+        .steps
+        .iter()
+        .filter(|s| {
+            !guide
+                .steps
+                .iter()
+                .any(|c| c.parent_id.as_deref() == Some(&s.id))
+        })
+        .map(|s| s.id.as_str())
+        .collect();
+    let from = leaves
+        .iter()
+        .position(|id| *id == start)
+        .map_or(0, |i| i + 1);
+    let unfinished = |id: &&str| !gamebuddy_core::step_complete(guide, progress, id);
+    let ahead: Vec<&str> = leaves[from..].iter().copied().filter(unfinished).collect();
+    let _ = &route;
+    if let Some(index) = ahead.iter().position(|id| in_area(id))
+        && first_passed
+            .as_deref()
+            .is_none_or(|p| order(p) > order(ahead[index]))
+    {
+        let passed = ahead[..index].iter().map(|s| s.to_string()).collect();
+        return Ok(Some((ahead[index].to_owned(), passed, vec![])));
+    }
+    // Not ahead: the route may have jumped past this area on a guess. Its
+    // first step there that was only passed (never confirmed) is where the
+    // player really is; everything passed from there on is undone.
+    let Some(back) = first_passed else {
         return Ok(None);
     };
     let from = order(&back);

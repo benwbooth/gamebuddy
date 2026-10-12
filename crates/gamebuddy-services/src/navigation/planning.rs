@@ -47,8 +47,7 @@ pub fn locate(store: &Store, guide: &Guide, graph: &PlanGraph) -> Result<(Option
         })
         .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
         .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
-        .map(|m| m.title.clone())
-        .filter(|t| !t.contains(" To "));
+        .map(|m| m.title.clone());
     let step = progress
         .current_step
         .as_deref()
@@ -246,7 +245,6 @@ pub fn sync_area(store: &Store, guide: &Guide, at_ms: u64) -> Result<()> {
         .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
         .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
         .map(|m| m.title.clone())
-        .filter(|t| !t.contains(" To "))
     else {
         return Ok(());
     };

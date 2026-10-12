@@ -119,7 +119,14 @@ pub fn place_area(atlas: &Atlas, place_id: &str) -> Option<String> {
         .map_id
         .as_deref()
         .and_then(|m| atlas.maps.iter().find(|x| x.id == m))
-        .filter(|m| !m.title.contains(" To "))
+    {
+        return Some(map.title.clone());
+    }
+    // A place named exactly like an area map (a reported "Mascon To Victim").
+    if let Some(map) = atlas
+        .maps
+        .iter()
+        .find(|m| m.title.eq_ignore_ascii_case(&place.label))
     {
         return Some(map.title.clone());
     }
