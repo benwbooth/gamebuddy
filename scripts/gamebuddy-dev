@@ -11,7 +11,12 @@ if [[ ! -x "$binary" ]]; then
         "$project_dir" "$project_dir/Cargo.toml" >&2
     exit 1
 fi
-# Record the environment as a profile so it is a GC root. Without one, a
-# routine Nix garbage collection deletes the patched gamescope (it is not in
-# any binary cache) and the next game launch stalls while it is recompiled.
+# Load the flake environment through nix-direnv, which keeps it as a GC root
+# under .direnv/. Without a root, routine garbage collection deletes the
+# locally built gamescope and the next game launch stalls recompiling it.
+if command -v direnv >/dev/null 2>&1 && (cd "$project_dir" && direnv status --json 2>/dev/null) \
+    | tr -d ' \n' | grep -q '"foundRC":{"allowed":0,'; then
+    exec direnv exec "$project_dir" "$binary" "$@"
+fi
+# Without an allowed .envrc, keep an equivalent root as a Nix profile.
 exec nix develop --profile "$project_dir/.nix-dev-profile" "$project_dir" --command "$binary" "$@"
