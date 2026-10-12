@@ -35,10 +35,11 @@
     if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}return}
     const c=m.serverContent;if(!c)return;
     if(c.interrupted){stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
-    if(c.inputTranscription?.text){silentUntil=0;quietTurn=false;inputText+=c.inputTranscription.text;emit('input-text',inputText)}
+    if(c.inputTranscription?.text){if(silent())outputText='';silentUntil=0;quietTurn=false;inputText+=c.inputTranscription.text;emit('input-text',inputText)}
     // A model that decides not to talk sometimes says a placeholder such
     // as "<no speech>{pause}" out loud; cut it off and drop the rest of the turn.
-    if(c.outputTranscription?.text&&!outputText.trim()&&/^\s*[<{\[(]|no speech|\{pause\}/i.test(c.outputTranscription.text)){quietTurn=true;stopPlayback()}
+    if(c.outputTranscription?.text&&!outputText.trim()&&/^\s*[<{\[(]|no speech|\{pause\}/i.test(c.outputTranscription.text)){quietTurn=true;stopPlayback();emit('quiet-turn',c.outputTranscription.text)}
+    if(c.outputTranscription?.text&&silent())outputText+=c.outputTranscription.text;
     if(c.outputTranscription?.text&&!silent()&&!quietTurn){
       if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
       outputText+=c.outputTranscription.text;emit('caption',outputText)}
@@ -49,7 +50,7 @@
       if(c.turnComplete&&outputText.trim()){emit('output-final',outputText.trim());outputText=''}
       // A silent check ends when Gemini finishes with no tool call pending;
       // its replies to tool results stay muted until then.
-      if(c.turnComplete&&silent()&&!pendingTools.size){silentUntil=0;outputText='';emit('bookkeeping-done',true)}
+      if(c.turnComplete&&silent()&&!pendingTools.size){silentUntil=0;if(outputText.trim())emit('muted-reply',outputText.trim());outputText='';emit('bookkeeping-done',true)}
     }
   }
   function connect(){
@@ -139,7 +140,7 @@
     // context tool result so position answers come from it.
     still(jpeg){send({clientContent:{turns:[{role:'user',parts:[{text:'Current game screen (newest frame):'},{inlineData:{mimeType:'image/jpeg',data:jpeg}}]}],turnComplete:false}})},
     // Application cues are spoken; context is quiet background.
-    cue(text){silentUntil=0;send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
+    cue(text){if(silent())outputText='';silentUntil=0;send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},
     watch(){send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
     // A silent turn: Gemini records what changed (items bought, keys used)

@@ -170,7 +170,7 @@ WebEngineView {
             if (panel.userSpeaking || panel.assistantSpeaking || panel.workPending) { if (panel.userSpeaking) { panel.greeted = true; stop() } return }
             const area = gemini.located_area(panel.session.data_dir || "")
             if (!area.length && Date.now() - panel.greetSince < 30000) return
-            panel.greeted = true; stop()
+            panel.greeted = true; stop(); panel.lastTurnAt = Date.now()
             gemini.note(panel.session.data_dir || "", "greeting", JSON.stringify({area: area, waited_ms: Date.now() - panel.greetSince}))
             panel.runJavaScript("gamebuddyGemini.cue(" + JSON.stringify("The player just started voice chat. Greet them in one short, casual line, then call get_game_context and tell them in a sentence where they are and what's next" + (area.length ? " (GameBuddy located them in " + area + " from the screen)." : "; GameBuddy could not locate them from the screen yet, so look at the newest frame yourself, and only ask where they are if you cannot tell.")) + ")")
         }
@@ -193,10 +193,15 @@ WebEngineView {
     // records items bought, found or used up, so the plan knows them.
     property double lastBookkeepAt: 0
     property bool bookkeeping: false
+    // Last cue, player words, tool call or reply.
+    property double lastTurnAt: 0
     Timer {
         interval: 3000; repeat: true; running: panel.connected
         onTriggered: {
-            if (!panel.greeted || panel.assistantSpeaking || panel.userSpeaking || panel.workPending || Date.now() - panel.lastBookkeepAt < 8000) return
+            // Never while a reply is owed: a muted check started during the
+            // greeting swallowed its answer.
+            if (!panel.greeted || panel.assistantSpeaking || panel.userSpeaking || panel.workPending
+                    || Date.now() - panel.lastTurnAt < 15000 || Date.now() - panel.lastBookkeepAt < 8000) return
             const changed = gemini.scene_changed(panel.session.data_dir || "")
             if (!changed && Date.now() - panel.lastBookkeepAt < 30000) return
             panel.lastBookkeepAt = Date.now()
@@ -241,7 +246,8 @@ WebEngineView {
         const event = JSON.parse(message.slice(17)), v = event.value
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
-        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final", "capture", "microphone-error", "interrupted"].includes(event.type))
+        if (["tool-call", "input-final", "output-final", "caption"].includes(event.type) && !bookkeeping) lastTurnAt = Date.now()
+        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final", "capture", "microphone-error", "interrupted", "quiet-turn", "muted-reply", "bookkeeping-done"].includes(event.type))
             gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args}
                 // How old the newest frame Gemini had was when the player spoke.
                 : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
