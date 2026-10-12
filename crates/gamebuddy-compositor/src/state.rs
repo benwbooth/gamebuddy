@@ -206,7 +206,7 @@ impl State {
     }
 
     fn publish_ready(&mut self, display: &str) {
-        println!("GAMEBUDDY_COMPOSITOR_DISPLAY={display}");
+        eprintln!("GAMEBUDDY_COMPOSITOR_DISPLAY={display}");
         if let Some(path) = &self.config.ready_file
             && let Err(err) = std::fs::write(path, display)
         {

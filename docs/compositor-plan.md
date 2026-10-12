@@ -75,3 +75,8 @@ Lunchpail must not need changes until the final switch.
 5. **Switch.** `--compositor builtin|gamescope` flag, run the existing compositor,
    resolution and input probes against both, Faxanadu end to end through Lunchpail, then
    make builtin the default and remove Gamescope and its patch from `flake.nix`.
+   *Done October 12 (ahead of milestone 4):* `gamebuddy --launch`/`--gamescope-bridge`
+   now start the compositor from the GameBuddy executable (`--nested-compositor`).
+   Gamescope, its patch and `GAMEBUDDY_GAMESCOPE_BIN` are gone from the flake. The
+   overlay probe through the real launch path matches the Gamescope baseline. Game
+   capture still uses XComposite through the frame; milestone 4 remains an optimization.

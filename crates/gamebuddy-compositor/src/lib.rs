@@ -30,6 +30,43 @@ pub struct Config {
     pub ready_file: Option<PathBuf>,
 }
 
+impl Config {
+    /// `[--fullscreen] [--size WxH] [--ready-file PATH] [-- COMMAND ARGS...]`
+    pub fn from_args(args: impl IntoIterator<Item = OsString>) -> Result<Self> {
+        let mut config = Config::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--fullscreen") => config.fullscreen = true,
+                Some("--size") => {
+                    let value = args.next().context("--size needs WIDTHxHEIGHT")?;
+                    let value = value.to_string_lossy();
+                    let (w, h) = value.split_once('x').context("--size needs WIDTHxHEIGHT")?;
+                    config.size = Some((w.parse()?, h.parse()?));
+                }
+                Some("--ready-file") => {
+                    config.ready_file = Some(PathBuf::from(
+                        args.next().context("--ready-file needs a path")?,
+                    ));
+                }
+                Some("--") => config.command = args.by_ref().collect(),
+                _ => anyhow::bail!("Unknown compositor argument {}", arg.to_string_lossy()),
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// Log to stderr, honouring `RUST_LOG`.
+pub fn init_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .try_init();
+}
+
 pub fn run(config: Config) -> Result<()> {
     let mut event_loop: EventLoop<'static, State> =
         EventLoop::try_new().context("Creating the compositor event loop")?;
@@ -54,8 +91,8 @@ pub(crate) fn spawn_command(command: &[OsString], display: &str) -> Result<()> {
     Command::new(program)
         .args(args)
         .env("DISPLAY", display)
-        // GameBuddy's `--inside-gamescope` checks for this variable.
-        .env("GAMESCOPE_WAYLAND_DISPLAY", "gamebuddy-compositor")
+        // GameBuddy's session supervisor checks it runs inside our compositor.
+        .env("GAMEBUDDY_COMPOSITOR", "1")
         .env_remove("WAYLAND_DISPLAY")
         .spawn()
         .with_context(|| format!("Starting {}", program.to_string_lossy()))?;

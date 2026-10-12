@@ -14,6 +14,7 @@ tempfile = "3"
 x11rb = { version = "0.13", features = ["composite", "xtest", "xfixes", "res", "randr"] }
 wayland-client = "0.31"
 libc = "0.2"
+gamebuddy-compositor = { path = "../gamebuddy-compositor" }
 
 [dev-dependencies]
 base64 = "0.22"

@@ -1,4 +1,4 @@
-//! Start Gamescope before the game. The bridge protocol lets Lunchpail keep
+//! Start GameBuddy's compositor before the game. The bridge protocol lets Lunchpail keep
 //! ownership of the real emulator Child (including its controller pipes).
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,13 @@ impl Options {
 /// Call before creating any Qt objects. Returns None for the ordinary UI mode.
 pub fn dispatch() -> Result<Option<i32>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--nested-compositor") {
+        gamebuddy_compositor::init_logging();
+        gamebuddy_compositor::run(gamebuddy_compositor::Config::from_args(
+            args.into_iter().skip(1),
+        )?)?;
+        return Ok(Some(0));
+    }
     if args.first().is_some_and(|a| a == "--overlay-action") {
         ensure!(
             args.len() == 3,
@@ -201,28 +208,15 @@ fn outer(opts: Options) -> Result<i32> {
         "GAMEBUDDY_DISPLAY render={}x{} output={}x{} fullscreen={}",
         render.width, render.height, output.width, output.height, !opts.windowed
     );
-    let mut cmd = Command::new(
-        std::env::var_os("GAMEBUDDY_GAMESCOPE_BIN").unwrap_or_else(|| "gamescope".into()),
-    );
-    cmd.args([
-        "-w",
-        &render.width.to_string(),
-        "-h",
-        &render.height.to_string(),
-        "-W",
-        &output.width.to_string(),
-        "-H",
-        &output.height.to_string(),
-        "--filter",
-        "nearest",
-        "--xwayland-count",
-        "1",
-    ]);
+    // GameBuddy's own nested compositor (crates/gamebuddy-compositor), run
+    // from this executable so nothing outside the build has to be installed.
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.arg("--nested-compositor");
     if !opts.windowed {
         cmd.arg("--fullscreen");
-    }
-    if let Some(backend) = &opts.backend {
-        cmd.arg("--backend").arg(backend);
+    } else {
+        cmd.arg("--size")
+            .arg(format!("{}x{}", output.width, output.height));
     }
     cmd.arg("--")
         .arg(std::env::current_exe()?)
@@ -243,9 +237,7 @@ fn outer(opts: Options) -> Result<i32> {
         cmd.arg("--").args(&opts.game);
     }
     cmd.stdin(Stdio::null());
-    let mut child = owned_spawn(&mut cmd).context(
-        "Starting Gamescope. Install gamescope or set GAMEBUDDY_GAMESCOPE_BIN to its executable",
-    )?;
+    let mut child = owned_spawn(&mut cmd).context("Starting GameBuddy's compositor")?;
     loop {
         if let Some(status) = child.0.try_wait()? {
             return Ok(fs::read(&result_path)
@@ -264,10 +256,10 @@ fn outer(opts: Options) -> Result<i32> {
 
 fn inside(opts: Options) -> Result<i32> {
     let display =
-        std::env::var("DISPLAY").context("Gamescope did not provide an Xwayland display")?;
+        std::env::var("DISPLAY").context("The compositor did not provide an Xwayland display")?;
     ensure!(
-        std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some(),
-        "--inside-gamescope must be started by Gamescope"
+        std::env::var_os("GAMEBUDDY_COMPOSITOR").is_some(),
+        "--inside-gamescope must be started by GameBuddy's compositor"
     );
     let mut game_child = None;
     let pid;

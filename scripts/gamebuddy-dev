@@ -13,7 +13,7 @@ if [[ ! -x "$binary" ]]; then
 fi
 # Load the flake environment through nix-direnv, which keeps it as a GC root
 # under .direnv/. Without a root, routine garbage collection deletes the
-# locally built gamescope and the next game launch stalls recompiling it.
+# development environment and the next game launch stalls rebuilding it.
 if command -v direnv >/dev/null 2>&1 && (cd "$project_dir" && direnv status --json 2>/dev/null) \
     | tr -d ' \n' | grep -q '"foundRC":{"allowed":0,'; then
     exec direnv exec "$project_dir" "$binary" "$@"

@@ -1,6 +1,8 @@
 # Overlay backends
 
-September 27, 2026. The Linux Gamescope backend is implemented. Windows and macOS currently retain the Qt desktop companion; graphics-hook backends remain separate work.
+September 27, 2026. The Linux Gamescope backend is implemented.
+
+**October 12, 2026:** GameBuddy now runs its own nested compositor instead of Gamescope ([plan](compositor-plan.md)). It keeps the same private-Xwayland design and the `STEAM_OVERLAY`, `STEAM_INPUT_FOCUS` and `GAMESCOPE_CURSOR_VISIBLE_FEEDBACK` properties described below, so this document still describes the behavior; read "Gamescope" as the compositor. Differences: the game always renders at the window's size (`--width`/`--height` no longer pick a separately scaled game resolution), and the compositor reparents clients into frames, which GameBuddy's X11 code looks inside. Windows and macOS currently retain the Qt desktop companion; graphics-hook backends remain separate work.
 
 ## Linux implementation
 
