@@ -51,6 +51,10 @@ pub struct Overlay {
     tab: Keycode,
     escape: Keycode,
     control: Option<crate::control::Endpoint>,
+    /// Where the pointer was and when it last moved: a player moving the
+    /// mouse means to use it even while the game hides its cursor.
+    pointer: [i32; 2],
+    moved_at: std::time::Instant,
 }
 impl Overlay {
     pub fn attach(window: Window) -> Result<Self> {
@@ -120,6 +124,8 @@ impl Overlay {
             control: std::env::var_os("GAMEBUDDY_CONTROL_SOCKET")
                 .map(|path| crate::control::Endpoint::bind(path.into()))
                 .transpose()?,
+            pointer: [0, 0],
+            moved_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
         })
     }
 
@@ -148,7 +154,15 @@ impl Overlay {
         let pointer = self.conn.query_pointer(self.root)?.reply()?;
         let buttons = KeyButMask::BUTTON1 | KeyButMask::BUTTON2 | KeyButMask::BUTTON3;
         let dragging = self.mode != 0 && pointer.mask.intersects(buttons);
-        let visible = cardinal(&self.conn, self.root, self.cursor_visible)? != 0;
+        let at = [i32::from(pointer.root_x), i32::from(pointer.root_y)];
+        if at != self.pointer {
+            self.pointer = at;
+            self.moved_at = std::time::Instant::now();
+        }
+        // Emulators hide the cursor, which used to make widgets unreachable;
+        // recent mouse movement counts as a visible cursor.
+        let visible = cardinal(&self.conn, self.root, self.cursor_visible)? != 0
+            || self.moved_at.elapsed() < std::time::Duration::from_secs(3);
         let mode = if !shown {
             0
         } else {
