@@ -21,6 +21,9 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
+        pointer_constraints::PointerConstraintsState,
+        pointer_gestures::PointerGesturesState,
+        relative_pointer::RelativePointerManagerState,
         selection::data_device::DataDeviceState,
         shm::ShmState,
         xwayland_shell::XWaylandShellState,
@@ -29,7 +32,21 @@ use smithay::{
 };
 use tracing::{error, info, warn};
 
-use crate::{Config, xprops::Props};
+use crate::{Config, host_backend::HostBackend, xprops::Props};
+
+pub enum Backend {
+    Winit(Box<WinitGraphicsBackend<GlesRenderer>>),
+    Host(Box<HostBackend>),
+}
+
+impl Backend {
+    pub fn renderer(&mut self) -> &mut GlesRenderer {
+        match self {
+            Backend::Winit(backend) => backend.renderer(),
+            Backend::Host(backend) => backend.renderer(),
+        }
+    }
+}
 
 pub struct State {
     pub start: Instant,
@@ -46,11 +63,14 @@ pub struct State {
     pub seat: Seat<State>,
     pub data_device_state: DataDeviceState,
     pub xwayland_shell_state: XWaylandShellState,
+    pub pointer_gestures_state: PointerGesturesState,
+    pub relative_pointer_state: RelativePointerManagerState,
+    pub pointer_constraints_state: PointerConstraintsState,
     pub dmabuf: Option<(DmabufState, DmabufGlobal)>,
 
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
-    pub backend: Option<WinitGraphicsBackend<GlesRenderer>>,
+    pub backend: Option<Backend>,
     pub output: Option<Output>,
     pub needs_redraw: bool,
     pub props: Option<Props>,
@@ -81,6 +101,10 @@ impl State {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
+        // Xwayland turns these into XInput gestures, raw motion and grabs.
+        let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         let mut seat = seat_state.new_wl_seat(&display_handle, "gamebuddy");
         seat.add_keyboard(Default::default(), 200, 25)
             .context("Creating the seat keyboard")?;
@@ -118,6 +142,9 @@ impl State {
             seat,
             data_device_state,
             xwayland_shell_state,
+            pointer_gestures_state,
+            relative_pointer_state,
+            pointer_constraints_state,
             dmabuf: None,
             xwm: None,
             xdisplay: None,
@@ -330,6 +357,8 @@ impl State {
     }
 
     pub fn after_dispatch(&mut self) {
+        self.render_host();
+        self.flush_host();
         self.space.refresh();
         let _ = self.display_handle.flush_clients();
     }

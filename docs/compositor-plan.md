@@ -61,6 +61,15 @@ Lunchpail must not need changes until the final switch.
    frames the client's visual (otherwise ARGB overlays lose transparency).
 3. **Input fidelity.** value120 scroll, pinch, relative pointer, pointer constraints.
    This is what the Gamescope patch added.
+   *Implemented October 12:* winit cannot deliver touchpad gestures, relative motion or
+   pointer locks, so on Wayland hosts the compositor is now a native Wayland client
+   (`host.rs`, smithay-client-toolkit) with its own EGL surface, fractional scaling and
+   the host keymap. It forwards value120/axis-source/stop scrolling, pinch, swipe and
+   hold gestures, and relative motion, and offers `zwp_pointer_gestures_v1`,
+   `zwp_relative_pointer_v1` and `zwp_pointer_constraints_v1` to Xwayland, mirroring a
+   game's pointer lock on the host. winit remains the fallback on X11 hosts. The overlay
+   probe gives the same result as on Gamescope; gestures and pointer lock still need a
+   check on a real desktop with a touchpad, which the headless test session cannot do.
 4. **Capture.** Read the game surface's buffer directly from the renderer, replacing
    XComposite readback.
 5. **Switch.** `--compositor builtin|gamescope` flag, run the existing compositor,

@@ -3,7 +3,10 @@
 //! (see docs/compositor-plan.md).
 
 mod handlers;
+mod host;
+mod host_backend;
 mod input;
+mod render;
 mod state;
 mod winit;
 mod xprops;
@@ -32,7 +35,11 @@ pub fn run(config: Config) -> Result<()> {
         EventLoop::try_new().context("Creating the compositor event loop")?;
     let display: Display<State> = Display::new().context("Creating the Wayland display")?;
     let mut state = State::new(&mut event_loop, display, config)?;
-    winit::init(&mut event_loop, &mut state)?;
+    if host_backend::available() {
+        host_backend::init(&mut event_loop, &mut state)?;
+    } else {
+        winit::init(&mut event_loop, &mut state)?;
+    }
     state.start_xwayland()?;
     event_loop
         .run(None, &mut state, |state| state.after_dispatch())

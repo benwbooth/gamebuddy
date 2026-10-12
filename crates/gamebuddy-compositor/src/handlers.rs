@@ -5,21 +5,26 @@ use smithay::{
         allocator::dmabuf::Dmabuf,
         renderer::{ImportDma, utils::on_commit_buffer_handler},
     },
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output, delegate_seat,
-    delegate_shm, delegate_xwayland_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_output,
+    delegate_pointer_constraints, delegate_pointer_gestures, delegate_relative_pointer,
+    delegate_seat, delegate_shm, delegate_xwayland_shell,
     desktop::Window,
-    input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
+    input::{
+        Seat, SeatHandler, SeatState,
+        pointer::{CursorImageStatus, PointerHandle},
+    },
     reexports::wayland_server::{
         Client, Resource,
         protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
     },
-    utils::{Logical, Rectangle},
+    utils::{Logical, Point, Rectangle},
     wayland::seat::WaylandFocus,
     wayland::{
         buffer::BufferHandler,
         compositor::{CompositorClientState, CompositorHandler, CompositorState},
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         output::OutputHandler,
+        pointer_constraints::PointerConstraintsHandler,
         selection::{
             SelectionHandler, SelectionTarget,
             data_device::{
@@ -275,7 +280,25 @@ impl XwmHandler for State {
     }
 }
 
+impl PointerConstraintsHandler for State {
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        // Activated once the pointer is over the surface (see input.rs).
+        self.update_constraint();
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &PointerHandle<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+    }
+}
+
 delegate_compositor!(State);
+delegate_pointer_gestures!(State);
+delegate_relative_pointer!(State);
+delegate_pointer_constraints!(State);
 delegate_shm!(State);
 delegate_seat!(State);
 delegate_data_device!(State);
