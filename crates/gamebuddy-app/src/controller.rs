@@ -94,6 +94,8 @@ pub mod ffi {
         #[qinvokable]
         fn save_widget_layout(self: Pin<&mut Buddy>, json: QString);
         #[qinvokable]
+        fn note_widget_events(self: &Buddy, json: QString);
+        #[qinvokable]
         fn set_widget_visible(self: Pin<&mut Buddy>, id: QString, visible: bool);
         #[qinvokable]
         fn poll_widgets(self: Pin<&mut Buddy>);
@@ -1718,6 +1720,18 @@ impl ffi::Buddy {
                 object.poll_widgets();
             });
         });
+    }
+    /// Drag counters from the widget page, for diagnosing layout saving.
+    pub fn note_widget_events(&self, json: QString) {
+        if let (Ok(store), Ok(value)) = (
+            Store::open(&self.rust().root),
+            serde_json::from_str::<serde_json::Value>(&json.to_string()),
+        ) {
+            let _ = store.put(
+                "widget-events",
+                &json!({"at_ms":services::screen::now_ms(),"counts":value}),
+            );
+        }
     }
     pub fn save_widget_layout(mut self: Pin<&mut Self>, json: QString) {
         // Keep every well-formed widget position; one odd entry (a missing or

@@ -399,6 +399,7 @@ ApplicationWindow {
             onLoadingChanged: loadRequest => { if (loadRequest.status === WebEngineView.LoadSucceededStatus) updateWidgets() }
             onJavaScriptConsoleMessage: (level, message, lineNumber, sourceID) => {
                 if (message.startsWith("GAMEBUDDY_LAYOUT ")) buddy.save_widget_layout(message.slice(17))
+                else if (message.startsWith("GAMEBUDDY_WIDGET_EVENTS ")) buddy.note_widget_events(message.slice(24))
                 else if(message.startsWith("GAMEBUDDY_REGIONS "))root.widgetRegions=message.slice(18)
                 else if(message.startsWith("GAMEBUDDY_DISMISS "))buddy.set_widget_visible(message.slice(18),false)
                 else if(message.startsWith("GAMEBUDDY_READER "))buddy.guide_browser_request(message.slice(17))
