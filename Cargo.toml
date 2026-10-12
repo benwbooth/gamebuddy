@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gamebuddy-core", "crates/gamebuddy-services", "crates/gamebuddy-cli", "crates/gamebuddy-app", "crates/gamebuddy-overlay"]
+members = ["crates/gamebuddy-core", "crates/gamebuddy-services", "crates/gamebuddy-cli", "crates/gamebuddy-app", "crates/gamebuddy-overlay", "crates/gamebuddy-compositor"]
 default-members = ["crates/gamebuddy-app", "crates/gamebuddy-cli"]
 resolver = "2"
 
