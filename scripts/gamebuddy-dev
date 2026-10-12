@@ -11,4 +11,7 @@ if [[ ! -x "$binary" ]]; then
         "$project_dir" "$project_dir/Cargo.toml" >&2
     exit 1
 fi
-exec nix develop "$project_dir" --command "$binary" "$@"
+# Record the environment as a profile so it is a GC root. Without one, a
+# routine Nix garbage collection deletes the patched gamescope (it is not in
+# any binary cache) and the next game launch stalls while it is recompiled.
+exec nix develop --profile "$project_dir/.nix-dev-profile" "$project_dir" --command "$binary" "$@"
