@@ -309,3 +309,35 @@ pub fn next_step(store: &Store, guide: &Guide) -> Result<Option<String>> {
         PlanItem::Travel { via_step, .. } => via_step.clone(),
     }))
 }
+
+/// Keys and items that places near the player need (see
+/// PlanGraph::nearby_requirements), with the walkthrough's own words.
+pub fn nearby_requirements(store: &Store, guide: &Guide) -> Result<Value> {
+    let atlas = super::atlas(store, guide)?;
+    let model = crate::outcomes::prepared(store, guide)?
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let graph = PlanGraph::build(guide, &atlas, &model);
+    let progress = store.progress(guide)?;
+    let area = player_area(store, guide, &graph)?;
+    let text = |o: &gamebuddy_core::planner::Objective| {
+        o.steps
+            .iter()
+            .filter_map(|id| guide.step(id))
+            .map(|s| s.instructions.as_str())
+            .filter(|t| {
+                let t = t.to_lowercase();
+                t.contains("key") || t.contains("requir") || t.contains("locked")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(400)
+            .collect::<String>()
+    };
+    Ok(json!(graph
+        .nearby_requirements(guide, &progress, area.as_deref())
+        .into_iter()
+        .map(|o| json!({"objective":o.title,"area":o.area,"optional":o.optional,"requires":o.requires,"walkthrough":text(o)}))
+        .collect::<Vec<_>>()))
+}

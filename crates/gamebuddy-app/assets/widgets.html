@@ -16,6 +16,7 @@
 .seen-screen [hidden]{display:none}.seen-screen{display:flex;flex-direction:column;gap:8px;overflow:hidden!important;white-space:normal}.seen-screen img{flex:1;min-height:0;width:100%;object-fit:contain;background:#071019;border-radius:5px}.seen-screen small{color:#9db8c7;font-size:12px}.seen-screen select{background:#16303c;color:#e6edf3;border:1px solid #45606b;border-radius:4px;padding:4px}.seen-screen .seen-empty{flex:1;display:grid;place-items:center;text-align:center;color:#adc3cd;font-size:14px;line-height:1.5}</style></head><body><div id="widgets"></div><script>
 (() => {
   const host=document.getElementById('widgets');
+  let saveSoon=null;
   let layouts={}, locked=false, active=null, latestState=null, pendingMap=null, pendingSpatial=null;
   let mapChoice=null, followMap=true, mapZoom=1, mapScroll={x:0,y:0}, mapGuide=null, mapObserver=null, browsedPlace=null;
   const text=(tag,value,className)=>{const node=document.createElement(tag);node.textContent=value;if(className)node.className=className;return node};
@@ -102,7 +103,10 @@
   function save(){console.info('GAMEBUDDY_LAYOUT '+JSON.stringify(layouts));regions()}
   function place(node,box){box=fitBox(box,node.dataset.widgetId);node.style.left=box.x+'px';node.style.top=box.y+'px';node.style.width=box.width+'px';node.style.height=box.height+'px'}
   function begin(event,node,id,resize){if(locked)return;hideTip();event.preventDefault();const b=node.getBoundingClientRect();active={node,id,resize,x:event.clientX,y:event.clientY,box:{...layouts[id],x:b.x,y:b.y,width:b.width,height:b.height}};event.currentTarget.setPointerCapture(event.pointerId)}
-  document.addEventListener('pointermove',e=>{if(!active)return;const a=active,dx=e.clientX-a.x,dy=e.clientY-a.y;let box={...a.box};if(a.resize){box.width=clamp(box.width+dx,230,innerWidth-box.x);box.height=clamp(box.height+dy,130,innerHeight-box.y)}else{box.x+=dx;box.y+=dy}box=fitBox(box,a.id);layouts[a.id]=box;place(a.node,box)});
+  document.addEventListener('pointermove',e=>{if(!active)return;const a=active,dx=e.clientX-a.x,dy=e.clientY-a.y;let box={...a.box};if(a.resize){box.width=clamp(box.width+dx,230,innerWidth-box.x);box.height=clamp(box.height+dy,130,innerHeight-box.y)}else{box.x+=dx;box.y+=dy}box=fitBox(box,a.id);layouts[a.id]=box;place(a.node,box);
+    // Save shortly after movement stops too: the game compositor does not
+    // always deliver the button release that ends a drag.
+    clearTimeout(saveSoon);saveSoon=setTimeout(save,400)});
   function finish(){if(active){active=null;save();if(latestState)window.gamebuddy.render(latestState)}}
   document.addEventListener('pointerup',finish);
   document.addEventListener('pointercancel',finish);

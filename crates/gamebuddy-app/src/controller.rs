@@ -1720,21 +1720,45 @@ impl ffi::Buddy {
         });
     }
     pub fn save_widget_layout(mut self: Pin<&mut Self>, json: QString) {
-        let result = (|| -> Result<()> {
+        // Keep every well-formed widget position; one odd entry (a missing or
+        // out-of-range number) must not discard the whole layout.
+        let root = self.rust().root.clone();
+        let result = (|| -> Result<usize> {
             let value: serde_json::Value = serde_json::from_str(&json.to_string())?;
             let object = value.as_object().context("Invalid widget layout")?;
-            anyhow::ensure!(object.len() <= 100, "Too many saved widget layouts");
-            for bounds in object.values() {
-                for name in ["x", "y", "width", "height"] {
-                    let number = bounds[name].as_f64().context("Invalid widget bounds")?;
-                    anyhow::ensure!(
-                        number.is_finite() && (0.0..=32768.0).contains(&number),
-                        "Widget bounds are out of range"
-                    );
+            let mut kept = serde_json::Map::new();
+            for (id, bounds) in object.iter().take(100) {
+                let valid = ["x", "y", "width", "height"].iter().all(|name| {
+                    bounds[name]
+                        .as_f64()
+                        .is_some_and(|n| n.is_finite() && (-4096.0..=32768.0).contains(&n))
+                });
+                if valid {
+                    let mut bounds = bounds.clone();
+                    for name in ["x", "y"] {
+                        let n = bounds[name].as_f64().unwrap_or(0.0).max(0.0);
+                        bounds[name] = json!(n);
+                    }
+                    kept.insert(id.clone(), bounds);
                 }
             }
-            Store::open(&self.rust().root)?.put("widget-layout", &value)
+            let store = Store::open(&root)?;
+            // Merge so widgets not on screen right now keep their positions.
+            let mut saved = store
+                .get::<serde_json::Value>("widget-layout")?
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            let count = kept.len();
+            saved.extend(kept);
+            store.put("widget-layout", &serde_json::Value::Object(saved))?;
+            Ok(count)
         })();
+        if let Ok(store) = Store::open(&root) {
+            let _ = store.put(
+                "widget-layout-status",
+                &json!({"at_ms":services::screen::now_ms(),"saved":result.as_ref().ok(),"error":result.as_ref().err().map(|e| format!("{e:#}")),"root":root.display().to_string()}),
+            );
+        }
         if let Err(e) = result {
             self.as_mut().set_message(q(e.to_string()));
         }

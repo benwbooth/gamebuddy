@@ -565,6 +565,61 @@ impl PlanGraph {
         }
     }
 
+    /// Objectives near the player that need a key or item: in their area or
+    /// one crossing away, or among the next few in the walkthrough,
+    /// optional detours included, since a player may take one anyway.
+    pub fn nearby_requirements<'a>(
+        &'a self,
+        guide: &'a Guide,
+        progress: &Progress,
+        area: Option<&str>,
+    ) -> Vec<&'a Objective> {
+        let mark = progress
+            .current_step
+            .as_deref()
+            .and_then(|c| {
+                self.objectives
+                    .iter()
+                    .position(|o| o.steps.iter().any(|s| s == c))
+            })
+            .unwrap_or(0);
+        let near: BTreeSet<&str> = area
+            .into_iter()
+            .chain(self.crossings.iter().filter_map(|c| match area {
+                Some(a) if c.from == a => Some(c.to.as_str()),
+                Some(a) if c.to == a => Some(c.from.as_str()),
+                _ => None,
+            }))
+            .collect();
+        let mentions = |o: &Objective| {
+            let mut text = format!("{} {}", o.title, o.summary).to_lowercase();
+            for id in &o.steps {
+                if let Some(step) = guide.step(id) {
+                    text.push(' ');
+                    text.push_str(&step.instructions.to_lowercase());
+                }
+            }
+            !o.requires.is_empty()
+                || text
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "key" || w == "keys")
+                || text.contains("requir")
+                || text.contains("locked")
+        };
+        self.objectives
+            .iter()
+            .enumerate()
+            .filter(|(i, o)| {
+                !self.done(guide, progress, o)
+                    && (o.area.as_deref().is_some_and(|a| near.contains(a))
+                        || (*i >= mark && *i < mark + 12))
+            })
+            .map(|(_, o)| o)
+            .filter(|o| mentions(o))
+            .take(8)
+            .collect()
+    }
+
     pub fn area_of_step(&self, step: &str) -> Option<&str> {
         self.objectives
             .iter()

@@ -7,5 +7,9 @@ fn main() -> anyhow::Result<()> {
     let guide = store.guide(&id)?;
     let plan = gamebuddy_services::navigation::planning::context(&store, &guide)?;
     println!("{}", serde_json::to_string_pretty(&plan)?);
+    if std::env::var_os("NEARBY").is_some() {
+        let nearby = gamebuddy_services::navigation::planning::nearby_requirements(&store, &guide)?;
+        eprintln!("{}", serde_json::to_string_pretty(&nearby)?);
+    }
     Ok(())
 }
