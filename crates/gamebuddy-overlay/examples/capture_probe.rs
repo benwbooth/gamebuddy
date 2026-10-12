@@ -18,10 +18,7 @@ fn main() -> anyhow::Result<()> {
     let (conn, screen) = x11rb::connect(None)?;
     let root = conn.setup().roots[screen].root;
     let overlay = atom(&conn, "STEAM_OVERLAY")?;
-    let registered = conn
-        .query_tree(root)?
-        .reply()?
-        .children
+    let registered = gamebuddy_overlay::x11::client_windows(&conn, root)?
         .into_iter()
         .filter(|w| cardinal(&conn, *w, overlay).unwrap_or(0) != 0)
         .collect::<Vec<_>>();

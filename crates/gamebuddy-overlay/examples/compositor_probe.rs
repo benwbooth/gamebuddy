@@ -144,10 +144,7 @@ fn main() -> anyhow::Result<()> {
     let focus = atom(&conn, "STEAM_INPUT_FOCUS")?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let overlay = loop {
-        if let Some(w) = conn
-            .query_tree(root)?
-            .reply()?
-            .children
+        if let Some(w) = gamebuddy_overlay::x11::client_windows(&conn, root)?
             .into_iter()
             .find(|w| cardinal(&conn, *w, overlay_atom).unwrap_or(0) != 0)
         {

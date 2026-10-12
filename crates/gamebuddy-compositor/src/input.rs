@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        AbsolutePositionEvent, Axis, AxisSource, Event, InputBackend, InputEvent, KeyboardKeyEvent,
+        PointerAxisEvent, PointerButtonEvent,
     },
     input::{
         keyboard::FilterResult,
@@ -45,13 +45,6 @@ impl State {
             InputEvent::PointerButton { event } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let serial = SERIAL_COUNTER.next_serial();
-                if event.state() == ButtonState::Pressed
-                    && !pointer.is_grabbed()
-                    && let Some((surface, _)) = self.x11_under(pointer.current_location())
-                {
-                    let keyboard = self.seat.get_keyboard().unwrap();
-                    keyboard.set_focus(self, Some(surface), serial);
-                }
                 pointer.button(
                     self,
                     &ButtonEvent {

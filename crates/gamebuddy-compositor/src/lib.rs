@@ -6,6 +6,7 @@ mod handlers;
 mod input;
 mod state;
 mod winit;
+mod xprops;
 
 use std::{ffi::OsString, path::PathBuf, process::Command};
 
@@ -46,6 +47,8 @@ pub(crate) fn spawn_command(command: &[OsString], display: &str) -> Result<()> {
     Command::new(program)
         .args(args)
         .env("DISPLAY", display)
+        // GameBuddy's `--inside-gamescope` checks for this variable.
+        .env("GAMESCOPE_WAYLAND_DISPLAY", "gamebuddy-compositor")
         .env_remove("WAYLAND_DISPLAY")
         .spawn()
         .with_context(|| format!("Starting {}", program.to_string_lossy()))?;

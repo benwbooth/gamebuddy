@@ -27,6 +27,20 @@ pub fn cardinal(conn: &RustConnection, window: Window, property: Atom) -> Result
         .unwrap_or(0))
 }
 
+/// Top-level client windows. Gamescope maps clients directly on the root,
+/// while GameBuddy's own compositor (like most window managers) reparents
+/// each one into a frame, so look one level inside root children too.
+pub fn client_windows(conn: &RustConnection, root: Window) -> Result<Vec<Window>> {
+    let mut windows = Vec::new();
+    for child in conn.query_tree(root)?.reply()?.children {
+        windows.push(child);
+        if let Ok(tree) = conn.query_tree(child)?.reply() {
+            windows.extend(tree.children);
+        }
+    }
+    Ok(windows)
+}
+
 pub struct Overlay {
     conn: RustConnection,
     root: Window,
@@ -256,7 +270,7 @@ pub fn capture_game(pid: u32, output: &Path) -> Result<Window> {
     let overlay_atom = atom(&conn, "STEAM_OVERLAY")?;
     let external_atom = atom(&conn, "GAMESCOPE_EXTERNAL_OVERLAY")?;
     let mut best = None;
-    for window in conn.query_tree(root)?.reply()?.children {
+    for window in client_windows(&conn, root)? {
         // XRes reports the host PID even for Flatpak's PID namespace. The
         // client-written _NET_WM_PID often contains a container-local PID.
         let window_pid = conn
@@ -298,15 +312,32 @@ pub fn capture_game(pid: u32, output: &Path) -> Result<Window> {
         best.context("Waiting for a mapped Xwayland surface belonging to the game")?;
     conn.composite_query_version(0, 4)?.reply()?;
     let pixmap = conn.generate_id()?;
-    conn.composite_name_window_pixmap(window, pixmap)?
+    // Gamescope redirects the client window itself. A reparenting window
+    // manager redirects the frame instead, so read the client's area from the
+    // frame's pixmap when the client cannot be named directly.
+    let (x, y) = if conn
+        .composite_name_window_pixmap(window, pixmap)?
         .check()
-        .context("Game surface is not redirected by the compositor")?;
+        .is_ok()
+    {
+        (0, 0)
+    } else {
+        let parent = conn.query_tree(window)?.reply()?.parent;
+        ensure!(
+            parent != root,
+            "Game surface is not redirected by the compositor"
+        );
+        conn.composite_name_window_pixmap(parent, pixmap)?
+            .check()
+            .context("Game surface is not redirected by the compositor")?;
+        (geo.x, geo.y)
+    };
     let pixels = conn
         .get_image(
             ImageFormat::Z_PIXMAP,
             pixmap,
-            0,
-            0,
+            x,
+            y,
             geo.width,
             geo.height,
             u32::MAX,

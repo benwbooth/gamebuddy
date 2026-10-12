@@ -48,6 +48,17 @@ Lunchpail must not need changes until the final switch.
    screen at 1280×720.
 2. **Overlay layering and focus.** Overlay classification, input regions, the three
    focus states, keyboard/pointer routing, control-socket actions.
+   *Done October 12:* overlays keep `STEAM_OVERLAY`/`STEAM_INPUT_FOCUS`, stay above the
+   game with working transparency, and receive keyboard/pointer per mode. Client cursors
+   are drawn by the compositor and `GAMESCOPE_CURSOR_VISIBLE_FEEDBACK` follows them. For
+   the existing probes it also honours Gamescope's `GAMESCOPE_XWAYLAND_SERVER_ID` and
+   debug screenshot request, and accepts Gamescope's command line, so
+   `GAMEBUDDY_GAMESCOPE_BIN=target/debug/gamebuddy-compositor scripts/test-gamescope`
+   runs the real overlay against it. It passes the same steps as Gamescope 3.16.29 in a
+   headless sway session; both stop at the same pre-existing tray-restore check.
+   Smithay's window manager reparents clients into frames, so GameBuddy's X11 code now
+   looks inside frames (`client_windows`), and Smithay is vendored with a patch that gives
+   frames the client's visual (otherwise ARGB overlays lose transparency).
 3. **Input fidelity.** value120 scroll, pinch, relative pointer, pointer constraints.
    This is what the Gamescope patch added.
 4. **Capture.** Read the game surface's buffer directly from the renderer, replacing

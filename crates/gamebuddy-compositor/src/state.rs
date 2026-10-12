@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use smithay::{
     backend::{renderer::gles::GlesRenderer, winit::WinitGraphicsBackend},
     desktop::{Space, Window},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, pointer::CursorImageStatus},
     output::Output,
     reexports::{
         calloop::{EventLoop, LoopHandle, LoopSignal},
@@ -29,7 +29,7 @@ use smithay::{
 };
 use tracing::{error, info, warn};
 
-use crate::Config;
+use crate::{Config, xprops::Props};
 
 pub struct State {
     pub start: Instant,
@@ -53,6 +53,9 @@ pub struct State {
     pub backend: Option<WinitGraphicsBackend<GlesRenderer>>,
     pub output: Option<Output>,
     pub needs_redraw: bool,
+    pub props: Option<Props>,
+    pub cursor_status: CursorImageStatus,
+    pub screenshot_requested: bool,
 }
 
 #[derive(Default)]
@@ -121,6 +124,9 @@ impl State {
             backend: None,
             output: None,
             needs_redraw: true,
+            props: None,
+            cursor_status: CursorImageStatus::default_named(),
+            screenshot_requested: false,
         })
     }
 
@@ -156,6 +162,10 @@ impl State {
                     state.xwm = Some(wm);
                     state.xdisplay = Some(display_number);
                     let name = format!(":{display_number}");
+                    match Props::connect(&name, &state.loop_handle) {
+                        Ok(props) => state.props = Some(props),
+                        Err(err) => warn!(?err, "Overlay properties are unavailable"),
+                    }
                     info!(display = %name, "Xwayland ready");
                     state.publish_ready(&name);
                 }
@@ -198,15 +208,125 @@ impl State {
         }
     }
 
-    pub fn x11_under(&self, pos: Point<f64, Logical>) -> Option<(X11Surface, Point<f64, Logical>)> {
+    pub fn overlay_mode(&self, surface: &X11Surface) -> Option<u32> {
+        self.props
+            .as_ref()
+            .and_then(|props| props.overlays.get(&surface.window_id()).copied())
+    }
+
+    fn x11_windows(&self) -> Vec<X11Surface> {
         self.space
-            .element_under(pos)
-            .and_then(|(window, location)| {
-                window
-                    .x11_surface()
-                    .cloned()
-                    .map(|surface| (surface, location.to_f64()))
+            .elements()
+            .filter_map(|window| window.x11_surface().cloned())
+            .collect()
+    }
+
+    /// The window the pointer belongs to. Overlays only receive the pointer
+    /// while they ask for input: mode 1 takes it everywhere, mode 2 inside
+    /// the overlay's own window. Otherwise it passes through to the game.
+    pub fn x11_under(&self, pos: Point<f64, Logical>) -> Option<(X11Surface, Point<f64, Logical>)> {
+        let windows = self.x11_windows();
+        if let Some(overlay) = windows
+            .iter()
+            .rev()
+            .find(|w| self.overlay_mode(w) == Some(1))
+        {
+            let loc = self.space.element_location(
+                self.space
+                    .elements()
+                    .find(|e| e.x11_surface() == Some(overlay))?,
+            )?;
+            return Some((overlay.clone(), loc.to_f64()));
+        }
+        self.space
+            .elements()
+            .rev()
+            .filter(|element| {
+                let Some(surface) = element.x11_surface() else {
+                    return false;
+                };
+                !matches!(self.overlay_mode(surface), Some(0))
             })
+            .find_map(|element| {
+                let loc = self.space.element_location(element)?;
+                let geometry = smithay::desktop::space::SpaceElement::bbox(element);
+                let local = pos - loc.to_f64();
+                (local.x >= 0.0
+                    && local.y >= 0.0
+                    && local.x < f64::from(geometry.size.w)
+                    && local.y < f64::from(geometry.size.h))
+                .then(|| (element.x11_surface().cloned(), loc.to_f64()))
+            })
+            .and_then(|(surface, loc)| surface.map(|surface| (surface, loc)))
+    }
+
+    /// Keep overlays above the game and give the keyboard to whichever side
+    /// currently owns input, as Gamescope does with `STEAM_INPUT_FOCUS`.
+    pub fn apply_routing(&mut self) {
+        let overlays: Vec<_> = self
+            .space
+            .elements()
+            .filter(|e| {
+                e.x11_surface()
+                    .is_some_and(|s| self.overlay_mode(s).is_some())
+            })
+            .cloned()
+            .collect();
+        for overlay in overlays {
+            self.space.raise_element(&overlay, false);
+        }
+        let windows = self.x11_windows();
+        let target = windows
+            .iter()
+            .rev()
+            .find(|w| self.overlay_mode(w) == Some(1))
+            .or_else(|| {
+                windows
+                    .iter()
+                    .rev()
+                    .find(|w| self.overlay_mode(w).is_none() && !w.is_override_redirect())
+            })
+            .cloned();
+        let keyboard = self.seat.get_keyboard().unwrap();
+        if keyboard.current_focus() != target {
+            keyboard.set_focus(self, target, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
+        // Re-evaluate the pointer target in place so a mode change takes
+        // effect without waiting for the next motion event.
+        let pointer = self.seat.get_pointer().unwrap();
+        // Re-entering a surface makes Xwayland move its pointer to the entry
+        // point, so enter where X already has it rather than a stale position.
+        let location = self
+            .props
+            .as_ref()
+            .and_then(|props| props.pointer())
+            .map(Point::from)
+            .unwrap_or_else(|| pointer.current_location());
+        let under = self.x11_under(location);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.start.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+        self.needs_redraw = true;
+    }
+
+    pub fn drain_props(&mut self) {
+        let Some(drained) = self.props.as_mut().map(|props| props.drain()) else {
+            return;
+        };
+        if drained.routing {
+            self.apply_routing();
+        }
+        if drained.screenshot {
+            self.screenshot_requested = true;
+            self.needs_redraw = true;
+        }
     }
 
     pub fn after_dispatch(&mut self) {

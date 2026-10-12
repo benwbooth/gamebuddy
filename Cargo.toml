@@ -47,3 +47,8 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.zune-jpeg]
 opt-level = 3
+
+# Smithay 0.7.0 with GameBuddy's Xwayland frame patch (keeps ARGB overlays
+# transparent). See vendor/smithay/src/xwayland/xwm/mod.rs, "GameBuddy patch".
+[patch.crates-io]
+smithay = { path = "vendor/smithay" }

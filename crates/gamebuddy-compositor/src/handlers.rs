@@ -13,7 +13,7 @@ use smithay::{
         Client, Resource,
         protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
     },
-    utils::{Logical, Rectangle, SERIAL_COUNTER},
+    utils::{Logical, Rectangle},
     wayland::seat::WaylandFocus,
     wayland::{
         buffer::BufferHandler,
@@ -82,7 +82,13 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        if let Some(props) = self.props.as_mut() {
+            props.set_cursor_visible(!matches!(image, CursorImageStatus::Hidden));
+        }
+        self.cursor_status = image;
+        self.needs_redraw = true;
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&X11Surface>) {
         let client = focused
@@ -162,17 +168,18 @@ impl XwmHandler for State {
         self.fit_to_output(&window);
         let element = Window::new_x11_window(window.clone());
         self.space.map_element(element, (0, 0), true);
-        // The newest top-level window takes the keyboard, as in a game session.
-        let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.set_focus(self, Some(window), SERIAL_COUNTER.next_serial());
-        self.needs_redraw = true;
+        if let Some(props) = self.props.as_mut() {
+            props.watch(window.window_id());
+        }
+        // The newest game window takes the keyboard unless an overlay asks for it.
+        self.apply_routing();
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let location = window.geometry().loc;
         self.space
             .map_element(Window::new_x11_window(window), location, true);
-        self.needs_redraw = true;
+        self.apply_routing();
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -187,16 +194,10 @@ impl XwmHandler for State {
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
-        let keyboard = self.seat.get_keyboard().unwrap();
-        if keyboard.current_focus().as_ref() == Some(&window) {
-            let next = self
-                .space
-                .elements()
-                .filter_map(|e| e.x11_surface().cloned())
-                .rfind(|s| !s.is_override_redirect());
-            keyboard.set_focus(self, next, SERIAL_COUNTER.next_serial());
+        if let Some(props) = self.props.as_mut() {
+            props.forget(window.window_id());
         }
-        self.needs_redraw = true;
+        self.apply_routing();
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {}

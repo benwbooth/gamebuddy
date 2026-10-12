@@ -1,16 +1,23 @@
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 
 use anyhow::{Context, Result};
 use smithay::{
     backend::{
+        allocator::Fourcc,
         egl::EGLDevice,
         renderer::{
-            ImportDma, damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement,
-            gles::GlesRenderer,
+            Bind, ExportMem, ImportDma, Offscreen, TextureMapping,
+            damage::OutputDamageTracker,
+            element::{
+                Kind,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            },
+            gles::{GlesRenderbuffer, GlesRenderer},
         },
         winit::{self, WinitEvent},
     },
-    desktop::space::render_output,
+    desktop::{Space, Window, space::render_output},
+    input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::EventLoop,
@@ -19,8 +26,13 @@ use smithay::{
             window::{Fullscreen, Window as WinitWindow},
         },
     },
-    utils::Transform,
-    wayland::dmabuf::{DmabufFeedbackBuilder, DmabufState},
+    utils::{
+        Buffer as BufferCoords, IsAlive, Logical, Physical, Point, Rectangle, Size, Transform,
+    },
+    wayland::{
+        compositor::with_states,
+        dmabuf::{DmabufFeedbackBuilder, DmabufState},
+    },
 };
 use tracing::warn;
 
@@ -111,9 +123,37 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
                 let time = state.frame_time();
+                if let CursorImageStatus::Surface(surface) = &state.cursor_status
+                    && !surface.alive()
+                {
+                    state.cursor_status = CursorImageStatus::default_named();
+                }
+                let pointer = state.seat.get_pointer().unwrap().current_location();
                 let Some(backend) = state.backend.as_mut() else {
                     return;
                 };
+                // X11 clients draw their cursors as surfaces; draw those in the
+                // game, and let the host show named cursors or nothing.
+                match &state.cursor_status {
+                    CursorImageStatus::Hidden | CursorImageStatus::Surface(_) => {
+                        backend.window().set_cursor_visible(false)
+                    }
+                    CursorImageStatus::Named(icon) => {
+                        backend.window().set_cursor_visible(true);
+                        backend.window().set_cursor(*icon);
+                    }
+                }
+                let want_shot = std::mem::take(&mut state.screenshot_requested);
+                let size = backend.window_size();
+                let cursor = cursor_elements(backend.renderer(), &state.cursor_status, pointer);
+                // Screenshots render into their own buffer so reading pixels
+                // back never disturbs the window's presentation surface.
+                if want_shot {
+                    match capture(backend.renderer(), &output, &state.space, &cursor, size) {
+                        Some((pixels, w, h)) => save_screenshot(pixels, w, h),
+                        None => warn!("Could not capture a screenshot"),
+                    }
+                }
                 let rendered = backend.bind().ok().and_then(|(renderer, mut framebuffer)| {
                     render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
                         &output,
@@ -122,14 +162,14 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
                         1.0,
                         0,
                         [&state.space],
-                        &[],
+                        &cursor,
                         &mut damage_tracker,
                         [0.0, 0.0, 0.0, 1.0],
                     )
                     .ok()
+                    .map(|result| result.damage.cloned())
                 });
-                if let Some(result) = rendered {
-                    let damage = result.damage.cloned();
+                if let Some(damage) = rendered {
                     if let Err(err) = backend.submit(damage.as_deref()) {
                         warn!(?err, "Could not present a frame");
                     }
@@ -148,4 +188,94 @@ pub fn init(event_loop: &mut EventLoop<'static, State>, state: &mut State) -> Re
         .map_err(|e| anyhow::anyhow!("Watching the compositor window: {e}"))
         .context("Starting the host window")?;
     Ok(())
+}
+
+fn cursor_elements(
+    renderer: &mut GlesRenderer,
+    status: &CursorImageStatus,
+    pointer: Point<f64, Logical>,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let CursorImageStatus::Surface(surface) = status else {
+        return Vec::new();
+    };
+    let hotspot = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<Mutex<CursorImageAttributes>>()
+            .map(|attrs| attrs.lock().unwrap().hotspot)
+            .unwrap_or_default()
+    });
+    render_elements_from_surface_tree(
+        renderer,
+        surface,
+        (pointer - hotspot.to_f64()).to_physical(1.0).to_i32_round(),
+        1.0,
+        1.0,
+        Kind::Cursor,
+    )
+}
+
+/// Compose the current frame (game, overlay and cursor) offscreen and read
+/// it back as RGBA rows from the top of the screen.
+fn capture(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    space: &Space<Window>,
+    cursor: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    size: Size<i32, Physical>,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let buffer_size = Size::<i32, BufferCoords>::from((size.w, size.h));
+    let mut target: GlesRenderbuffer =
+        renderer.create_buffer(Fourcc::Abgr8888, buffer_size).ok()?;
+    // Same orientation as the window's EGL surface, which reads back top-first.
+    let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
+    let mut framebuffer = renderer.bind(&mut target).ok()?;
+    render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+        output,
+        renderer,
+        &mut framebuffer,
+        1.0,
+        0,
+        [space],
+        cursor,
+        &mut tracker,
+        [0.0, 0.0, 0.0, 1.0],
+    )
+    .ok()?;
+    let mapping = renderer
+        .copy_framebuffer(
+            &framebuffer,
+            Rectangle::from_size(buffer_size),
+            Fourcc::Abgr8888,
+        )
+        .ok()?;
+    let flipped = mapping.flipped();
+    let bytes = renderer.map_texture(&mapping).ok()?;
+    let stride = size.w as usize * 4;
+    let mut pixels = Vec::with_capacity(bytes.len());
+    if flipped {
+        for row in bytes.chunks_exact(stride).rev() {
+            pixels.extend_from_slice(row);
+        }
+    } else {
+        pixels.extend_from_slice(bytes);
+    }
+    Some((pixels, size.w as u32, size.h as u32))
+}
+
+/// Gamescope writes its debug screenshot to this fixed path; the overlay's
+/// compositor probes read it from there.
+fn save_screenshot(pixels: Vec<u8>, w: u32, h: u32) {
+    let Some(image) = image::RgbaImage::from_raw(w, h, pixels) else {
+        return;
+    };
+    let path = std::path::Path::new("/tmp/gamescope.png");
+    let temporary = path.with_extension("png.partial");
+    let saved = image
+        .save_with_format(&temporary, image::ImageFormat::Png)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| std::fs::rename(&temporary, path).map_err(anyhow::Error::from));
+    if let Err(err) = saved {
+        warn!(?err, "Could not save a screenshot");
+    }
 }

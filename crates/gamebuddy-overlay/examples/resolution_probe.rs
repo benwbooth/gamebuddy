@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
     let overlay_atom = atom(&conn, "STEAM_OVERLAY")?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let windows = conn.query_tree(root)?.reply()?.children;
+        let windows = gamebuddy_overlay::x11::client_windows(&conn, root)?;
         if windows
             .iter()
             .any(|w| cardinal(&conn, *w, overlay_atom).unwrap_or(0) != 0)
