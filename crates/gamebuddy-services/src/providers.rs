@@ -105,6 +105,11 @@ pub struct LiveVoice {
     pub model: String,
     pub voice: String,
     pub api_key_env: String,
+    #[serde(default = "live_thinking_level")]
+    pub thinking_level: String,
+}
+fn live_thinking_level() -> String {
+    "high".into()
 }
 impl Default for LiveVoice {
     fn default() -> Self {
@@ -112,10 +117,15 @@ impl Default for LiveVoice {
             model: "gemini-3.8-live".into(),
             voice: "Achird".into(),
             api_key_env: "GEMINI_API_KEY".into(),
+            thinking_level: live_thinking_level(),
         }
     }
 }
 impl LiveVoice {
+    pub fn extended_thinking(&self) -> bool {
+        self.model == "gemini-3.8-live-extended-thinking"
+    }
+
     /// The environment variable first, then a private key file outside the
     /// data store for launchers that do not pass the session environment.
     pub fn api_key(&self) -> Result<String> {

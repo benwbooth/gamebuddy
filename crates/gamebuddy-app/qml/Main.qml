@@ -181,9 +181,10 @@ ApplicationWindow {
         onAnswer: text => buddy.answer = text
         onOutOfTokens: message => root.noteOutOfTokens(message)
         onUnavailable: message => {
-            root.geminiFallback = true
+            const nativeReasoning = JSON.parse(buddy.settings_json).live_voice?.model === "gemini-3.8-live-extended-thinking"
+            root.geminiFallback = !nativeReasoning
             if (message.length && !root.tokenAlert.startsWith("Out of tokens:"))
-                root.tokenAlert = "Voice unavailable: Gemini Live is not responding (" + message + "). GameBuddy is using the local voice and will try Gemini again in 2 minutes."
+                root.tokenAlert = "Voice unavailable: Gemini Live is not responding (" + message + "). " + (nativeReasoning ? "Choose Listen to retry, or select another voice setup." : "GameBuddy is using the local voice and will try Gemini again in 2 minutes.")
         }
     }
     VoiceInput {

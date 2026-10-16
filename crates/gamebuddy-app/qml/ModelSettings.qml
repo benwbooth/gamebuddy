@@ -22,6 +22,7 @@ ScrollView {
         voice.currentIndex = settings.speech === "codex_realtime" ? 1 : settings.speech === "gemini_live" ? 2 : 0
         liveModel.text = settings.live_voice?.model || "gemini-3.8-live"
         liveVoiceName.text = settings.live_voice?.voice || "Achird"
+        liveThinking.currentIndex = Math.max(0, liveThinking.values.indexOf(settings.live_voice?.thinking_level || "high"))
         fast.checked = settings.fast_voice !== false; duck.checked = settings.duck_game_audio !== false
         preparedVoice.enabled=!!settings.prepared_speech
         preparedVoice.checked=!!settings.prepared_speech && settings.prepared_speech.enabled!==false
@@ -47,7 +48,7 @@ ScrollView {
         settings.reasoning = reasoning.configuration(); settings.vision = vision.configuration()
         settings.planning = automaticPlanning.checked ? null : planning.configuration()
         settings.speech = ["local", "codex_realtime", "gemini_live"][voice.currentIndex]
-        settings.live_voice = Object.assign({api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {}, {model: liveModel.text.trim(), voice: liveVoiceName.text.trim()})
+        settings.live_voice = Object.assign({api_key_env: "GEMINI_API_KEY"}, settings.live_voice || {}, {model: liveModel.text.trim(), voice: liveVoiceName.text.trim(), thinking_level: liveThinking.values[liveThinking.currentIndex]})
         settings.fast_voice = fast.checked; settings.duck_game_audio = duck.checked
         if(settings.prepared_speech)settings.prepared_speech.enabled=preparedVoice.checked
         backend.save_settings(JSON.stringify(settings))
@@ -78,7 +79,7 @@ ScrollView {
         }
         Text {
             visible:singleProvider.checked
-            text:"The provider below handles every conversation, stories, game advice, tools, memory recall, screenshots, and background planning. Claude and other providers use local speech recognition and playback, with no Codex connection."
+            text:voice.currentIndex === 2 ? "The provider below handles text requests and guide preparation. Gemini Live handles the live conversation; Extended Thinking also handles live game reasoning directly." : "The provider below handles game advice, tools, memory recall, screenshots and background planning. The voice choice below controls listening and spoken conversation."
             color:"#a3b4c7";wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24
         }
         ProviderCard {
@@ -114,10 +115,10 @@ ScrollView {
         Text { text:"Voice"; color:"#eaf2fa"; font.pixelSize:20; Layout.leftMargin:24 }
         ComboBox {
             id:voice; objectName:"speechBackend"; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
-            model:["Local audio · selected provider handles all conversation","Codex live voice · ChatGPT subscription","Gemini Live voice · natural speech, your assistant answers game questions"]
+            model:["Local audio · selected provider handles all conversation","Codex live voice · ChatGPT subscription","Gemini Live · speech and visual conversation"]
             onActivated:page.dirty = true
         }
-        Text { text:singleProvider.checked ? (reasoning.config.kind === "codex" ? "This setup uses Codex for both the assistant and live voice." : "All spoken answers come from the selected assistant. Audio is transcribed and spoken locally. Local listening pauses while processing and playing a reply; Stop cuts off playback.") : "Local audio sends every conversation to the selected provider. Codex live voice also uses ChatGPT for ordinary conversation, listening, and speech. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
+        Text { text:voice.currentIndex === 2 ? "Gemini handles live speech and sees the game. Extended Thinking reasons about game questions directly and uses the guide, map, inventory and objective tools. The assistant provider above still handles text requests and guide preparation. Reconnect voice after saving changes." : singleProvider.checked ? (reasoning.config.kind === "codex" ? "This setup uses Codex for both the assistant and live voice." : "All spoken answers come from the selected assistant. Audio is transcribed and spoken locally. Local listening pauses while processing and playing a reply; Stop cuts off playback.") : "Local audio sends every conversation to the selected provider. Codex live voice also uses ChatGPT for ordinary conversation, listening, and speech. Reconnect voice after saving changes."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
         CheckBox { id:fast; text:"Faster Codex voice replies (higher quota use)"; visible:voice.currentIndex === 1 && reasoning.config.kind === "codex"; Layout.leftMargin:24; onClicked:page.dirty=true }
         CheckBox { id:preparedVoice; text:"Prepared neural speech · local voice"; visible:voice.currentIndex===1; Layout.leftMargin:24; onClicked:page.dirty=true }
         Text { visible:voice.currentIndex===1; text:preparedVoice.enabled ? "Uses the installed local voice for faster replies and prepares upcoming instructions. Codex continues listening. Reconnect after changing this setting." : "Install a prepared speech voice to enable local audio preparation."; color:"#a3b4c7";font.pixelSize:12;wrapMode:Text.WordWrap;Layout.fillWidth:true;Layout.leftMargin:24;Layout.rightMargin:24 }
@@ -127,6 +128,14 @@ ScrollView {
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24
             Text { text:"Gemini model"; color:"#a3b4c7"; font.pixelSize:12 }
             TextField { id:liveModel; objectName:"geminiModel"; Layout.fillWidth:true; onTextEdited:page.dirty=true }
+            Text { visible:liveModel.text.trim() === "gemini-3.8-live-extended-thinking"; text:"Thinking"; color:"#a3b4c7"; font.pixelSize:12 }
+            ComboBox {
+                id:liveThinking; objectName:"geminiThinking"; Layout.fillWidth:true
+                visible:liveModel.text.trim() === "gemini-3.8-live-extended-thinking"
+                readonly property var values:["low", "medium", "high"]
+                model:["Low · quicker", "Medium", "High · deeper reasoning"]
+                currentIndex:2; onActivated:page.dirty=true
+            }
             Text { text:"Voice"; color:"#a3b4c7"; font.pixelSize:12 }
             TextField { id:liveVoiceName; objectName:"geminiVoiceName"; Layout.fillWidth:true; placeholderText:"Charon (calm), Schedar (even), Umbriel (easy-going), Sulafat (warm), Puck (upbeat)…"; onTextEdited:page.dirty=true }
             Text { text:"API key"; color:"#a3b4c7"; font.pixelSize:12 }

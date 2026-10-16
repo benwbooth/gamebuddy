@@ -160,8 +160,8 @@ impl ffi::GeminiVoice {
             Err(error) => format!("{error:#}"),
         })
     }
-    /// Run one GameBuddy tool off the UI thread; the result arrives as
-    /// tool_event_json. Images are left out: Gemini already sees the screen.
+    /// Run one GameBuddy tool off the UI thread and return its exact images,
+    /// including reference maps and historical journal screenshots.
     pub fn call_tool(
         self: Pin<&mut Self>,
         directory: QString,
@@ -178,6 +178,7 @@ impl ffi::GeminiVoice {
         let ui = self.qt_thread();
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
+            let mut images = Vec::new();
             let result = (|| -> anyhow::Result<Value> {
                 anyhow::ensure!(
                     tools()[0]["functionDeclarations"]
@@ -186,10 +187,17 @@ impl ffi::GeminiVoice {
                     "That tool is not available in live voice"
                 );
                 let store = Store::open(&directory)?;
+                let settings: Settings = store.get("settings")?.unwrap_or_default();
+                let native_reasoning = settings.live_voice.extended_thinking();
+                anyhow::ensure!(
+                    !(native_reasoning && name == "ask_brain"),
+                    "Gemini Extended Thinking reasons directly from game context and images"
+                );
                 let arguments: Value =
                     serde_json::from_str(&arguments).unwrap_or_else(|_| json!({}));
                 let output =
                     gamebuddy_services::harness::call_tool_with_images(&store, &name, arguments)?;
+                images = output.images;
                 let mut value = output.value;
                 if name == "get_game_context" {
                     let guide = store
@@ -203,8 +211,8 @@ impl ffi::GeminiVoice {
                         let at = said["at_ms"].as_u64()?;
                         let text = said["text"].as_str()?;
                         let answered: u64 = store.get("brain-answered-at").ok()?.unwrap_or(0);
-                        let settings: Settings = store.get("settings").ok()?.unwrap_or_default();
-                        (settings.brain.enabled
+                        (!native_reasoning
+                            && settings.brain.enabled
                             && at > answered
                             && gamebuddy_services::screen::now_ms().saturating_sub(at) < 30_000
                             && text.split_whitespace().count() >= 3)
@@ -215,10 +223,17 @@ impl ffi::GeminiVoice {
                             .and_then(|(_, answer)| answer)
                             .map(|answer| json!({"question":text,"answer":answer}))
                     });
-                    value = gamebuddy_services::voice::prompts::gemini_context(
-                        &value,
-                        guide.as_ref().map(|g| (&store, g)),
-                    );
+                    value = if native_reasoning {
+                        gamebuddy_services::voice::prompts::gemini_thinking_context(
+                            &value,
+                            guide.as_ref().map(|g| (&store, g)),
+                        )
+                    } else {
+                        gamebuddy_services::voice::prompts::gemini_context(
+                            &value,
+                            guide.as_ref().map(|g| (&store, g)),
+                        )
+                    };
                     if let Some(answer) = brain_answer {
                         value["brain_answer"] = answer;
                         value["instruction"] = json!(
@@ -238,7 +253,7 @@ impl ffi::GeminiVoice {
                 Ok(other) => json!({"result": other}),
                 Err(error) => json!({"error": format!("{error:#}")}),
             };
-            let event = json!({"id":id,"name":name,"response":response,"elapsed_ms":started.elapsed().as_millis() as u64}).to_string();
+            let event = json!({"id":id,"name":name,"response":response,"images":images,"elapsed_ms":started.elapsed().as_millis() as u64}).to_string();
             let _ = ui
                 .queue(move |mut object| object.as_mut().set_tool_event_json(QString::from(event)));
         });

@@ -449,11 +449,20 @@ Item {
                 ComboBox {
                     objectName: "companionGeminiModel"
                     Layout.fillWidth: true
-                    readonly property var values: ["gemini-3.8-live", "gemini-3.1-flash-live-preview"]
-                    model: ["3.8 Live (smarter)", "3.1 Flash Live (faster)"]
+                    readonly property var values: ["gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-3.1-flash-live-preview"]
+                    model: ["3.8 Live", "3.8 Live · Extended Thinking", "3.1 Flash Live (legacy)"]
                     currentIndex: Math.max(0, values.indexOf(geminiChoices.live.model || "gemini-3.8-live"))
                     Accessible.name: "Gemini model"
                     onActivated: index => geminiChoices.save("model", values[index])
+                }
+                ComboBox {
+                    objectName: "companionGeminiThinking"
+                    visible: geminiChoices.live.model === "gemini-3.8-live-extended-thinking"
+                    readonly property var values: ["low", "medium", "high"]
+                    model: ["Thinking · low", "Thinking · medium", "Thinking · high"]
+                    currentIndex: Math.max(0, values.indexOf(geminiChoices.live.thinking_level || "high"))
+                    Accessible.name: "Gemini thinking level"
+                    onActivated: index => geminiChoices.save("thinking_level", values[index])
                 }
                 ComboBox {
                     objectName: "companionGeminiVoice"

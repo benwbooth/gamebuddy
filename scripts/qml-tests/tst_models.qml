@@ -56,6 +56,21 @@ Item {
             page.save()
             compare(JSON.parse(backend.settings_json).reasoning.reasoning_effort,"off")
         }
+        function test_gemini_extended_thinking_preserves_independent_provider() {
+            const voice=findChild(page,"speechBackend")
+            voice.currentIndex=2;voice.activated(2)
+            const model=findChild(page,"geminiModel")
+            model.text="gemini-3.8-live-extended-thinking";model.textEdited()
+            const thinking=findChild(page,"geminiThinking")
+            thinking.currentIndex=1;thinking.activated(1)
+            page.save();page.reload()
+            const saved=JSON.parse(backend.settings_json)
+            compare(saved.speech,"gemini_live")
+            compare(saved.live_voice.model,"gemini-3.8-live-extended-thinking")
+            compare(saved.live_voice.thinking_level,"medium")
+            compare(saved.reasoning.kind,"codex")
+            compare(thinking.currentIndex,1)
+        }
         function test_connection_uses_unsaved_values_and_reports_error() {
             const model=findChild(page,"reasoningModel")
             model.text="custom:9b";model.editingFinished()
