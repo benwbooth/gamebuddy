@@ -10,6 +10,7 @@
   let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,meterTimer=null;
   let inputText='',outputText='',pendingTools=new Map(),framesSent=0,bookkeeping=false,quietTurn=false;
   let extendedThinking=false,workPending=false;
+  let interactionTools=0,recoveryAttempts=0,toolFailure=false,receivingInput=false,canRecover=false;
   const silent=()=>bookkeeping;
   const emit=(type,value)=>console.info('GAMEBUDDY_GEMINI '+JSON.stringify({type,value,at:Date.now()}));
   const send=message=>{if(ws?.readyState===WebSocket.OPEN&&ready)ws.send(JSON.stringify(message))};
@@ -17,7 +18,30 @@
   function stopPlayback(){for(const s of sources){s.onended=null;try{s.stop()}catch{}}sources.clear();playAt=0;setSpeaking(false)}
   function setSpeaking(value){if(value!==speaking){speaking=value;emit('output-active',value)}}
   function setWorkPending(value){if(value!==workPending){workPending=value;emit('work-pending',value)}}
+  function beginInteraction(recover){
+    interactionTools=pendingTools.size;recoveryAttempts=0;toolFailure=false;canRecover=recover;
+    emit('tool-recovery',{state:'clear'});
+  }
+  function reportedSystemError(text){
+    return /^(?:i(?:['’]m|\s+am)\s+sorry|sorry|i\s+apologi[sz]e)\b/i.test(text)&&/\b(?:system|internal)\s+error\b/i.test(text)
+      || /^(?:a|an)\s+(?:system|internal)\s+error\s+occurred\b/i.test(text);
+  }
   function finishInteraction(){
+    receivingInput=false;
+    // This service sometimes apologizes without emitting a function call or
+    // an API error. Retry once, only after IDLE and only if no tool was sent
+    // to the app. Replaying a request after an executed mutation is unsafe.
+    if(extendedThinking&&toolFailure&&!interactionTools&&canRecover&&!bookkeeping){
+      if(!recoveryAttempts){
+        recoveryAttempts++;toolFailure=false;setWorkPending(true);
+        emit('tool-recovery',{state:'retrying'});
+        send({clientContent:{turns:[{role:'user',parts:[{text:'Connection recovery: you reported a system error, but GameBuddy received no function calls for this request, so no tool action was executed. Retry the needed function call once now, wait for its actual result, then answer the original request. Do not invent results or claim an action succeeded without a successful tool response. A new player request takes priority.'}]}],turnComplete:true}});
+        return;
+      }
+      emit('tool-recovery',{state:'failed'});
+    }
+    if(recoveryAttempts&&!toolFailure)emit('tool-recovery',{state:'clear'});
+    canRecover=false;
     setWorkPending(false);
     if(bookkeeping){bookkeeping=false;if(outputText.trim())emit('muted-reply',outputText.trim());outputText='';emit('bookkeeping-done',true)}
   }
@@ -40,17 +64,19 @@
     if(status){emit('interaction-status',status);if(status==='IN_PROGRESS')setWorkPending(true)}
     // The player's words reach GameBuddy before the tools they prompted.
     if(m.toolCall&&inputText.trim()){emit('input-final',inputText.trim());inputText=''}
-    if(m.toolCall){setWorkPending(true);for(const call of m.toolCall.functionCalls||[]){if(pendingTools.has(call.id))continue;pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,args:call.args||{}})}}
+    if(m.toolCall){setWorkPending(true);for(const call of m.toolCall.functionCalls||[]){if(pendingTools.has(call.id))continue;interactionTools++;if(recoveryAttempts)emit('tool-recovery',{state:'recovered'});pendingTools.set(call.id,call.name);emit('tool-call',{id:call.id,name:call.name,args:call.args||{}})}}
     if(m.toolCallCancellation){for(const id of m.toolCallCancellation.ids||[]){pendingTools.delete(id);emit('tool-cancel',id)}}
-    if(c.interrupted){stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
-    if(c.inputTranscription?.text){if(silent())outputText='';bookkeeping=false;quietTurn=false;setWorkPending(true);inputText+=c.inputTranscription.text;emit('input-text',inputText)}
+    if(c.interrupted){canRecover=false;receivingInput=false;emit('tool-recovery',{state:'clear'});stopPlayback();if(outputText)emit('output-final',outputText+' …');outputText='';emit('interrupted',true)}
+    if(c.inputTranscription?.text){if(!receivingInput){beginInteraction(true);receivingInput=true}if(silent())outputText='';bookkeeping=false;quietTurn=false;setWorkPending(true);inputText+=c.inputTranscription.text;emit('input-text',inputText)}
     // A model that decides not to talk sometimes says a placeholder such
     // as "<no speech>{pause}" out loud; cut it off and drop the rest of the turn.
     if(c.outputTranscription?.text&&!outputText.trim()&&/^\s*[<{\[(]|no speech|\{pause\}/i.test(c.outputTranscription.text)){quietTurn=true;stopPlayback();emit('quiet-turn',c.outputTranscription.text)}
     if(c.outputTranscription?.text&&silent())outputText+=c.outputTranscription.text;
     if(c.outputTranscription?.text&&!silent()&&!quietTurn){
       if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
-      outputText+=c.outputTranscription.text;emit('caption',outputText)}
+      outputText+=c.outputTranscription.text;
+      if(reportedSystemError(outputText.trim()))toolFailure=true;
+      emit('caption',outputText)}
     for(const part of c.modelTurn?.parts||[])if(part.inlineData?.data)play(part.inlineData.data);
     if(c.turnComplete||c.generationComplete){
       if(inputText.trim()){emit('input-final',inputText.trim());inputText=''}
@@ -126,7 +152,7 @@
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale())emit('microphone-error',e.name+': '+e.message)}
   }
   function stop(){
-    generation++;stopping=true;closeMic();stopPlayback();pendingTools.clear();inputText='';outputText='';bookkeeping=false;quietTurn=false;setWorkPending(false);
+    generation++;stopping=true;closeMic();stopPlayback();pendingTools.clear();inputText='';outputText='';bookkeeping=false;quietTurn=false;receivingInput=false;beginInteraction(false);setWorkPending(false);
     if(ws){ws.onclose=null;try{ws.close()}catch{}}ws=null;ready=false;config=null;resumeHandle=null;reconnects=0;
     if(speaker){speaker.close().catch(()=>{});speaker=null}
     clearInterval(meterTimer);meterTimer=null;stopping=false;
@@ -151,13 +177,13 @@
     // context tool result so position answers come from it.
     still(jpeg){send({clientContent:{turns:[{role:'user',parts:[{text:'Current game screen (newest frame):'},{inlineData:{mimeType:'image/jpeg',data:jpeg}}]}],turnComplete:false}})},
     // Application cues are spoken; context is quiet background.
-    cue(text){if(silent())outputText='';bookkeeping=false;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
+    cue(text){beginInteraction(true);receivingInput=false;if(silent())outputText='';bookkeeping=false;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},
-    watch(){if(workPending)return;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
+    watch(){if(workPending)return;beginInteraction(false);setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
     // A silent turn: Gemini records what changed (items bought, keys used)
     // with tools; any speech it produces is dropped.
-    bookkeep(){if(speaking||silent()||workPending){emit('bookkeeping-done',false);return}bookkeeping=true;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Your reply in this turn is not played.'}]}],turnComplete:true}})},
-    interrupt(){stopPlayback()},
+    bookkeep(){if(speaking||silent()||workPending){emit('bookkeeping-done',false);return}beginInteraction(false);bookkeeping=true;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Your reply in this turn is not played.'}]}],turnComplete:true}})},
+    interrupt(){canRecover=false;emit('tool-recovery',{state:'clear'});stopPlayback()},
     muteOutput(muted){outputMuted=muted;if(muted)stopPlayback()}
   };
 })();

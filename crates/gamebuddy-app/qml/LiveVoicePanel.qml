@@ -28,6 +28,7 @@ WebEngineView {
     property bool extendedThinking: false
     property double inputAt: 0
     property string status: ""
+    property string toolStatus: ""
     property string pageOrigin: ""
     property string voiceGame: ""
     property string captionText: ""
@@ -76,13 +77,14 @@ WebEngineView {
     }
     function updateStatus() {
         if (!started || failed) return
-        status = !connected ? "Connecting Gemini voice…" : greetTimer.running ? "Finding where you are in the game…" : assistantSpeaking ? "Speaking · you can interrupt"
+        status = !connected ? "Connecting Gemini voice…" : toolStatus.length ? toolStatus : greetTimer.running ? "Finding where you are in the game…" : assistantSpeaking ? "Speaking · you can interrupt"
             : workPending ? "Thinking…" : capturing ? "Live voice · speak naturally" : "Guide voice ready · mic off"
     }
     onAssistantSpeakingChanged: updateStatus()
     onWorkPendingChanged: updateStatus()
     onCapturingChanged: updateStatus()
     onConnectedChanged: updateStatus()
+    onToolStatusChanged: updateStatus()
     onStatusChanged: if (trace) console.warn("GAMEBUDDY_GEMINI_STATUS " + status)
     function update() {
         if (!loaded) return
@@ -141,7 +143,7 @@ WebEngineView {
     }
     // Keep Gemini's background picture current without making it speak.
     function shareContext() {
-        if (!connected || assistantSpeaking || userSpeaking) return
+        if (!connected || assistantSpeaking || userSpeaking || workPending) return
         const key = (session.navigation?.guidance?.now?.id || "") + "|" + (session.navigation?.guidance?.status || "") + "|" + (session.navigation?.map?.current_place?.label || "")
         if (key === lastContextKey || Date.now() - lastContextAt < 3000) return
         lastContextKey = key; lastContextAt = Date.now()
@@ -246,7 +248,7 @@ WebEngineView {
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
         if (["tool-call", "input-final", "output-final", "caption"].includes(event.type) && !bookkeeping) lastTurnAt = Date.now()
-        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final", "capture", "microphone-error", "interrupted", "quiet-turn", "muted-reply", "bookkeeping-done", "interaction-status"].includes(event.type))
+        if (["ready", "frames", "tool-call", "error", "quota", "reconnecting", "input-final", "output-final", "capture", "microphone-error", "interrupted", "quiet-turn", "muted-reply", "bookkeeping-done", "interaction-status", "tool-recovery"].includes(event.type))
             gemini.note(session.data_dir || "", event.type, JSON.stringify(event.type === "tool-call" ? {name: v.name, args: v.args}
                 // How old the newest frame Gemini had was when the player spoke.
                 : event.type === "input-final" ? {text: v, frame_age_ms: lastFrameAt ? Date.now() - lastFrameAt : null} : v))
@@ -262,6 +264,7 @@ WebEngineView {
         else if (event.type === "microphone-error") { if (voice.active) voice.toggle_listening(); status = "Microphone: " + v }
         else if (event.type === "capture") capturing = v
         else if (event.type === "work-pending") workPending = v
+        else if (event.type === "tool-recovery") toolStatus = v.state === "retrying" ? "Gemini had a connection error · retrying once…" : v.state === "failed" ? "Gemini couldn't complete that request · please try again" : ""
         else if (event.type === "input-text") {
             // A fresh full-quality still with every question, so answers
             // about the screen use what is there now.
