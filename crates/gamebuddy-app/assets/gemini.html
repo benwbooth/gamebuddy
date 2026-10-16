@@ -7,7 +7,7 @@
   const URL_BASE='wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=';
   let ws=null,config=null,generation=0,resumeHandle=null,reconnects=0,ready=false,stopping=false;
   let mic=null,micContext=null,micNodes=null,captureGeneration=0;
-  let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,meterTimer=null;
+  let speaker=null,playAt=0,sources=new Set(),outputMuted=false,speaking=false,workTimer=null,lastProgress=0;
   let inputText='',outputText='',pendingTools=new Map(),framesSent=0,bookkeeping=false,quietTurn=false;
   let extendedThinking=false,workPending=false;
   let interactionTools=0,recoveryAttempts=0,toolFailure=false,receivingInput=false,canRecover=false;
@@ -17,7 +17,13 @@
   function base64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(s)}
   function stopPlayback(){for(const s of sources){s.onended=null;try{s.stop()}catch{}}sources.clear();playAt=0;setSpeaking(false)}
   function setSpeaking(value){if(value!==speaking){speaking=value;emit('output-active',value)}}
-  function setWorkPending(value){if(value!==workPending){workPending=value;emit('work-pending',value)}}
+  function progress(){lastProgress=Date.now()}
+  function setWorkPending(value){if(value!==workPending){workPending=value;if(value)progress();emit('work-pending',value)}}
+  function failSession(type,detail){
+    let message=String(detail||'Gemini Live failed');
+    if(config?.key)message=message.replaceAll(config.key,'[REDACTED]');
+    stop();emit(type,message);
+  }
   function beginInteraction(recover){
     interactionTools=pendingTools.size;recoveryAttempts=0;toolFailure=false;canRecover=recover;
     emit('tool-recovery',{state:'clear'});
@@ -31,8 +37,8 @@
     // This service sometimes apologizes without emitting a function call or
     // an API error. Retry once, only after IDLE and only if no tool was sent
     // to the app. Replaying a request after an executed mutation is unsafe.
-    if(extendedThinking&&toolFailure&&!interactionTools&&canRecover&&!bookkeeping){
-      if(!recoveryAttempts){
+    if(extendedThinking&&toolFailure&&canRecover&&!bookkeeping){
+      if(!interactionTools&&!recoveryAttempts){
         recoveryAttempts++;toolFailure=false;setWorkPending(true);
         emit('tool-recovery',{state:'retrying'});
         send({clientContent:{turns:[{role:'user',parts:[{text:'Connection recovery: you reported a system error, but GameBuddy received no function calls for this request, so no tool action was executed. Retry the needed function call once now, wait for its actual result, then answer the original request. Do not invent results or claim an action succeeded without a successful tool response. A new player request takes priority.'}]}],turnComplete:true}});
@@ -56,10 +62,16 @@
     setSpeaking(true);
   }
   function message(m){
+    if(m.error){
+      const detail=typeof m.error==='string'?m.error:m.error.message||JSON.stringify(m.error);
+      failSession(m.error.code===429||/quota|resource.?exhausted|rate.?limit|billing/i.test(detail)?'quota':'error',detail);
+      return;
+    }
     if(m.setupComplete){ready=true;reconnects=0;emit('ready',true);return}
     if(m.sessionResumptionUpdate?.resumable&&m.sessionResumptionUpdate.newHandle)resumeHandle=m.sessionResumptionUpdate.newHandle;
     if(m.goAway){emit('trace','go-away '+(m.goAway.timeLeft||''));reconnect();return}
     const c=m.serverContent||{};
+    if(m.toolCall||c.inputTranscription?.text||c.outputTranscription?.text||c.modelTurn?.parts?.length)progress();
     const status=m.interactionStatus||m.interaction_status||c.interactionStatus||c.interaction_status;
     if(status){emit('interaction-status',status);if(status==='IN_PROGRESS')setWorkPending(true)}
     // The player's words reach GameBuddy before the tools they prompted.
@@ -155,18 +167,26 @@
     generation++;stopping=true;closeMic();stopPlayback();pendingTools.clear();inputText='';outputText='';bookkeeping=false;quietTurn=false;receivingInput=false;beginInteraction(false);setWorkPending(false);
     if(ws){ws.onclose=null;try{ws.close()}catch{}}ws=null;ready=false;config=null;resumeHandle=null;reconnects=0;
     if(speaker){speaker.close().catch(()=>{});speaker=null}
-    clearInterval(meterTimer);meterTimer=null;stopping=false;
+    clearInterval(workTimer);workTimer=null;stopping=false;
   }
   window.gamebuddyGemini={
     async start(session,deviceName,capture){
       stop();
       if(session.error){emit('error',session.error);return}
       config=session;extendedThinking=session.setup.model.endsWith('gemini-3.8-live-extended-thinking');speaker=new AudioContext({sampleRate:24000});await speaker.resume();
+      // A stalled background reasoner may send neither IDLE nor an error.
+      // Do not replay an uncertain request. Close the old session so late
+      // calls cannot execute after the player explicitly reconnects.
+      workTimer=setInterval(()=>{
+        if(extendedThinking&&ready&&workPending&&!pendingTools.size&&!speaking&&Date.now()-lastProgress>=90000)
+          failSession('error','Gemini stopped responding during background thinking for 90 seconds. Choose Listen to reconnect.');
+      },1000);
       connect();if(capture)await setMicrophone(true,deviceName);
     },
     stop,setMicrophone,
     toolResult(id,response,images=[]){
       const name=pendingTools.get(id);if(!name)return;pendingTools.delete(id);
+      progress();
       if(images.length)send({clientContent:{turns:[{role:'user',parts:[{text:'Images returned by '+name+' (in image_index order). Use the tool result metadata to distinguish the current screenshot, reference maps and historical journal images.'},...images.map(data=>({inlineData:{mimeType:'image/jpeg',data}}))]}],turnComplete:false}});
       send({toolResponse:{functionResponses:[{id,name,response}]}});
     },
@@ -177,12 +197,12 @@
     // context tool result so position answers come from it.
     still(jpeg){send({clientContent:{turns:[{role:'user',parts:[{text:'Current game screen (newest frame):'},{inlineData:{mimeType:'image/jpeg',data:jpeg}}]}],turnComplete:false}})},
     // Application cues are spoken; context is quiet background.
-    cue(text){beginInteraction(true);receivingInput=false;if(silent())outputText='';bookkeeping=false;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
+    cue(text){if(!ready)return;beginInteraction(true);receivingInput=false;if(silent())outputText='';bookkeeping=false;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'GameBuddy cue: '+text}]}],turnComplete:true}})},
     context(text){send({clientContent:{turns:[{role:'user',parts:[{text:'Game context: '+text}]}],turnComplete:false}})},
-    watch(){if(workPending)return;beginInteraction(false);setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
+    watch(){if(!ready||workPending)return;beginInteraction(false);setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Watch check: the scene just changed.'}]}],turnComplete:true}})},
     // A silent turn: Gemini records what changed (items bought, keys used)
     // with tools; any speech it produces is dropped.
-    bookkeep(){if(speaking||silent()||workPending){emit('bookkeeping-done',false);return}beginInteraction(false);bookkeeping=true;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Your reply in this turn is not played.'}]}],turnComplete:true}})},
+    bookkeep(){if(!ready||speaking||silent()||workPending){emit('bookkeeping-done',false);return}beginInteraction(false);bookkeeping=true;setWorkPending(true);send({clientContent:{turns:[{role:'user',parts:[{text:'Bookkeeping check: compare the newest frames with trackable_facts. If an item was bought, found, used up or lost, or a door or spring changed, record it with report_world_state now. Your reply in this turn is not played.'}]}],turnComplete:true}})},
     interrupt(){canRecover=false;emit('tool-recovery',{state:'clear'});stopPlayback()},
     muteOutput(muted){outputMuted=muted;if(muted)stopPlayback()}
   };
