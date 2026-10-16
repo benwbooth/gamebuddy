@@ -68,6 +68,25 @@ pub struct GeminiVoiceRust {
     scene: Option<Vec<u8>>,
 }
 
+/// Recent tool failures by tool name. A live model retries a failing tool
+/// in a tight loop (seventy calls in forty seconds were seen) and never
+/// answers; after two failures in a minute the call is refused unrun.
+static FAILURES: std::sync::Mutex<Vec<(String, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn recent_failures(name: &str) -> usize {
+    let mut failures = FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    failures.retain(|(_, at)| at.elapsed() < Duration::from_secs(60));
+    failures.iter().filter(|(n, _)| n == name).count()
+}
+
+fn record_failure(name: &str) {
+    FAILURES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((name.to_owned(), std::time::Instant::now()));
+}
+
 fn live_settings(directory: &str) -> anyhow::Result<(Store, LiveVoice)> {
     let store = Store::open(directory)?;
     let settings = store.get::<Settings>("settings")?.unwrap_or_default();
@@ -179,7 +198,12 @@ impl ffi::GeminiVoice {
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
             let mut images = Vec::new();
+            let repeated = recent_failures(&name) >= 2;
             let result = (|| -> anyhow::Result<Value> {
+                anyhow::ensure!(
+                    !repeated,
+                    "{name} already failed twice in the last minute, so it was not run again"
+                );
                 anyhow::ensure!(
                     tools()[0]["functionDeclarations"]
                         .as_array()
@@ -251,7 +275,11 @@ impl ffi::GeminiVoice {
             let response = match result {
                 Ok(Value::Object(object)) => Value::Object(object),
                 Ok(other) => json!({"result": other}),
-                Err(error) => json!({"error": format!("{error:#}")}),
+                Err(error) => {
+                    record_failure(&name);
+                    json!({"error": format!("{error:#}"), "retry": false,
+                        "instruction": "This tool failed. Do not call it again for this question. Answer the player now from get_game_context and what you can see, and say briefly what is unavailable."})
+                }
             };
             let event = json!({"id":id,"name":name,"response":response,"images":images,"elapsed_ms":started.elapsed().as_millis() as u64}).to_string();
             let _ = ui

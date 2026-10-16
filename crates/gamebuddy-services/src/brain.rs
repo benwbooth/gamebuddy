@@ -183,7 +183,9 @@ pub fn think(
     question: Option<&str>,
 ) -> Result<(Situation, Option<String>)> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
-    let snapshot = screen::snapshot(store)?;
+    // Without a fresh screen (paused, stale, menu transition) the brain
+    // still answers from the plan and state rather than failing.
+    let snapshot = screen::snapshot(store).ok();
     let mut schema = json!(schemars::schema_for!(Situation));
     {
         let required: Vec<Value> = schema["properties"]
@@ -206,20 +208,27 @@ pub fn think(
     let request = ModelRequest {
         system: SYSTEM.into(),
         prompt: format!(
-            "GameBuddy state (plan from the player's area and items, tracked facts with values, the previous situation, recent journal{}): {}\n\nThe image is the newest screenshot. Return JSON matching this schema: {}",
+            "GameBuddy state (plan from the player's area and items, tracked facts with values, the previous situation, recent journal{}): {}\n\n{} Return JSON matching this schema: {}",
             if question.is_some() {
                 ", and the player's question"
             } else {
                 ""
             },
             serde_json::to_string(&context(store, guide, question)?)?,
+            if snapshot.is_some() {
+                "The image is the newest screenshot."
+            } else {
+                "No current screenshot is available: answer from the state above, leave screen readings empty or null, and say so where it matters."
+            },
             schema
         ),
-        images: vec![snapshot.jpeg.clone()],
+        images: snapshot.iter().map(|s| s.jpeg.clone()).collect(),
         json: true,
     };
     let mut request = request;
-    if let Some((here, next, seconds)) = walkthrough_frames(store, guide) {
+    if snapshot.is_some()
+        && let Some((here, next, seconds)) = walkthrough_frames(store, guide)
+    {
         request.images.push(here);
         request.images.push(next);
         request.prompt.push_str(&format!(
@@ -236,7 +245,7 @@ pub fn think(
     apply(store, guide, &situation)?;
     store.put(
         &key(guide),
-        &json!({"situation":situation,"session":snapshot.ticket.session,"captured_at_ms":snapshot.captured_at_ms,"updated_at_ms":screen::now_ms(),"elapsed_ms":started.elapsed().as_millis() as u64}),
+        &json!({"situation":situation,"session":snapshot.as_ref().map(|s| s.ticket.session.clone()),"captured_at_ms":snapshot.as_ref().map_or(screen::now_ms(), |s| s.captured_at_ms),"updated_at_ms":screen::now_ms(),"elapsed_ms":started.elapsed().as_millis() as u64}),
     )?;
     Ok((situation, answer))
 }
