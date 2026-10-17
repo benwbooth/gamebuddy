@@ -11,6 +11,13 @@ Item {
     required property var session
     property var startup: null
     property var preparation: null
+    // A first-time game opens with the full preparation as a welcome. Only
+    // a preparation seen running this session qualifies, so a finished one
+    // saved from an earlier launch never greets the player again.
+    property bool newGameSeen: false
+    property bool welcomeDismissed: false
+    readonly property bool welcoming: newGameSeen && !welcomeDismissed
+    onPreparationChanged: if (preparation?.new_game && preparation?.status === "running") newGameSeen = true
     property string tokenAlert: ""
     property bool liveCommentary: false
     signal tokenAlertDismissed()
@@ -257,10 +264,12 @@ Item {
         id: compactPreparation
         objectName: "companionPreparation"
         compact: true
+        welcome: companion.welcoming
         report: companion.preparation
-        visible: !companion.expanded && (running || failed)
+        visible: !companion.expanded && (running || failed || (welcome && shown))
         x: 8; y: compactStartup.visible ? compactStartup.y + compactStartup.height + 8 : 80
-        width: Math.min(340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
+        width: Math.min(welcome ? 480 : 340, (companion.embedded && companion.parent ? companion.parent.width : Screen.desktopAvailableWidth) - 16)
+        onDismissed: companion.welcomeDismissed = true
         onRetryRequested: companion.preparationRetryRequested()
         MouseArea { anchors.fill: parent; z: -1; onClicked: companion.expanded = true }
     }

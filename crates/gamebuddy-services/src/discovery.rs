@@ -150,6 +150,37 @@ pub fn choose_walkthrough(
     Ok(choice)
 }
 
+/// One line per kind of material the guide now has, for the welcome panel
+/// and the voice's "ready" message.
+pub fn gathered(store: &Store, guide: &Guide) -> Vec<String> {
+    let mut lines = vec![];
+    let steps = guide
+        .steps
+        .iter()
+        .filter(|s| guide.step_enabled(s) && !guide.steps.iter().any(|c| c.parent_id.as_deref() == Some(&s.id)))
+        .count();
+    lines.push(format!("Walkthrough: {}", guide.title));
+    lines.push(format!("{steps} walkthrough steps"));
+    let cards = crate::game_data::cards(store, guide).unwrap_or_default();
+    let charts = cards.iter().filter(|c| c["table"].is_object()).count();
+    if !cards.is_empty() {
+        lines.push(format!(
+            "{} data cards and {charts} {}",
+            cards.len() - charts,
+            if charts == 1 { "chart" } else { "charts" }
+        ));
+    }
+    if let Ok(atlas) = crate::navigation::atlas(store, guide)
+        && !atlas.places.is_empty()
+    {
+        lines.push(format!("{} places in the location atlas", atlas.places.len()));
+        if !atlas.maps.is_empty() {
+            lines.push(format!("{} maps and diagrams", atlas.maps.len()));
+        }
+    }
+    lines
+}
+
 /// Idempotent per title/platform; expensive work is reused across launches.
 /// Every stage reports to [`crate::setup_progress`] so the player can see what
 /// is running, how far it has got, and what needs attention.
@@ -211,6 +242,7 @@ fn prepare_tracked(
                 .find(|g| g.game.eq_ignore_ascii_case(game) && matches_selection(g))
                 .cloned()
         });
+    tracker.set_new_game(existing.is_none());
     tracker.begin("source", "Looking for a saved walkthrough");
     let download = |url: &str| {
         tracker.begin("download", "Reading YouTube metadata…");
@@ -484,6 +516,7 @@ fn prepare_tracked(
             tracker.attention("spatial", message);
         }
     }
+    tracker.set_gathered(gathered(store, &guide));
     progress(format!(
         "{} reference preparation finished. Watching the game for location matches.",
         guide.game

@@ -6,6 +6,7 @@ Item {
     width: 520; height: 760
     UI.PreparationStatus { id: status; width: 500 }
     SignalSpy { id: retry; target: status; signalName: "retryRequested" }
+    SignalSpy { id: hidden; target: status; signalName: "dismissed" }
     function stage(id, label, status, extra) { return Object.assign({id:id,label:label,status:status,detail:"",done:null,total:null,started_at_ms:null,finished_at_ms:null}, extra || {}) }
     function report(state, stages, extra) {
         const now = Date.now()
@@ -13,7 +14,7 @@ Item {
     }
     TestCase {
         name: "PreparationStatus"; when: windowShown
-        function init() { status.report = null; status.compact = false; status.showAllEvents = false; retry.clear() }
+        function init() { status.report = null; status.compact = false; status.welcome = false; status.showAllEvents = false; retry.clear() }
         function test_running_shows_every_stage_counts_and_activity() {
             const now = Date.now()
             const events = []
@@ -37,6 +38,37 @@ Item {
             verify(findChild(status, "preparationStages").visible)
             waitForRendering(status)
             grabImage(status).save("/tmp/gamebuddy-preparation-running.png")
+        }
+        function test_new_game_welcome_explains_and_lists_what_was_gathered() {
+            const now = Date.now()
+            status.compact = true
+            status.welcome = true
+            status.report = report("running", [
+                stage("source","Find a walkthrough for this game","done",{detail:"Faxanadu NES - ULTIMATE GUIDE · 1:36:40"}),
+                stage("download","Download the walkthrough video and captions","done",{detail:"Video and English captions downloaded"}),
+                stage("references","Sample screens for recognizing where you are","done",{done:580,total:580}),
+                stage("spatial","Map the game world","running",{detail:"Identifying game viewports, HUD masks, and camera type…",started_at_ms:now-40000}),
+                stage("sections","Write the walkthrough steps","running",{detail:"Building walkthrough: section 8 of 40 · Eolis",done:7,total:40,started_at_ms:now-30000}),
+                stage("charts","Find charts, tables and data cards","pending"),
+                stage("atlas","Build the location atlas","pending"),
+                stage("maps","Register maps and diagrams","pending")], {new_game:true})
+            verify(status.visible)
+            compare(findChild(status, "preparationTitle").text, "Starting a new game: Faxanadu")
+            verify(findChild(status, "preparationIntro").visible)
+            verify(findChild(status, "preparationStages").visible)
+            waitForRendering(status)
+            grabImage(status).save("/tmp/gamebuddy-preparation-welcome.png")
+            status.report = report("ready", status.report.stages.map(s => Object.assign({}, s, {status:"done"})), {new_game:true, updated_at_ms:now-60000,
+                gathered:["Walkthrough: Faxanadu NES - ULTIMATE GUIDE","412 walkthrough steps","45 data cards and 1 chart","118 places in the location atlas"]})
+            verify(status.visible, "A welcome stays up after finishing until closed")
+            compare(findChild(status, "preparationTitle").text, "Faxanadu is ready to play")
+            verify(!findChild(status, "preparationIntro").visible)
+            verify(findChild(status, "preparationGathered").visible)
+            waitForRendering(status)
+            grabImage(status).save("/tmp/gamebuddy-preparation-welcome-ready.png")
+            hidden.clear()
+            mouseClick(findChild(status, "preparationHide"))
+            compare(hidden.count, 1)
         }
         function test_compact_shows_only_the_current_stage() {
             status.compact = true

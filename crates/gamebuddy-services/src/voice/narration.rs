@@ -19,6 +19,9 @@ pub struct Narrator {
     event_votes: u8,
     urgent: bool,
     warned_hazards: HashSet<String>,
+    /// Greeted the player as starting a new game while the guide was built.
+    welcomed_new_game: bool,
+    announced_ready: bool,
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -215,6 +218,10 @@ impl Narrator {
             let next = if ready && !field(action, "id").is_empty() {
                 self.spoken_actions.insert(action_key);
                 cue(context)
+            } else if context["new_game"] == true && context["preparation_status"] == "running" {
+                self.welcomed_new_game = true;
+                let game = Some(field(context, "game")).filter(|g| !g.is_empty()).unwrap_or("this game");
+                format!("Looks like we're starting a new game of {game}. Let me gather the walkthrough, charts and maps for it first. Go ahead and play; I'll tell you when it's ready.")
             } else if context["preparing"] == true && context["guide_ready"] != true {
                 "I'm preparing your guide. I'll talk you through the next steps as you play.".into()
             } else {
@@ -223,6 +230,32 @@ impl Narrator {
             return Some(format!("{greeting} {next}"));
         }
 
+        if self.welcomed_new_game
+            && !self.announced_ready
+            && matches!(field(context, "preparation_status"), "ready" | "partial")
+            && context["player_speaking"] != true
+        {
+            self.announced_ready = true;
+            self.last_spoken = Some(now);
+            let gathered: Vec<&str> = context["gathered"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|l| !l.starts_with("Walkthrough:"))
+                .collect();
+            let game = Some(field(context, "game")).filter(|g| !g.is_empty()).unwrap_or("the game");
+            let mut line = format!("Okay, I'm all set for {game}");
+            if !gathered.is_empty() {
+                line.push_str(&format!(": {}", gathered.join(", ")));
+            }
+            line.push('.');
+            if ready && !field(action, "id").is_empty() && self.spoken_actions.insert(action_key) {
+                line.push(' ');
+                line.push_str(&cue(context));
+            }
+            return Some(line);
+        }
         if ready && !field(action, "id").is_empty() && self.spoken_actions.insert(action_key) {
             self.last_spoken = Some(now);
             // Actual instructions, immediately on the next poll. No named-place

@@ -86,11 +86,14 @@ WebEngineView {
     settings.playbackRequiresUserGesture: false
     settings.localContentCanAccessFileUrls: false
     settings.javascriptCanOpenWindows: false
+    function preparationReport() {
+        try { return JSON.parse(buddy.preparation_json || "null") } catch (e) { return null }
+    }
     function context() {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
             guidance:session.navigation?.guidance, plan_recovery:session.navigation?.recovery, journal:session.journal, spatial:session.navigation?.spatial, coaching:session.navigation?.coaching, guide_id:session.guide?.id, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
-            preparing:buddy.preparing, guide_ready:!!session.guide && session.reference_count>0, guide_revision:session.guide?.revision, progress_epoch:session.progress?.epoch, microphone_active:voice.active, returning_player:returningPlayer,
+            preparing:buddy.preparing, new_game:preparationReport()?.new_game===true, preparation_status:preparationReport()?.status||"", gathered:preparationReport()?.gathered||[], guide_ready:!!session.guide && session.reference_count>0, guide_revision:session.guide?.revision, progress_epoch:session.progress?.epoch, microphone_active:voice.active, returning_player:returningPlayer,
             conversation_active:conversationActive || localConversationActive || voice.speaking || buddy.busy,
             player_speaking:userSpeaking, fast_event:session.fast_event,
             instruction:"This is automatic game-screen context, not a player request. GameBuddy continuously captures the game and the configured vision model describes changes in screen.scene. Observations are estimates with timestamps. get_game_screen returns the actual latest screenshot as IMAGE content to your reasoning tool; call it for screen questions or closer inspection before claiming you cannot see. A missing location match is not missing screen access. The application sends selected spoken event and next-action cues separately; stay quiet for routine context updates. Respect unconfirmed prerequisites. Room identity does not establish inventory, player coordinates, or completion. Never mark tasks complete from this update."})

@@ -9,13 +9,17 @@ Rectangle {
     property var report: null
     property bool compact: false
     property bool showAllEvents: false
+    // The new-game welcome: an opening line, the full stage list, what was
+    // gathered once finished, and a way to tuck it away.
+    property bool welcome: false
+    signal dismissed()
     property double now: Date.now()
     signal retryRequested()
     readonly property bool running: report?.status === "running"
     readonly property bool failed: report?.status === "failed"
     readonly property bool partial: report?.status === "partial"
     readonly property bool ready: report?.status === "ready"
-    readonly property bool shown: running || failed || partial || (ready && now - (report?.updated_at_ms || 0) < 4000)
+    readonly property bool shown: running || failed || partial || (ready && (welcome || now - (report?.updated_at_ms || 0) < 4000))
     readonly property var stages: report?.stages || []
     readonly property var active: stages.filter(s => s.status === "running")
     readonly property var current: active.filter(s => s.id !== "spatial").slice(-1)[0] || active[0] || null
@@ -57,8 +61,10 @@ Rectangle {
             Text {
                 objectName: "preparationTitle"
                 text: panel.failed ? "Walkthrough setup stopped"
+                    : panel.welcome && (panel.ready || panel.partial) ? (panel.report?.game || "Your game") + " is ready to play"
                     : panel.partial ? "Walkthrough ready · some steps need attention"
                     : panel.ready ? "Walkthrough ready"
+                    : panel.welcome ? "Starting a new game: " + (panel.report?.game || "your game")
                     : "Preparing " + (panel.report?.game || "your game") + "'s walkthrough"
                 color: panel.failed ? "#ffc4b9" : "#e6f1f6"; font.pixelSize: 14; font.weight: Font.DemiBold
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
@@ -68,10 +74,40 @@ Rectangle {
                 text: panel.report ? panel.clock((panel.running ? panel.now : panel.report.updated_at_ms) - panel.report.started_at_ms) : ""
                 color: "#91a9b9"; font.pixelSize: 12; font.family: "monospace"
             }
+            Text {
+                objectName: "preparationHide"
+                visible: panel.welcome
+                text: panel.running ? "Hide" : "Close"
+                color: "#86decb"; font.pixelSize: 12; font.underline: true
+                MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: panel.dismissed() }
+            }
+        }
+        Text {
+            objectName: "preparationIntro"
+            visible: panel.welcome && panel.running
+            text: "I don't have anything saved for this game yet, so let me gather walkthrough details and materials first: the walkthrough itself, charts and data cards, maps and diagrams, and the screens I use to tell where you are. You can start playing while this runs; I'll tell you when it's ready."
+            color: "#d4e3ec"; font.pixelSize: 13; textFormat: Text.PlainText
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+        }
+        Column {
+            objectName: "preparationGathered"
+            visible: panel.welcome && (panel.ready || panel.partial) && (panel.report?.gathered || []).length > 0
+            Layout.fillWidth: true; spacing: 3
+            Text { text: "GATHERED"; color: "#86decb"; font.pixelSize: 11 }
+            Repeater {
+                model: panel.report?.gathered || []
+                Text {
+                    required property var modelData
+                    width: parent.width
+                    text: "✓  " + modelData
+                    color: "#e3edf5"; font.pixelSize: 13; textFormat: Text.PlainText; wrapMode: Text.WordWrap
+                }
+            }
         }
         Text {
             objectName: "preparationCurrent"
-            visible: panel.running && !!panel.current
+            // The welcome's stage list already shows the running stage.
+            visible: panel.running && !!panel.current && !panel.welcome
             text: panel.current ? panel.current.label + (panel.counts(panel.current) ? " · " + panel.counts(panel.current) : "") + (panel.current.detail ? "\n" + panel.current.detail : "") : ""
             color: "#b8cfda"; font.pixelSize: 13; textFormat: Text.PlainText
             Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: panel.compact ? 3 : 4; elide: Text.ElideRight
@@ -102,7 +138,7 @@ Rectangle {
         }
         Column {
             objectName: "preparationStages"
-            visible: !panel.compact
+            visible: !panel.compact || (panel.welcome && !panel.ready)
             Layout.fillWidth: true; spacing: 6
             Repeater {
                 model: panel.stages

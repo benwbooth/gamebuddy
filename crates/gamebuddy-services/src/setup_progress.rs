@@ -16,14 +16,14 @@ use std::{
 
 const MAX_EVENTS: usize = 80;
 pub const STAGES: [(&str, &str); 8] = [
-    ("source", "Choose a walkthrough"),
-    ("download", "Download video and captions"),
-    ("references", "Sample visual references"),
+    ("source", "Find a walkthrough for this game"),
+    ("download", "Download the walkthrough video and captions"),
+    ("references", "Sample screens for recognizing where you are"),
     ("spatial", "Map the game world"),
-    ("sections", "Write walkthrough sections"),
-    ("charts", "Find charts and data cards"),
-    ("atlas", "Prepare location atlas"),
-    ("maps", "Register map images"),
+    ("sections", "Write the walkthrough steps"),
+    ("charts", "Find charts, tables and data cards"),
+    ("atlas", "Build the location atlas"),
+    ("maps", "Register maps and diagrams"),
 ];
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -56,6 +56,11 @@ pub struct Report {
     pub stages: Vec<Stage>,
     pub events: VecDeque<Event>,
     pub error: Option<String>,
+    /// No walkthrough was saved for this game yet: the player is starting
+    /// something new and GameBuddy greets them with the full preparation.
+    pub new_game: bool,
+    /// What preparation gathered, one line each, once it finishes.
+    pub gathered: Vec<String>,
 }
 
 static LIVE: OnceLock<Mutex<HashMap<String, Report>>> = OnceLock::new();
@@ -123,6 +128,8 @@ impl Tracker {
                 .collect(),
             events: VecDeque::new(),
             error: None,
+            new_game: false,
+            gathered: vec![],
         };
         let tracker = Self {
             root: store.root.clone(),
@@ -238,6 +245,12 @@ impl Tracker {
         });
     }
     /// Record a pipeline message against the stage currently doing the work.
+    pub fn set_new_game(&self, new_game: bool) {
+        self.update(true, |r| r.new_game = new_game);
+    }
+    pub fn set_gathered(&self, gathered: Vec<String>) {
+        self.update(true, |r| r.gathered = gathered);
+    }
     pub fn message(&self, text: &str) {
         self.message_for(&self.current(), text);
     }
