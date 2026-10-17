@@ -14,6 +14,7 @@ pub use media::*;
 pub use providers::*;
 pub use store::*;
 pub mod discovery;
+pub mod game_data;
 pub use discovery::*;
 pub mod captions;
 pub mod conversation;

@@ -492,7 +492,7 @@ pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
         let lower = text.to_lowercase();
         TIP.iter().any(|w| lower.contains(w))
     };
-    let notes: Vec<Value> = graph
+    let mut notes: Vec<Value> = graph
         .objectives
         .iter()
         .enumerate()
@@ -516,5 +516,10 @@ pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
         })
         .take(12)
         .collect();
+    // Data cards (prices, stats, tips) for anything those notes name.
+    let named = crate::game_data::mentioned(store, guide, &serde_json::to_string(&notes)?)?;
+    if !named.is_empty() {
+        notes.push(json!({"task":"Data cards for things mentioned above","cards":named}));
+    }
     Ok(json!(notes))
 }
