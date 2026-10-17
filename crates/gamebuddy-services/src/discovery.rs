@@ -488,6 +488,10 @@ fn prepare_tracked(
     if let Some(task) = charts_task {
         tracker.detail("charts", "Finishing charts and data cards…");
         match task.join() {
+            Ok(Ok(count)) if crate::reference_scan::partial(store, &guide)? => tracker.attention(
+                "charts",
+                format!("{count} charts and data cards found; the rest will be retried on the next launch (the model was busy)"),
+            ),
             Ok(Ok(count)) => tracker.finish("charts", format!("{count} charts and data cards found")),
             other => {
                 let error = match other {

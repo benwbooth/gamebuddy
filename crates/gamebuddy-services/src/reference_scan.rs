@@ -277,6 +277,41 @@ fn parallel<T: Sync, R: Send>(
     results.into_iter().map(|(_, r)| r).collect()
 }
 
+/// Work left from an interrupted scan: contact sheets the model has not
+/// answered yet and subjects not yet transcribed. Provider rate limits are
+/// common on a long video, so nothing found is thrown away.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Pending {
+    source_id: String,
+    interval: u64,
+    sheets: Vec<Vec<usize>>,
+    /// (video ms, subject)
+    subjects: Vec<(u64, String)>,
+}
+
+fn pending_key(guide: &Guide) -> String {
+    format!("reference-scan-pending:{}", guide.id)
+}
+
+/// Retry rate-limited provider calls after a pause instead of failing them.
+fn patiently<T>(call: impl Fn() -> Result<T>) -> Result<T> {
+    let mut attempt = 0;
+    loop {
+        match call() {
+            Err(error)
+                if attempt < 3 && {
+                    let text = format!("{error:#}");
+                    text.contains("429") || text.contains("Too Many Requests")
+                } =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_secs(30 * attempt));
+            }
+            other => return other,
+        }
+    }
+}
+
 pub fn scan_with(
     store: &Store,
     guide: &Guide,
@@ -293,18 +328,38 @@ pub fn scan_with(
         );
         progress(message.to_owned());
     };
+    let resumed: Vec<Pending> = store.get(&pending_key(guide))?.unwrap_or_default();
+    let mut left: Vec<Pending> = vec![];
     for source in &guide.sources {
         let Some(media) = source.media_path.as_deref().map(Path::new) else {
             continue;
         };
-        let duration_s = match source.duration_ms {
-            Some(ms) => ms / 1000,
-            None => crate::media::video_duration(media)? / 1000,
+        let mut job = match resumed.iter().find(|p| p.source_id == source.id) {
+            Some(p) => Pending {
+                source_id: p.source_id.clone(),
+                interval: p.interval,
+                sheets: p.sheets.clone(),
+                subjects: p.subjects.clone(),
+            },
+            None if !resumed.is_empty() => continue,
+            None => {
+                let duration_s = match source.duration_ms {
+                    Some(ms) => ms / 1000,
+                    None => crate::media::video_duration(media)? / 1000,
+                };
+                let interval = 2u64.max(duration_s.div_ceil(3000));
+                status("Looking for charts and data cards in the walkthrough video…", 0, 0);
+                let picks = candidates(&thumbnails(media, interval)?);
+                Pending {
+                    source_id: source.id.clone(),
+                    interval,
+                    sheets: picks.chunks(TILES).map(<[usize]>::to_vec).collect(),
+                    subjects: vec![],
+                }
+            }
         };
-        let interval = 2u64.max(duration_s.div_ceil(3000));
-        status("Looking for charts and data cards in the walkthrough video…", 0, 0);
-        let picks = candidates(&thumbnails(media, interval)?);
-        let sheets: Vec<&[usize]> = picks.chunks(TILES).collect();
+        let interval = job.interval;
+        let sheets = std::mem::take(&mut job.sheets);
         // Contact sheets: which sampled frames carry reference material.
         let chosen = parallel(&sheets, |n, chunk| -> Result<Vec<(u64, String)>> {
             let tiles: Vec<PathBuf> = chunk
@@ -316,7 +371,7 @@ pub fn scan_with(
                 .collect::<Result<_>>()?;
             let sheet_path = work.join(format!("sheet-{n}.jpg"));
             sheet(&tiles, &sheet_path)?;
-            let picked = pick(provider, &guide.game, &sheet_path, tiles.len());
+            let picked = patiently(|| pick(provider, &guide.game, &sheet_path, tiles.len()));
             for path in tiles.iter().chain([&sheet_path]) {
                 let _ = std::fs::remove_file(path);
             }
@@ -332,23 +387,26 @@ pub fn scan_with(
             )
         });
         // The same card stays on screen for a while; read each subject once.
-        let mut unique: Vec<(u64, String)> = vec![];
-        for result in chosen {
+        for (result, chunk) in chosen.into_iter().zip(sheets) {
             match result {
                 Ok(list) => {
                     for (at, subject) in list {
-                        if !unique.iter().any(|(_, s)| s.eq_ignore_ascii_case(&subject)) {
-                            unique.push((at, subject));
+                        if !job.subjects.iter().any(|(_, s)| s.eq_ignore_ascii_case(&subject)) {
+                            job.subjects.push((at, subject));
                         }
                     }
                 }
-                Err(error) => progress(format!("Skipped a chart sheet: {error:#}")),
+                Err(error) => {
+                    progress(format!("Will retry a chart sheet later: {error:#}"));
+                    job.sheets.push(chunk);
+                }
             }
         }
-        let cards = parallel(&unique, |n, (at_ms, subject)| -> Result<Value> {
+        let subjects = std::mem::take(&mut job.subjects);
+        let cards = parallel(&subjects, |n, (at_ms, subject)| -> Result<Value> {
             let full = work.join(format!("full-{n}.jpg"));
             frame(media, *at_ms, 1280, &full)?;
-            let card = transcribe(provider, &guide.game, &full, subject);
+            let card = patiently(|| transcribe(provider, &guide.game, &full, subject));
             let _ = std::fs::remove_file(&full);
             let mut card = card?;
             card["t"] = json!(at_ms / 1000);
@@ -356,16 +414,22 @@ pub fn scan_with(
             Ok(card)
         }, |done| {
             status(
-                &format!("Reading walkthrough charts and data cards: {done} of {}", unique.len()),
+                &format!("Reading walkthrough charts and data cards: {done} of {}", subjects.len()),
                 done,
-                unique.len(),
+                subjects.len(),
             )
         });
-        for (card, (_, subject)) in cards.into_iter().zip(&unique) {
+        for (card, entry) in cards.into_iter().zip(subjects) {
             match card {
                 Ok(card) => found.push(card),
-                Err(error) => progress(format!("Could not read {subject}: {error:#}")),
+                Err(error) => {
+                    progress(format!("Will retry {} later: {error:#}", entry.1));
+                    job.subjects.push(entry);
+                }
             }
+        }
+        if !job.sheets.is_empty() || !job.subjects.is_empty() {
+            left.push(job);
         }
     }
     let _ = std::fs::remove_dir_all(&work);
@@ -379,6 +443,20 @@ pub fn scan_with(
         merged.push(card);
     }
     let count = crate::game_data::import(store, guide, &merged)?;
-    store.put(&key(guide), &json!({"phase":"done","found":count,"message":format!("{count} charts and data cards found")}))?;
+    let unread: usize = left.iter().map(|p| p.subjects.len() + p.sheets.len() * TILES).sum();
+    store.put(&pending_key(guide), &left)?;
+    if left.is_empty() {
+        store.put(&key(guide), &json!({"phase":"done","found":count,"message":format!("{count} charts and data cards found")}))?;
+    } else {
+        store.put(&key(guide), &json!({"phase":"partial","found":count,"message":format!("{count} charts and data cards found; some could not be read yet and will be retried")}))?;
+        progress(format!("{count} charts and data cards found; about {unread} frames left to retry on the next launch"));
+    }
     Ok(count)
+}
+
+/// Whether the last scan left frames to retry.
+pub fn partial(store: &Store, guide: &Guide) -> Result<bool> {
+    Ok(store
+        .get::<Value>(&key(guide))?
+        .is_some_and(|s| s["phase"] == "partial"))
 }
