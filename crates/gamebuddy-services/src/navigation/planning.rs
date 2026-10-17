@@ -431,3 +431,90 @@ fn key_lookup(
     });
     None
 }
+
+/// Walkthrough tips and warnings for where the player is and what comes
+/// next, optional tasks included: grinding spots, shortcuts, items to
+/// leave alone. The plan follows the main line only, so without these the
+/// live voice never hears about, say, a cursed pendant in an optional tower.
+pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
+    let atlas = super::atlas(store, guide)?;
+    let model = crate::outcomes::prepared(store, guide)?
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let graph = PlanGraph::build(guide, &atlas, &model);
+    let progress = store.progress(guide)?;
+    let area = player_area(store, guide, &graph)?;
+    let near: std::collections::BTreeSet<&str> = area
+        .as_deref()
+        .into_iter()
+        .chain(
+            graph
+                .crossings
+                .iter()
+                .filter_map(|c| match area.as_deref() {
+                    Some(a) if c.from == a => Some(c.to.as_str()),
+                    Some(a) if c.to == a => Some(c.from.as_str()),
+                    _ => None,
+                }),
+        )
+        .collect();
+    let mark = progress
+        .current_step
+        .as_deref()
+        .and_then(|c| {
+            graph
+                .objectives
+                .iter()
+                .position(|o| o.steps.iter().any(|s| s == c))
+        })
+        .unwrap_or(0);
+    const TIP: [&str; 18] = [
+        "avoid",
+        "don't",
+        "do not",
+        "skip",
+        "grind",
+        "farm",
+        "level",
+        "gold",
+        "money",
+        "curse",
+        "reduce",
+        "recommend",
+        "safe",
+        "shortcut",
+        "warning",
+        "beware",
+        "instead",
+        "optional",
+    ];
+    let tip = |text: &str| {
+        let lower = text.to_lowercase();
+        TIP.iter().any(|w| lower.contains(w))
+    };
+    let notes: Vec<Value> = graph
+        .objectives
+        .iter()
+        .enumerate()
+        .filter(|(i, o)| {
+            o.area.as_deref().is_some_and(|a| near.contains(a)) || (*i >= mark && *i < mark + 10)
+        })
+        .filter_map(|(_, o)| {
+            let mut lines: Vec<&str> = vec![];
+            if tip(&o.summary) {
+                lines.push(&o.summary);
+            }
+            for step in o.steps.iter().filter_map(|id| guide.step(id)) {
+                if tip(&step.instructions) && lines.len() < 4 {
+                    lines.push(&step.instructions);
+                }
+            }
+            (!lines.is_empty()).then(|| {
+                json!({"task":o.title,"area":o.area,"optional":o.optional,
+                    "notes":lines.join(" ").chars().take(700).collect::<String>()})
+            })
+        })
+        .take(12)
+        .collect();
+    Ok(json!(notes))
+}
