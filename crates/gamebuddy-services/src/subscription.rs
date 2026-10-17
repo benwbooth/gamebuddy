@@ -56,6 +56,41 @@ pub struct CodexClient {
     // Process is dropped first, before releasing the saved-thread leases.
     sessions: std::collections::HashMap<std::path::PathBuf, session::Lease>,
 }
+/// Overrides turning off every MCP server in the player's own Codex config.
+/// `mcp_servers={}` merges rather than clears, so each app server launched
+/// the player's tools (Blender, desktop control…) and they piled up as
+/// hundreds of busy background processes. Only servers defined in
+/// config.toml are named: disabling a plugin's server (plugins are already
+/// off) would create an entry without a transport, which Codex rejects.
+fn mcp_overrides() -> Vec<String> {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let home = std::env::var_os("CODEX_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".codex")));
+            let config = home
+                .and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
+                .unwrap_or_default();
+            let mut names: Vec<String> = config
+                .lines()
+                .filter_map(|line| {
+                    line.trim()
+                        .strip_prefix("[mcp_servers.")?
+                        .strip_suffix(']')
+                        .map(str::to_owned)
+                })
+                // Sub-tables (`name.env`) and quoted names are not server names.
+                .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)))
+                .collect();
+            names.dedup();
+            names
+        })
+        .iter()
+        .flat_map(|name| ["-c".to_owned(), format!("mcp_servers.{name}.enabled=false")])
+        .collect()
+}
+
 impl CodexClient {
     pub fn start() -> Result<Self> {
         let directory = tempfile::tempdir()?;
@@ -75,10 +110,9 @@ impl CodexClient {
                 "-c",
                 "features.hooks=false",
                 "-c",
-                "mcp_servers={}",
-                "-c",
                 "web_search=\"disabled\"",
             ])
+            .args(mcp_overrides())
             .env_remove("OPENAI_API_KEY")
             .current_dir(directory.path())
             .stdin(Stdio::piped())

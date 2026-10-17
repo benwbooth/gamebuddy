@@ -67,7 +67,24 @@ Item {
         property alias panelHeight: companion.expandedHeight
         property alias dialogueTextSize: companion.dialogueFontSize
         property alias liveCommentary: companion.liveCommentary
+        property alias overlayX: companion.savedX
+        property alias overlayY: companion.savedY
     }
+    // Where the player last dragged GameBuddy over the game; -1 until moved.
+    property real savedX: -1
+    property real savedY: -1
+    property bool positionRestored: false
+    function restorePosition() {
+        if (positionRestored || !embedded || !parent || parent.width <= 0 || parent.height <= 0) return
+        positionRestored = true
+        if (savedX < 0 || savedY < 0) return
+        x = Math.max(0, Math.min(parent.width - width, savedX))
+        y = Math.max(0, Math.min(parent.height - height, savedY))
+    }
+    function rememberPosition() { if (embedded) { savedX = x; savedY = y } }
+    Component.onCompleted: restorePosition()
+    onParentChanged: restorePosition()
+    Connections { target: companion.parent; ignoreUnknownSignals: true; function onWidthChanged() { companion.restorePosition() } }
     function resizePanel(w, h) {
         expandedWidth = Math.max(Math.min(440, maximumPanelWidth), Math.min(w, maximumPanelWidth - (embedded ? x : 0)))
         expandedHeight = Math.max(Math.min(560, maximumPanelHeight), Math.min(h, maximumPanelHeight - (embedded ? y : 0)))
@@ -211,7 +228,7 @@ Item {
                 }
             }
             onPressAndHold: { if (!moved) { held = true; companion.startTalking() } }
-            onReleased: { if (held) companion.stopTalking(); else if (!moved) companion.expanded = !companion.expanded }
+            onReleased: { if (held) companion.stopTalking(); else if (!moved) companion.expanded = !companion.expanded; else companion.rememberPosition() }
             onCanceled: companion.stopTalking()
             ToolTip.visible: containsMouse && !pressed
             ToolTip.text: (companion.thinking ? "Thinking…" : companion.realtimeEnabled ? companion.realtimeStatus : voice.status) + "\nClick to expand · Drag to move · Hold to talk"
@@ -307,6 +324,7 @@ Item {
                             companion.y=Math.max(0,Math.min(companion.parent.height-companion.height,startPosition.y+p.y-scenePress.y))
                         }
                     }
+                    onReleased: if (moved) companion.rememberPosition()
                     ToolTip.visible: containsMouse && !pressed
                     ToolTip.text: "Drag to move GameBuddy"
                 }
