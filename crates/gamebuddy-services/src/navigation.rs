@@ -406,7 +406,8 @@ fn build_atlas(
                 .get::<Settings>("settings")?
                 .unwrap_or_default()
                 .reasoning,
-        )?;
+        )?
+        .patient();
         for ids in pending.chunks(48) {
             atlas.status = "building".into();
             save(store, guide, &atlas)?;
@@ -607,7 +608,8 @@ fn associate_maps(
             .get::<Settings>("settings")?
             .unwrap_or_default()
             .reasoning,
-    )?;
+    )?
+    .patient();
     let index = store.index(guide)?;
     for places in pending.chunks(24) {
         let mut images = sheets.clone();

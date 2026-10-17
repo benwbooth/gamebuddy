@@ -238,7 +238,7 @@ fn text_tables(guide: &Guide) -> Vec<Value> {
 /// Scan every source once and store what was found as game data.
 pub fn scan(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<usize> {
     let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
-    let provider = crate::HttpProvider::new(settings.reasoning)?;
+    let provider = crate::HttpProvider::new(settings.reasoning)?.patient();
     scan_with(store, guide, &provider, progress)
 }
 
@@ -291,25 +291,6 @@ struct Pending {
 
 fn pending_key(guide: &Guide) -> String {
     format!("reference-scan-pending:{}", guide.id)
-}
-
-/// Retry rate-limited provider calls after a pause instead of failing them.
-fn patiently<T>(call: impl Fn() -> Result<T>) -> Result<T> {
-    let mut attempt = 0;
-    loop {
-        match call() {
-            Err(error)
-                if attempt < 3 && {
-                    let text = format!("{error:#}");
-                    text.contains("429") || text.contains("Too Many Requests")
-                } =>
-            {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_secs(30 * attempt));
-            }
-            other => return other,
-        }
-    }
 }
 
 pub fn scan_with(
@@ -371,7 +352,7 @@ pub fn scan_with(
                 .collect::<Result<_>>()?;
             let sheet_path = work.join(format!("sheet-{n}.jpg"));
             sheet(&tiles, &sheet_path)?;
-            let picked = patiently(|| pick(provider, &guide.game, &sheet_path, tiles.len()));
+            let picked = pick(provider, &guide.game, &sheet_path, tiles.len());
             for path in tiles.iter().chain([&sheet_path]) {
                 let _ = std::fs::remove_file(path);
             }
@@ -406,7 +387,7 @@ pub fn scan_with(
         let cards = parallel(&subjects, |n, (at_ms, subject)| -> Result<Value> {
             let full = work.join(format!("full-{n}.jpg"));
             frame(media, *at_ms, 1280, &full)?;
-            let card = patiently(|| transcribe(provider, &guide.game, &full, subject));
+            let card = transcribe(provider, &guide.game, &full, subject);
             let _ = std::fs::remove_file(&full);
             let mut card = card?;
             card["t"] = json!(at_ms / 1000);

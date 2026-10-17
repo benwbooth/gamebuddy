@@ -396,8 +396,16 @@ pub struct HttpProvider {
     // across those rounds. Only interactive coaching opts into saved sessions.
     codex: std::sync::Mutex<Option<crate::subscription::CodexClient>>,
     conversation: Option<(std::path::PathBuf, String)>,
+    /// Background preparation waits out rate limits; interactive calls fail
+    /// fast so the player hears about it.
+    patient: bool,
 }
 impl HttpProvider {
+    /// For long background work: rate-limited calls wait and retry.
+    pub fn patient(mut self) -> Self {
+        self.patient = true;
+        self
+    }
     pub fn new(config: ProviderConfig) -> Result<Self> {
         config.validate()?;
         Ok(Self {
@@ -408,6 +416,7 @@ impl HttpProvider {
                 .build()?,
             codex: std::sync::Mutex::new(None),
             conversation: None,
+            patient: false,
         })
     }
     pub fn for_conversation(
@@ -446,7 +455,7 @@ impl HttpProvider {
 }
 impl ReasoningProvider for HttpProvider {
     fn complete(&self, r: ModelRequest) -> Result<String> {
-        self.complete_with_schema(r, None)
+        self.complete_patiently(r, None)
     }
     fn conversation(&self) -> Option<Box<dyn Conversation + '_>> {
         (self.config.kind == ProviderKind::ClaudeCode).then(|| {
@@ -457,10 +466,18 @@ impl ReasoningProvider for HttpProvider {
         })
     }
     fn complete_structured(&self, r: ModelRequest, schema: Value) -> Result<String> {
-        self.complete_with_schema(r, Some(schema))
+        self.complete_patiently(r, Some(schema))
     }
 }
 impl HttpProvider {
+    fn complete_patiently(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
+        if !self.patient {
+            return self.complete_with_schema(r, schema);
+        }
+        with_backoff(&|m| eprintln!("{m}"), || {
+            self.complete_with_schema(r.clone(), schema.clone())
+        })
+    }
     fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
         match self.config.kind {
             ProviderKind::Codex => {
@@ -681,6 +698,37 @@ pub fn is_quota_error(text: &str) -> bool {
     ]
     .iter()
     .any(|pattern| text.contains(pattern))
+}
+
+/// A temporary "slow down" from the provider (HTTP 429), as opposed to an
+/// exhausted account. Codex returns it when requests arrive faster than the
+/// account allows, even with plenty of weekly usage left.
+pub fn is_rate_limited(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("429") || text.contains("Too Many Requests")
+}
+
+/// Waits between retries of a rate-limited call; about 17 minutes in all.
+const BACKOFF_SECONDS: [u64; 6] = [30, 60, 120, 240, 300, 300];
+
+/// Run a provider call, waiting out rate limits instead of failing at once.
+/// Immediate retries keep the limit tripped, so each wait grows.
+pub fn with_backoff<T>(notify: &dyn Fn(String), mut call: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut waits = BACKOFF_SECONDS.iter();
+    loop {
+        match call() {
+            Err(error) if is_rate_limited(&error) => match waits.next() {
+                Some(&seconds) => {
+                    notify(format!(
+                        "The model is limiting requests right now; waiting {seconds}s before trying again…"
+                    ));
+                    std::thread::sleep(Duration::from_secs(seconds));
+                }
+                None => return Err(error),
+            },
+            other => return other,
+        }
+    }
 }
 
 /// The player-facing message for an exhausted account.

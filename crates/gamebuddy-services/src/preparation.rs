@@ -165,14 +165,19 @@ pub fn compile_walkthrough(
         );
         store.put(&key, &json!({"phase":"compiling","reviewed":reviewed,"total":pending.len(),"message":message,"errors":failed}))?;
         progress(message);
-        let first = compile_segment(&provider, &guide, id, &store.root.join("work"));
-        let compiled = match first {
+        let attempt = || {
+            crate::with_backoff(&|m| progress(m), || {
+                compile_segment(&provider, &guide, id, &store.root.join("work"))
+            })
+        };
+        let compiled = match attempt() {
+            Err(error) if crate::is_rate_limited(&error) => Err(error),
             Ok(g) => Ok(g),
             Err(first_error) => {
                 progress(format!(
                     "Retrying section after validation/provider failure: {first_error}"
                 ));
-                compile_segment(&provider, &guide, id, &store.root.join("work"))
+                attempt()
             }
         };
         match compiled.and_then(|g| {
@@ -184,7 +189,13 @@ pub fn compile_walkthrough(
                 reviewed += 1;
             }
             Err(e) => {
+                let limited = crate::is_rate_limited(&e);
                 failed.push(format!("{id}: {e:#}"));
+                // Still limited after waiting it out: stop rather than fail
+                // every remaining section; they stay pending for a retry.
+                if limited {
+                    break;
+                }
                 // Avoid spending minutes repeatedly retrying a broken provider.
                 if reviewed == 0 && failed.len() == 3 {
                     break;
@@ -196,9 +207,14 @@ pub fn compile_walkthrough(
         "Source review finished. Instructions use sampled frames and available captions; coverage gaps remain listed in the guide.".to_string()
     } else {
         format!(
-            "Reviewed {reviewed} of {} pending sections. {} sections failed; retry preparation to continue.",
+            "Reviewed {reviewed} of {} pending sections. {} sections failed; retry preparation to continue{}.",
             pending.len(),
-            failed.len()
+            failed.len(),
+            if failed.last().is_some_and(|e| e.contains("429") || e.contains("Too Many Requests")) {
+                " (the model kept limiting requests, so the rest were left for later)"
+            } else {
+                ""
+            }
         )
     };
     store.put(&key, &json!({"phase":if failed.is_empty(){"reviewed"}else{"partial"},"reviewed":reviewed,"total":pending.len(),"message":message,"errors":failed}))?;
