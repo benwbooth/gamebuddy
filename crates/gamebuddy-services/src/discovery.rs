@@ -391,6 +391,30 @@ fn prepare_tracked(
         ),
         None => tracker.finish("sections", "Walkthrough sections already written"),
     }
+    // Charts, tables and data cards the walkthrough shows on screen are read
+    // alongside the atlas, so the guide carries them without anyone asking.
+    let charts_task = if crate::reference_scan::done(store, &guide)? {
+        tracker.skip("charts", "Charts and data cards already found");
+        None
+    } else {
+        let root = store.root.clone();
+        let guide = guide.clone();
+        let tracker = tracker.clone();
+        tracker.begin("charts", "Looking for charts and data cards…");
+        Some(std::thread::spawn(move || -> Result<usize> {
+            let store = Store::open(root)?;
+            let key = format!("reference-scan:{}", guide.id);
+            crate::reference_scan::scan(&store, &guide, &|message: String| {
+                if let Ok(Some(state)) = store.get::<Value>(&key)
+                    && state["total"].as_u64().is_some_and(|t| t > 0)
+                {
+                    tracker.count("charts", state["done"].as_u64().unwrap_or(0), state["total"].as_u64());
+                }
+                tracker.message_for("charts", &message);
+                eprintln!("{message}");
+            })
+        }))
+    };
     if store.index(&guide)?.is_some() {
         crate::walkthrough::export_book(
             store,
@@ -428,6 +452,21 @@ fn prepare_tracked(
     } else {
         tracker.skip("atlas", "Needs visual references first");
         tracker.skip("maps", "Needs visual references first");
+    }
+    if let Some(task) = charts_task {
+        tracker.detail("charts", "Finishing charts and data cards…");
+        match task.join() {
+            Ok(Ok(count)) => tracker.finish("charts", format!("{count} charts and data cards found")),
+            other => {
+                let error = match other {
+                    Ok(Err(e)) => format!("{e:#}"),
+                    _ => "Chart scan stopped".into(),
+                };
+                let message = format!("Walkthrough available; chart scan can be retried: {error}");
+                progress(message.clone());
+                tracker.attention("charts", message);
+            }
+        }
     }
     tracker.detail("spatial", "Finishing world mapping…");
     match spatial_task.join() {

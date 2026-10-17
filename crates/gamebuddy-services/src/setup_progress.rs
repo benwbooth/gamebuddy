@@ -15,12 +15,13 @@ use std::{
 };
 
 const MAX_EVENTS: usize = 80;
-pub const STAGES: [(&str, &str); 7] = [
+pub const STAGES: [(&str, &str); 8] = [
     ("source", "Choose a walkthrough"),
     ("download", "Download video and captions"),
     ("references", "Sample visual references"),
     ("spatial", "Map the game world"),
     ("sections", "Write walkthrough sections"),
+    ("charts", "Find charts and data cards"),
     ("atlas", "Prepare location atlas"),
     ("maps", "Register map images"),
 ];

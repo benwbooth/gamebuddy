@@ -436,7 +436,9 @@ fn key_lookup(
 /// next, optional tasks included: grinding spots, shortcuts, items to
 /// leave alone. The plan follows the main line only, so without these the
 /// live voice never hears about, say, a cursed pendant in an optional tower.
-pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
+/// Objectives in or next to the player's area, plus the next `ahead` on
+/// the route, by index into the plan graph's objectives.
+fn nearby(store: &Store, guide: &Guide, ahead: usize) -> Result<(PlanGraph, Vec<usize>)> {
     let atlas = super::atlas(store, guide)?;
     let model = crate::outcomes::prepared(store, guide)?
         .map(|p| p.model.clone())
@@ -468,6 +470,37 @@ pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
                 .position(|o| o.steps.iter().any(|s| s == c))
         })
         .unwrap_or(0);
+    let picked = graph
+        .objectives
+        .iter()
+        .enumerate()
+        .filter(|(i, o)| {
+            o.area.as_deref().is_some_and(|a| near.contains(a)) || (*i >= mark && *i < mark + ahead)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    Ok((graph, picked))
+}
+
+/// Data cards for things named by the objectives around the player, for
+/// GameBuddy's own reference widget.
+pub fn area_cards(store: &Store, guide: &Guide) -> Result<Vec<Value>> {
+    let (graph, picked) = nearby(store, guide, 3)?;
+    let mut text = String::new();
+    for o in picked.iter().map(|&i| &graph.objectives[i]) {
+        text.push_str(&o.title);
+        text.push(' ');
+        text.push_str(&o.summary);
+        for step in o.steps.iter().filter_map(|id| guide.step(id)) {
+            text.push(' ');
+            text.push_str(&step.instructions);
+        }
+    }
+    crate::game_data::mentioned(store, guide, &text)
+}
+
+pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
+    let (graph, picked) = nearby(store, guide, 10)?;
     const TIP: [&str; 18] = [
         "avoid",
         "don't",
@@ -492,14 +525,10 @@ pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
         let lower = text.to_lowercase();
         TIP.iter().any(|w| lower.contains(w))
     };
-    let mut notes: Vec<Value> = graph
-        .objectives
+    let mut notes: Vec<Value> = picked
         .iter()
-        .enumerate()
-        .filter(|(i, o)| {
-            o.area.as_deref().is_some_and(|a| near.contains(a)) || (*i >= mark && *i < mark + 10)
-        })
-        .filter_map(|(_, o)| {
+        .map(|&i| &graph.objectives[i])
+        .filter_map(|o| {
             let mut lines: Vec<&str> = vec![];
             if tip(&o.summary) {
                 lines.push(&o.summary);

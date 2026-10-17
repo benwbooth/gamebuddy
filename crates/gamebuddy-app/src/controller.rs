@@ -1556,6 +1556,17 @@ impl ffi::Buddy {
                 if let Some(guide) = &guide {
                     services::plan::recovery::schedule(&store, guide, prepare);
                     store.journal_sync(guide)?;
+                    // Charts and the nearby data widget follow the player; the
+                    // route graph behind them is too costly for every poll.
+                    static CHARTS: std::sync::Mutex<Option<std::time::Instant>> =
+                        std::sync::Mutex::new(None);
+                    let mut last = CHARTS.lock().unwrap();
+                    if last.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5)) {
+                        *last = Some(std::time::Instant::now());
+                        if let Err(error) = services::game_data::sync_widgets(&store, guide) {
+                            eprintln!("GameBuddy reference widgets: {error:#}");
+                        }
+                    }
                 }
                 if prepare && let Some(guide) = &guide {
                     services::outcomes::schedule(&store, guide);
