@@ -595,12 +595,21 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         .get::<serde_json::Value>(&key(guide))?
         .and_then(|v| serde_json::from_value(v["stitched"].clone()).ok())
         .unwrap_or_default();
-    for (n, (step, source, url, video, start, end)) in chapters.iter().enumerate() {
-        // Short chapters are codes, menus or cutscenes, not levels.
-        if mapped.contains(&n) || stitched.contains(&n) || end - start < 45_000 {
-            continue;
-        }
-        progress(format!("Stitching level maps from the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
+    // Short chapters are codes, menus or cutscenes, not levels.
+    let todo: Vec<usize> = (0..chapters.len())
+        .filter(|n| !mapped.contains(n) && !stitched.contains(n) && chapters[*n].5 - chapters[*n].4 >= 45_000)
+        .collect();
+    let have = atlas.maps.len();
+    for (k, &n) in todo.iter().enumerate() {
+        let (step, source, url, video, start, end) = &chapters[n];
+        // Count only what is left, so a resumed run never looks restarted.
+        progress(format!(
+            "Stitching level maps: {} of {} still to do · {} · {} maps ready",
+            k + 1,
+            todo.len(),
+            step.title,
+            have.max(atlas.maps.len())
+        ));
         let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
         // Exclude the HUD so counters do not smear across the map.
         let b = profile.background;
