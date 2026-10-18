@@ -479,27 +479,55 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         .collect();
     let work = store.root.join("work").join(format!("level-maps-{}", guide.id));
     std::fs::create_dir_all(&work)?;
-    // Guide pages shown beside the game, for every chapter at once.
-    let mut pages: Vec<(usize, u64, PathBuf)> = vec![];
-    for (n, (step, source, _, video, start, end)) in chapters.iter().enumerate() {
-        let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
-        let Some(region) = panel_region(game) else { continue };
-        progress(format!("Looking for level maps in the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
-        for (at, _) in panel_pages(video, region, *start, *end).unwrap_or_default() {
-            let path = work.join(format!("page-{n}-{at}.jpg"));
-            if panel_image(video, region, at, &path).is_ok() {
-                pages.push((n, at, path));
+    // Guide pages shown beside the game, for every chapter at once. The page
+    // list and each batch of answers are saved, so quitting the game part
+    // way through resumes here instead of starting over.
+    let pages_key = format!("level-maps-pages:{}", guide.id);
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Page {
+        chapter: usize,
+        at: u64,
+        path: PathBuf,
+        map: Option<bool>,
+    }
+    let mut saved: Vec<Page> = store
+        .get::<Vec<Page>>(&pages_key)?
+        .filter(|p| p.iter().all(|page| page.path.is_file()))
+        .unwrap_or_default();
+    if saved.is_empty() {
+        for (n, (step, source, _, video, start, end)) in chapters.iter().enumerate() {
+            let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
+            let Some(region) = panel_region(game) else { continue };
+            progress(format!("Looking for level maps in the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
+            for (at, _) in panel_pages(video, region, *start, *end).unwrap_or_default() {
+                let path = work.join(format!("page-{n}-{at}.jpg"));
+                if panel_image(video, region, at, &path).is_ok() {
+                    saved.push(Page { chapter: n, at, path, map: None });
+                }
             }
         }
+        store.put(&pages_key, &saved)?;
     }
-    let is_map = if pages.is_empty() {
-        vec![]
-    } else {
-        progress(format!("Checking {} walkthrough panel pages for level maps…", pages.len()));
+    if saved.iter().any(|p| p.map.is_none()) {
         let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
         let provider = crate::HttpProvider::new(settings.reasoning)?.patient();
-        map_pages(&provider, &guide.game, &pages, &work)
-    };
+        let total = saved.len();
+        for start in (0..total).step_by(8) {
+            let end = (start + 8).min(total);
+            if saved[start..end].iter().all(|p| p.map.is_some()) {
+                continue;
+            }
+            progress(format!("Checking walkthrough panel pages for level maps: {start} of {total}"));
+            let batch: Vec<(usize, u64, PathBuf)> = saved[start..end].iter().map(|p| (p.chapter, p.at, p.path.clone())).collect();
+            let answers = map_pages(&provider, &guide.game, &batch, &work);
+            for (page, map) in saved[start..end].iter_mut().zip(answers) {
+                page.map = Some(map);
+            }
+            store.put(&pages_key, &saved)?;
+        }
+    }
+    let pages: Vec<(usize, u64, PathBuf)> = saved.iter().map(|p| (p.chapter, p.at, p.path.clone())).collect();
+    let is_map: Vec<bool> = saved.iter().map(|p| p.map == Some(true)).collect();
     let mut atlas = crate::navigation::atlas(store, guide)?;
     let mut added = 0;
     let save_map = |atlas: &mut gamebuddy_core::Atlas, map: MapAsset, image: &dyn Fn(&Path) -> Result<()>| -> Result<()> {
@@ -510,9 +538,11 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         atlas.maps.push(map);
         Ok(())
     };
-    for (n, (step, source, url, video, start, end)) in chapters.iter().enumerate() {
+    // The guide's own map pages first, all at once, so they show up as soon
+    // as the pages are sorted.
+    let mut mapped: Vec<usize> = vec![];
+    for (n, (step, source, url, _, _, _)) in chapters.iter().enumerate() {
         let guide_pages: Vec<_> = pages.iter().zip(&is_map).filter(|((c, _, _), m)| *c == n && **m).map(|(p, _)| p).collect();
-        let mut first = None;
         for (i, (_, at, path)) in guide_pages.iter().enumerate() {
             let id = format!("guide-map-{}-{}", step.id, i + 1);
             let map = MapAsset {
@@ -525,55 +555,68 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
             };
             save_map(&mut atlas, map, &|dest| Ok(std::fs::copy(path, dest).map(|_| ())?))?;
             added += 1;
-            first.get_or_insert(id);
-        }
-        // Short chapters are codes, menus or cutscenes, not levels.
-        if first.is_none() && end - start >= 45_000 {
-            // No guide map for this chapter: stitch one from the gameplay.
-            progress(format!("Stitching level maps from the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
-            let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
-            // Exclude the HUD so counters do not smear across the map.
-            let b = profile.background;
-            let crop = Crop {
-                x: game.x + b.x * game.width,
-                y: game.y + b.y * game.height,
-                width: b.width * game.width,
-                height: b.height * game.height,
-            };
-            let pieces = match stitch(video, crop, *start, *end) {
-                Ok(p) => keep(p),
-                Err(error) => {
-                    progress(format!("Could not stitch {}: {error:#}", step.title));
-                    vec![]
-                }
-            };
-            let total = pieces.len();
-            for (i, piece) in pieces.into_iter().enumerate() {
-                let id = format!("stitched-{}-{}", step.id, i + 1);
-                let map = MapAsset {
-                    id: id.clone(),
-                    title: if total > 1 { format!("{} (part {})", step.title, i + 1) } else { step.title.clone() },
-                    url: format!("{url}#gamebuddy-map={id}"),
-                    source_url: format!("{url}&t={}s", piece.start_ms / 1000),
-                    credit: format!("Stitched by GameBuddy from {}", source.title),
-                    enabled: true,
-                };
-                let image = piece.image;
-                save_map(&mut atlas, map, &|dest| {
-                    Ok(image::DynamicImage::ImageRgb8(image.clone()).save_with_format(dest, image::ImageFormat::Jpeg)?)
-                })?;
-                added += 1;
-                first.get_or_insert(id);
+            if i == 0 {
+                link_places(guide, &mut atlas, &step.id, &id);
+                mapped.push(n);
             }
         }
-        if let Some(id) = first {
-            link_places(guide, &mut atlas, &step.id, &id);
+    }
+    crate::navigation::save(store, guide, &atlas)?;
+    // Then stitch the chapters without a guide map, remembering which are
+    // finished so a restart continues from the next one.
+    let mut stitched: Vec<usize> = store
+        .get::<serde_json::Value>(&key(guide))?
+        .and_then(|v| serde_json::from_value(v["stitched"].clone()).ok())
+        .unwrap_or_default();
+    for (n, (step, source, url, video, start, end)) in chapters.iter().enumerate() {
+        // Short chapters are codes, menus or cutscenes, not levels.
+        if mapped.contains(&n) || stitched.contains(&n) || end - start < 45_000 {
+            continue;
         }
+        progress(format!("Stitching level maps from the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
+        let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
+        // Exclude the HUD so counters do not smear across the map.
+        let b = profile.background;
+        let crop = Crop {
+            x: game.x + b.x * game.width,
+            y: game.y + b.y * game.height,
+            width: b.width * game.width,
+            height: b.height * game.height,
+        };
+        let pieces = match stitch(video, crop, *start, *end) {
+            Ok(p) => keep(p),
+            Err(error) => {
+                progress(format!("Could not stitch {}: {error:#}", step.title));
+                vec![]
+            }
+        };
+        let total = pieces.len();
+        for (i, piece) in pieces.into_iter().enumerate() {
+            let id = format!("stitched-{}-{}", step.id, i + 1);
+            let map = MapAsset {
+                id: id.clone(),
+                title: if total > 1 { format!("{} (part {})", step.title, i + 1) } else { step.title.clone() },
+                url: format!("{url}#gamebuddy-map={id}"),
+                source_url: format!("{url}&t={}s", piece.start_ms / 1000),
+                credit: format!("Stitched by GameBuddy from {}", source.title),
+                enabled: true,
+            };
+            let image = piece.image;
+            save_map(&mut atlas, map, &|dest| {
+                Ok(image::DynamicImage::ImageRgb8(image.clone()).save_with_format(dest, image::ImageFormat::Jpeg)?)
+            })?;
+            added += 1;
+            if i == 0 {
+                link_places(guide, &mut atlas, &step.id, &id);
+            }
+        }
+        stitched.push(n);
         crate::navigation::save(store, guide, &atlas)?;
-        store.put(&key(guide), &json!({"phase":"building","done":n + 1,"total":chapters.len(),"maps":added}))?;
+        store.put(&key(guide), &json!({"phase":"building","stitched":stitched,"maps":added}))?;
     }
     let _ = std::fs::remove_dir_all(&work);
     store.put(&key(guide), &json!({"phase":"done","maps":added}))?;
+    store.put(&pages_key, &Vec::<Page>::new())?;
     progress(format!("{added} level maps from the walkthrough"));
     Ok(added)
 }
