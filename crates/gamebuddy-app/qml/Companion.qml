@@ -73,18 +73,23 @@ Item {
     // Where the player last dragged GameBuddy over the game; -1 until moved.
     property real savedX: -1
     property real savedY: -1
-    property bool positionRestored: false
+    // Re-applied until the player drags it this session: the saved value
+    // can load after creation, and the overlay starts small before growing to
+    // the screen, so a single early restore landed it back in the corner.
+    property bool movedThisSession: false
     function restorePosition() {
-        if (positionRestored || !embedded || !parent || parent.width <= 0 || parent.height <= 0) return
-        positionRestored = true
+        if (movedThisSession || !embedded || !parent || parent.width <= 0 || parent.height <= 0) return
         if (savedX < 0 || savedY < 0) return
         x = Math.max(0, Math.min(parent.width - width, savedX))
         y = Math.max(0, Math.min(parent.height - height, savedY))
     }
-    function rememberPosition() { if (embedded) { savedX = x; savedY = y } }
+    function rememberPosition() { if (embedded) { movedThisSession = true; savedX = x; savedY = y } }
     Component.onCompleted: restorePosition()
     onParentChanged: restorePosition()
-    Connections { target: companion.parent; ignoreUnknownSignals: true; function onWidthChanged() { companion.restorePosition() } }
+    onEmbeddedChanged: restorePosition()
+    onSavedXChanged: restorePosition()
+    onSavedYChanged: restorePosition()
+    Connections { target: companion.parent; ignoreUnknownSignals: true; function onWidthChanged() { companion.restorePosition() } function onHeightChanged() { companion.restorePosition() } }
     function resizePanel(w, h) {
         expandedWidth = Math.max(Math.min(440, maximumPanelWidth), Math.min(w, maximumPanelWidth - (embedded ? x : 0)))
         expandedHeight = Math.max(Math.min(560, maximumPanelHeight), Math.min(h, maximumPanelHeight - (embedded ? y : 0)))
