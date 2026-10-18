@@ -890,7 +890,21 @@ pub fn context(
         .and_then(|m| m["map_id"].as_str())
         .or(selected_map.map(String::as_str))
         .or_else(|| display_marker.as_ref().and_then(|m| m["map_id"].as_str()))
-        .or_else(|| area_map.map(|m| m.id.as_str()));
+        .or_else(|| area_map.map(|m| m.id.as_str()))
+        // Not located yet: show the map for where the walkthrough is, the
+        // current step's own level first (a place such as a save point recurs
+        // across levels, so its map can belong to another one).
+        .or_else(|| {
+            advice
+                .now
+                .as_ref()
+                .and_then(|s| crate::level_maps::map_for_step(guide, &atlas, &s.id))
+        })
+        .or_else(|| {
+            target_place
+                .and_then(|p| p.map_id.as_deref())
+                .filter(|id| atlas.maps.iter().any(|m| m.id == *id && m.enabled))
+        });
     let area_reference = geometric_marker.is_none()
         && marker.is_none()
         && display_marker.is_none()

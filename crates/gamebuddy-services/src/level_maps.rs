@@ -302,6 +302,19 @@ fn within(guide: &Guide, step: &gamebuddy_core::Step, chapter: &str) -> bool {
     false
 }
 
+/// The first map made for the video chapter containing `step_id`.
+pub fn map_for_step<'a>(guide: &Guide, atlas: &'a gamebuddy_core::Atlas, step_id: &str) -> Option<&'a str> {
+    let mut step = guide.step(step_id)?;
+    for _ in 0..16 {
+        let Some(parent) = step.parent_id.as_deref().and_then(|p| guide.step(p)) else { break };
+        step = parent;
+    }
+    [format!("guide-map-{}-1", step.id), format!("stitched-{}-1", step.id)]
+        .iter()
+        .find_map(|id| atlas.maps.iter().find(|m| &m.id == id && m.enabled))
+        .map(|m| m.id.as_str())
+}
+
 fn key(guide: &Guide) -> String {
     format!("level-maps:{}", guide.id)
 }
