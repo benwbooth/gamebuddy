@@ -454,6 +454,18 @@ fn prepare_tracked(
             &store.root.join("walkthroughs").join(&guide.id),
         )?;
         tracker.begin("atlas", "");
+        // Level maps made from the video report how far they have got.
+        let maps_root = store.root.clone();
+        let maps_key = format!("level-maps:{}", guide.id);
+        let _maps_watch = tracker.watch(Duration::from_secs(1), move |t| {
+            if let Ok(store) = Store::open(&maps_root)
+                && let Ok(Some(state)) = store.get::<Value>(&maps_key)
+                && state["phase"] == "building"
+                && let Some(total) = state["total"].as_u64().filter(|t| *t > 0)
+            {
+                t.count("atlas", state["done"].as_u64().unwrap_or(0), Some(total));
+            }
+        });
         match crate::navigation::prepare_atlas(store, &guide, platform, progress) {
             Ok(_) => tracker.finish("atlas", "Location atlas ready"),
             Err(error) => {

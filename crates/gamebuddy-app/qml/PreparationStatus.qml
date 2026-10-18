@@ -24,6 +24,8 @@ Rectangle {
     readonly property var active: stages.filter(s => s.status === "running")
     readonly property var current: active.filter(s => s.id !== "spatial").slice(-1)[0] || active[0] || null
     readonly property int finishedCount: stages.filter(s => ["done", "skipped", "attention"].indexOf(s.status) >= 0).length
+    readonly property real overall: stages.length === 0 ? 0 : (ready || partial) ? 1
+        : Math.min(1, (finishedCount + active.reduce((sum, s) => sum + (s.total ? Math.min(1, (s.done || 0) / s.total) : 0), 0)) / stages.length)
     readonly property var events: (report?.events || []).slice().reverse()
     visible: shown
     implicitHeight: content.implicitHeight + 24
@@ -112,28 +114,27 @@ Rectangle {
             color: "#b8cfda"; font.pixelSize: 13; textFormat: Text.PlainText
             Layout.fillWidth: true; wrapMode: Text.WordWrap; maximumLineCount: panel.compact ? 3 : 4; elide: Text.ElideRight
         }
-        Row {
-            objectName: "preparationBar"
-            Layout.fillWidth: true; Layout.preferredHeight: 6; spacing: 3
-            Accessible.role: Accessible.ProgressBar
-            Accessible.name: "Walkthrough preparation"
-            Accessible.description: panel.finishedCount + " of " + panel.stages.length + " stages finished"
-            Repeater {
-                model: panel.stages
+        // One bar for the whole preparation: finished stages plus the running
+        // stage's own fraction when it reports counts.
+        ColumnLayout {
+            Layout.fillWidth: true; spacing: 3
+            Rectangle {
+                objectName: "preparationBar"
+                Layout.fillWidth: true; Layout.preferredHeight: 6; radius: 3; color: "#35515a"
+                Accessible.role: Accessible.ProgressBar
+                Accessible.name: "Walkthrough preparation"
+                Accessible.description: Math.round(panel.overall * 100) + "% · " + panel.finishedCount + " of " + panel.stages.length + " steps finished"
                 Rectangle {
-                    id: segment
-                    required property var modelData
-                    width: (parent.width - (panel.stages.length - 1) * parent.spacing) / Math.max(1, panel.stages.length)
-                    height: 6; radius: 3
-                    color: modelData.status === "pending" ? "#35515a" : modelData.status === "skipped" ? "#4a6470" : panel.tint(modelData.status)
-                    SequentialAnimation on opacity {
-                        running: modelData.status === "running" && panel.visible
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.3; duration: 550 }
-                        NumberAnimation { to: 1; duration: 550 }
-                        onRunningChanged: if (!running) segment.opacity = 1
-                    }
+                    width: parent.width * panel.overall; height: parent.height; radius: 3
+                    color: panel.failed ? "#f0a291" : "#86decb"
                 }
+            }
+            Text {
+                objectName: "preparationStep"
+                visible: panel.running && !!panel.current
+                text: "Step " + (panel.finishedCount + 1) + " of " + panel.stages.length
+                    + (panel.current && panel.current.total ? " · " + panel.current.done + " / " + panel.current.total : "")
+                color: "#91a9b9"; font.pixelSize: 11
             }
         }
         Column {

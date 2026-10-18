@@ -548,6 +548,7 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
                     page.map = Some(map);
                 }
                 store.put(&pages_key, &saved)?;
+                store.put(&key(guide), &json!({"phase":"building","done":checked,"total":total,"stitched":[]}))?;
                 progress(format!("Checking walkthrough panel pages for level maps: {checked} of {total}"));
             }
             Ok(())
@@ -648,7 +649,7 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         }
         stitched.push(n);
         crate::navigation::save(store, guide, &atlas)?;
-        store.put(&key(guide), &json!({"phase":"building","stitched":stitched,"maps":added}))?;
+        store.put(&key(guide), &json!({"phase":"building","stitched":stitched,"maps":added,"done":k + 1,"total":todo.len()}))?;
     }
     let _ = std::fs::remove_dir_all(&work);
     store.put(&key(guide), &json!({"phase":"done","maps":added}))?;
