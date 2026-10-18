@@ -23,6 +23,7 @@ pub mod harness;
 pub mod journal;
 pub mod navigation;
 pub mod plan;
+pub mod level_maps;
 pub mod preparation;
 pub mod reference_scan;
 pub mod setup_progress;

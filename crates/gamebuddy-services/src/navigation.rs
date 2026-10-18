@@ -108,7 +108,7 @@ pub fn atlas(store: &Store, guide: &Guide) -> Result<Atlas> {
     Ok(atlas)
 }
 
-fn save(store: &Store, guide: &Guide, atlas: &Atlas) -> Result<()> {
+pub(crate) fn save(store: &Store, guide: &Guide, atlas: &Atlas) -> Result<()> {
     atlas.validate(guide)?;
     store.put_for_guide(guide, &key(guide), atlas)
 }
@@ -428,6 +428,18 @@ fn build_atlas(
                 return Err(e);
             }
             save(store, guide, &atlas)?;
+        }
+    }
+    // No downloadable maps for a 2D game: make them from the walkthrough
+    // video (its own guide pages, or stitched gameplay).
+    let own = |m: &MapAsset| m.id.starts_with("guide-map-") || m.id.starts_with("stitched-");
+    if atlas.maps.iter().filter(|m| !own(m)).all(|m| !m.enabled)
+        && crate::spatial::profile(store, guide)?.dimension == crate::spatial::Dimension::TwoD
+    {
+        save(store, guide, &atlas)?;
+        match crate::level_maps::build(store, guide, progress) {
+            Ok(_) => atlas = self::atlas(store, guide)?,
+            Err(error) => atlas.notes.push(format!("Level maps from the walkthrough need a retry: {error:#}")),
         }
     }
     if let Err(error) = associate_maps(store, guide, &mut atlas, progress) {
