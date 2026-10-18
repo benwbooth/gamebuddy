@@ -509,22 +509,49 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         store.put(&pages_key, &saved)?;
     }
     if saved.iter().any(|p| p.map.is_none()) {
+        // Three batches at a time, each with its own model connection: one
+        // at a time took most of half an hour on a long walkthrough.
         let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
-        let provider = crate::HttpProvider::new(settings.reasoning)?.patient();
         let total = saved.len();
-        for start in (0..total).step_by(8) {
-            let end = (start + 8).min(total);
-            if saved[start..end].iter().all(|p| p.map.is_some()) {
-                continue;
+        let batches: Vec<(usize, Vec<(usize, u64, PathBuf)>)> = (0..total)
+            .step_by(8)
+            .map(|start| (start, &saved[start..(start + 8).min(total)]))
+            .filter(|(_, pages)| pages.iter().any(|p| p.map.is_none()))
+            .map(|(start, pages)| (start, pages.iter().map(|p| (p.chapter, p.at, p.path.clone())).collect()))
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (sender, receiver) = std::sync::mpsc::channel::<(usize, Vec<bool>)>();
+        let mut checked = total - batches.iter().map(|(_, b)| b.len()).sum::<usize>();
+        std::thread::scope(|scope| -> Result<()> {
+            for _ in 0..3 {
+                let (sender, next, batches, work, game) = (sender.clone(), &next, &batches, &work, &guide.game);
+                let config = settings.reasoning.clone();
+                scope.spawn(move || {
+                    let Ok(provider) = crate::HttpProvider::new(config).map(crate::HttpProvider::patient) else { return };
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((start, batch)) = batches.get(i) else { break };
+                        let dir = work.join(format!("batch-{start}"));
+                        let _ = std::fs::create_dir_all(&dir);
+                        let answers = map_pages(&provider, game, batch, &dir);
+                        let _ = std::fs::remove_dir_all(&dir);
+                        if sender.send((*start, answers)).is_err() {
+                            break;
+                        }
+                    }
+                });
             }
-            progress(format!("Checking walkthrough panel pages for level maps: {start} of {total}"));
-            let batch: Vec<(usize, u64, PathBuf)> = saved[start..end].iter().map(|p| (p.chapter, p.at, p.path.clone())).collect();
-            let answers = map_pages(&provider, &guide.game, &batch, &work);
-            for (page, map) in saved[start..end].iter_mut().zip(answers) {
-                page.map = Some(map);
+            drop(sender);
+            for (start, answers) in receiver {
+                checked += answers.len();
+                for (page, map) in saved[start..].iter_mut().zip(answers) {
+                    page.map = Some(map);
+                }
+                store.put(&pages_key, &saved)?;
+                progress(format!("Checking walkthrough panel pages for level maps: {checked} of {total}"));
             }
-            store.put(&pages_key, &saved)?;
-        }
+            Ok(())
+        })?;
     }
     let pages: Vec<(usize, u64, PathBuf)> = saved.iter().map(|p| (p.chapter, p.at, p.path.clone())).collect();
     let is_map: Vec<bool> = saved.iter().map(|p| p.map == Some(true)).collect();
