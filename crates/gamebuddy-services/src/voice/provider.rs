@@ -53,7 +53,7 @@ impl Lane {
         Ok(Self::with_completion(
             instructions,
             tools,
-            Arc::new(move |request| HttpProvider::new(config.clone())?.complete(request)),
+            Arc::new(move |request| HttpProvider::new(config.clone())?.live().complete(request)),
         ))
     }
 

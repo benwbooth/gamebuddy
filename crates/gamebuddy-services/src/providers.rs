@@ -399,11 +399,19 @@ pub struct HttpProvider {
     /// Background preparation waits out rate limits; interactive calls fail
     /// fast so the player hears about it.
     patient: bool,
+    /// Where this provider's calls stand in the shared model queue.
+    priority: crate::scheduler::Priority,
 }
 impl HttpProvider {
     /// For long background work: rate-limited calls wait and retry.
     pub fn patient(mut self) -> Self {
         self.patient = true;
+        self.priority = crate::scheduler::Priority::Background;
+        self
+    }
+    /// For calls the player is waiting on: first in the shared queue.
+    pub fn live(mut self) -> Self {
+        self.priority = crate::scheduler::Priority::Live;
         self
     }
     pub fn new(config: ProviderConfig) -> Result<Self> {
@@ -417,6 +425,7 @@ impl HttpProvider {
             codex: std::sync::Mutex::new(None),
             conversation: None,
             patient: false,
+            priority: crate::scheduler::Priority::Watching,
         })
     }
     pub fn for_conversation(
@@ -428,7 +437,7 @@ impl HttpProvider {
             !game.trim().is_empty(),
             "Load a game before starting a conversation"
         );
-        let mut provider = Self::new(config)?;
+        let mut provider = Self::new(config)?.live();
         provider.conversation = Some((store.root.clone(), game.to_owned()));
         Ok(provider)
     }
@@ -480,10 +489,18 @@ impl HttpProvider {
     }
     /// Every model call, timed, into the flight recorder.
     fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
+        let permit = crate::scheduler::acquire(&self.config.kind, self.priority);
         let started = std::time::Instant::now();
         let purpose: String = r.system.chars().take(80).collect();
         let (images, prompt_bytes) = (r.images.len(), r.prompt.len());
         let result = self.complete_unrecorded(r, schema);
+        if let Err(error) = &result
+            && is_rate_limited(error)
+        {
+            crate::scheduler::rate_limited(&self.config.kind);
+        }
+        let queued_ms = permit.waited.as_millis() as u64;
+        drop(permit);
         crate::flight::event(
             "model",
             serde_json::json!({
@@ -491,6 +508,8 @@ impl HttpProvider {
                 "model": self.config.model,
                 "purpose": purpose,
                 "ms": started.elapsed().as_millis() as u64,
+                "queued_ms": queued_ms,
+                "priority": format!("{:?}", self.priority),
                 "images": images,
                 "prompt_bytes": prompt_bytes,
                 "reply_bytes": result.as_ref().map(|t| t.len()).unwrap_or(0),
