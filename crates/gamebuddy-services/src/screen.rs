@@ -256,7 +256,13 @@ pub fn publish_at(
 ) -> Result<()> {
     let original = image::open(path)?;
     let (source_width, source_height) = (original.width(), original.height());
-    let cropped = ticket.crop.apply(&original)?;
+    // RetroArch's own frame is already just the game, at native resolution:
+    // no window crop, and enlarged so vision models can read its text.
+    let cropped = if source == "retroarch_raw" {
+        original.resize(original.width() * 3, original.height() * 3, image::imageops::FilterType::Nearest)
+    } else {
+        ticket.crop.apply(&original)?
+    };
     let image = cropped
         .thumbnail(cropped.width().min(1280), cropped.height().min(960))
         .to_rgb8();

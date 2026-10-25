@@ -864,6 +864,12 @@ impl ffi::Buddy {
                 let captured = (|| -> Result<PathBuf> {
                     if let Some(pid) = game_pid {
                         let path = root.join("captures").join(format!("game-{pid}.png"));
+                        // The unfiltered frame from RetroArch when it answers;
+                        // otherwise the game window as the player sees it.
+                        let raw = root.join("captures").join(format!("game-{pid}-raw.png"));
+                        if let Ok(Some(raw)) = services::retroarch::frame(&root, &raw) {
+                            return Ok(raw);
+                        }
                         #[cfg(target_os = "linux")]
                         {
                             let pending = path.with_extension("pending.png");
@@ -887,7 +893,9 @@ impl ffi::Buddy {
                     &store,
                     &ticket,
                     &path,
-                    if game_pid.is_some() {
+                    if path.to_string_lossy().ends_with("-raw.png") {
+                        "retroarch_raw"
+                    } else if game_pid.is_some() {
                         "game_window"
                     } else {
                         "shared_frame"
@@ -940,7 +948,12 @@ impl ffi::Buddy {
                     {
                         None
                     } else if let Some(index) = store.index(guide)? {
-                        let vector = fingerprint(&image::open(&path)?, ticket.crop)?;
+                        let crop = if path.to_string_lossy().ends_with("-raw.png") {
+                            Crop::default()
+                        } else {
+                            ticket.crop
+                        };
+                        let vector = fingerprint(&image::open(&path)?, crop)?;
                         let estimate = sync.observe(
                             guide,
                             &index,

@@ -16,6 +16,10 @@ use std::{
 pub struct Ready {
     pub version: u32,
     pub display: String,
+    /// A RetroArch config the launcher appends so GameBuddy can ask for the
+    /// game's unfiltered frames. Older launchers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retroarch_appendconfig: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Attachment {
@@ -274,6 +278,11 @@ fn inside(opts: Options) -> Result<i32> {
             &Ready {
                 version: 1,
                 display,
+                retroarch_appendconfig: gamebuddy_services::data_dir()
+                    .and_then(|root| gamebuddy_services::retroarch::write_config(&root))
+                    .map_err(|error| eprintln!("GameBuddy RetroArch frames: {error:#}"))
+                    .ok()
+                    .map(|path| path.display().to_string()),
             },
         )?;
         let deadline = Instant::now() + Duration::from_secs(60);
