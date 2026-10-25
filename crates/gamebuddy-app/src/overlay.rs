@@ -94,6 +94,9 @@ impl ffi::Compositor {
                 .map(|r| r.map(|v| (v * scale).round() as i32))
                 .collect();
             let result = native.poll(shown, interactive, &regions);
+            for (kind, value) in native.take_events() {
+                gamebuddy_services::flight::event(kind, value);
+            }
             let mode = native.mode() as i32;
             self.as_mut().set_focus_mode(mode);
             match result {

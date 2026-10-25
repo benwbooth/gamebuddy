@@ -19,6 +19,12 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Build the replay set for a guide from moments the player reported where they were.
+    EvalBootstrap {
+        guide: String,
+    },
+    /// Score location, latency and reliability on the replay sets and recent sessions.
+    Scorecard,
     /// Summarise a recorded play session (the newest when no directory is given).
     SessionReport {
         dir: Option<PathBuf>,
@@ -342,6 +348,12 @@ fn main() -> Result<()> {
                 )?
             );
         }
+        Action::EvalBootstrap { guide } => {
+            let guide = store.guide(&guide)?;
+            let added = evals::bootstrap(&store, &guide)?;
+            println!("Added {added} cases to {}", evals::dir(&store, &guide).display());
+        }
+        Action::Scorecard => println!("{}", serde_json::to_string_pretty(&evals::scorecard(&store)?)?),
         Action::SessionReport { dir } => {
             let dir = match dir {
                 Some(dir) => dir,

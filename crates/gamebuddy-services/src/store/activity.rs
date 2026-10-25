@@ -101,6 +101,15 @@ impl Store {
         Ok(())
     }
 
+    /// Every recorded event of one kind for a guide, oldest first: (id, body).
+    pub fn events_of(&self, guide: &Guide, kind: &str) -> Result<Vec<(i64, String)>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, body FROM events WHERE guide_id=?1 AND kind=?2 ORDER BY id")?;
+        let rows = statement.query_map([&guide.id, kind], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn observed_progress(
         &self,
         guide: &Guide,

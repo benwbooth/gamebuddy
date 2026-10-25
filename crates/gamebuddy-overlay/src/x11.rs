@@ -55,6 +55,10 @@ pub struct Overlay {
     /// mouse means to use it even while the game hides its cursor.
     pointer: [i32; 2],
     moved_at: std::time::Instant,
+    /// Last time a pointer over a widget was recorded as not reaching it.
+    missed_at: Option<std::time::Instant>,
+    /// Input-routing events for the flight recorder, drained by the app.
+    events: Vec<(&'static str, serde_json::Value)>,
 }
 impl Overlay {
     pub fn attach(window: Window) -> Result<Self> {
@@ -126,6 +130,8 @@ impl Overlay {
                 .transpose()?,
             pointer: [0, 0],
             moved_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
+            missed_at: None,
+            events: vec![],
         })
     }
 
@@ -174,7 +180,28 @@ impl Overlay {
                 regions,
             )
         };
+        // Flight recorder: input routing is invisible otherwise. A pointer
+        // resting over a widget that still goes to the game is the failure
+        // behind widgets that cannot be dragged.
+        let over_widget = regions.iter().skip(1).any(|r| {
+            r[2] > 0 && r[3] > 0 && at[0] >= r[0] && at[1] >= r[1] && at[0] < r[0] + r[2] && at[1] < r[1] + r[3]
+        });
+        if shown
+            && mode == 0
+            && over_widget
+            && self.missed_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5))
+        {
+            self.missed_at = Some(std::time::Instant::now());
+            self.events.push((
+                "input_missed",
+                serde_json::json!({"pointer": at, "cursor_visible": visible, "interactive": interactive, "regions": regions.len()}),
+            ));
+        }
         if mode != self.mode {
+            self.events.push((
+                "input_focus",
+                serde_json::json!({"mode": mode, "pointer": at, "cursor_visible": visible, "dragging": dragging, "regions": regions.len()}),
+            ));
             // WebEngine can consume Escape. Grab it only while interacting,
             // so it always releases the overlay and remains native to the game
             // in passive/hidden mode.
@@ -207,6 +234,10 @@ impl Overlay {
             self.mode = mode;
         }
         Ok(action)
+    }
+    /// Input-routing events since the last call, for the flight recorder.
+    pub fn take_events(&mut self) -> Vec<(&'static str, serde_json::Value)> {
+        std::mem::take(&mut self.events)
     }
     pub fn mode(&self) -> u32 {
         self.mode
