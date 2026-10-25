@@ -8,7 +8,7 @@
 //! this module's config to RetroArch's appended configs when GameBuddy runs;
 //! the capture loop then asks for a frame and falls back to the window when
 //! none arrives. Only the picture is read, never the emulator's memory.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::{
     net::UdpSocket,
     path::{Path, PathBuf},
@@ -98,9 +98,16 @@ pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
     };
     health.misses = 0;
     drop(health);
-    // RetroArch may still be writing; a PNG that does not decode is skipped.
-    std::thread::sleep(Duration::from_millis(5));
-    image::open(&path).context("RetroArch frame is not readable yet")?;
+    // The file appears before RetroArch finishes writing it: wait until it
+    // decodes, briefly.
+    let written = Instant::now() + Duration::from_millis(200);
+    while image::open(&path).is_err() {
+        if Instant::now() >= written {
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::fs::rename(&path, out)?;
     for stale in before {
         let _ = std::fs::remove_file(stale);
