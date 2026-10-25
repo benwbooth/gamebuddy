@@ -81,7 +81,13 @@ pub fn intent(text: &str) -> Option<&'static str> {
         | "what's the plan"
         | "okay what now"
         | "ok what now"
-        | "so what now" => Some("next"),
+        | "so what now"
+        | "what do i need"
+        | "what do i need first"
+        | "do i need anything"
+        | "do i need anything first"
+        | "what do i need to get"
+        | "what should i get first" => Some("next"),
         "why"
         | "why that"
         | "why this"

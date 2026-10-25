@@ -1155,6 +1155,14 @@ impl ffi::RealtimeVoice {
                                 diagnostics.record("local_reply", json!({"utterance":utterance}));
                                 continue;
                             }
+                            // Prices straight from the walkthrough's data cards.
+                            if let Ok(Some(answer)) =
+                                gamebuddy_services::voice::briefing::price_reply(&store, &game, &request)
+                            {
+                                delivery.complete(utterance, &request, &answer.text);
+                                diagnostics.record("price_reply", json!({"utterance":utterance}));
+                                continue;
+                            }
                             // "What now?" worked out in the background since the
                             // objective last changed: answer it without a model call.
                             if let Ok(Some(answer)) =
