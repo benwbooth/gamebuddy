@@ -193,7 +193,7 @@ fn mapped_arrival(
         return Ok(false);
     }
     Ok(
-        super::tracking::arrival_step(store, guide, &atlas, progress, &area)?.as_deref()
+        super::tracking::arrival_step(guide, &atlas, progress, &area)?.as_deref()
             == Some(candidate),
     )
 }

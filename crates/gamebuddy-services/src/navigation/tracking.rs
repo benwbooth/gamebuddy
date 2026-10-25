@@ -133,7 +133,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             })
             .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
             .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
-            .map(|m| m.title.to_lowercase());
+            .map(|m| super::planning::map_area(&m.title).to_lowercase());
         let seen_known_area = report.player_report.starts_with("Screen:")
             && mapped_title.as_deref() == Some(label.to_lowercase().as_str());
         ensure!(
@@ -196,7 +196,7 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
             .map(|p| p.label.clone())
     });
     let (arrival, passed, unpass) = match (&report.step_id, area.as_deref()) {
-        (None, Some(area)) => arrival(store, guide, &atlas, &progress, area)?
+        (None, Some(area)) => arrival(guide, &atlas, &progress, area)?
             .map_or((None, vec![], vec![]), |(step, passed, unpass)| {
                 (Some(step), passed, unpass)
             }),
@@ -266,6 +266,32 @@ pub fn report_location(store: &Store, guide: &Guide, mut report: LocationReport)
     )
 }
 
+/// Whether the walkthrough chapter holding `id` is named after `area`: a
+/// level such as "Kongo Jungle 1-2: Ropey Rampage" when the player says
+/// "I'm on Ropey Rampage". Levels are often chapters, not atlas places.
+fn chapter_named(guide: &Guide, id: &str, area: &str) -> bool {
+    if area.chars().count() < 4 {
+        return false;
+    }
+    let mut step = guide.step(id);
+    for _ in 0..16 {
+        let Some(s) = step else { return false };
+        match s.parent_id.as_deref().and_then(|p| guide.step(p)) {
+            Some(parent) => step = Some(parent),
+            None => break,
+        }
+    }
+    let Some(title) = step.map(|s| s.title.to_lowercase()) else { return false };
+    // Whole words only: "rampage" must not match inside another word.
+    title
+        .match_indices(area)
+        .any(|(i, _)| {
+            let before = title[..i].chars().last();
+            let after = title[i + area.len()..].chars().next();
+            before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+        })
+}
+
 /// The latest step before the current one that the source places in the
 /// area, when the current step is elsewhere.
 fn earlier_step_in(
@@ -296,6 +322,7 @@ fn earlier_step_in(
         atlas
             .place_for_step(guide, id)
             .is_some_and(|place| place.label.to_lowercase().contains(&area))
+            || chapter_named(guide, id, &area)
     };
     let current = progress.current_step.as_deref()?;
     if in_area(current) {
@@ -387,13 +414,12 @@ pub fn report_spoken_location(store: &Store, guide: &Guide, text: &str) -> Resul
 /// first unfinished step ahead on the authored route that the source places
 /// in that area. Steps in between are not marked complete.
 pub(crate) fn arrival_step(
-    store: &Store,
     guide: &Guide,
     atlas: &gamebuddy_core::Atlas,
     progress: &gamebuddy_core::Progress,
     area: &str,
 ) -> Result<Option<String>> {
-    Ok(arrival(store, guide, atlas, progress, area)?.map(|(step, ..)| step))
+    Ok(arrival(guide, atlas, progress, area)?.map(|(step, ..)| step))
 }
 
 /// The arrival step, the route steps passed on the way there, and passed
@@ -403,16 +429,14 @@ type Arrival = (String, Vec<String>, Vec<String>);
 /// The first step ahead in the area and the unfinished route steps the
 /// player passed on the way there.
 fn arrival(
-    store: &Store,
     guide: &Guide,
     atlas: &gamebuddy_core::Atlas,
     progress: &gamebuddy_core::Progress,
     area: &str,
 ) -> Result<Option<Arrival>> {
     let area = area.trim().to_lowercase();
-    let Some(start) = progress.current_step.as_deref() else {
-        return Ok(None);
-    };
+    // A fresh plan has no cursor yet; the search then starts at the top.
+    let start = progress.current_step.as_deref();
     if area.chars().count() < 3 {
         return Ok(None);
     }
@@ -438,18 +462,11 @@ fn arrival(
         atlas
             .place_for_step(guide, id)
             .is_some_and(|place| place.label.to_lowercase().contains(&area))
+            || chapter_named(guide, id, &area)
     };
-    if in_area(start) {
+    if start.is_some_and(|s| in_area(s)) {
         return Ok(None);
     }
-    let prepared = crate::outcomes::prepared(store, guide)?;
-    let fallback = gamebuddy_core::outcomes::OutcomeModel::default();
-    let view = prepared
-        .as_ref()
-        .map_or(&fallback, |p| &p.model)
-        .view(guide, progress);
-    let route =
-        gamebuddy_core::route::authored_route(guide, progress, &view, start, guide.steps.len());
     let order = |id: &str| guide.steps.iter().position(|s| s.id == id);
     // A step in the area that a guessed jump only passed comes first when it
     // is earlier in the walkthrough than the route's next one there.
@@ -478,13 +495,11 @@ fn arrival(
         })
         .map(|s| s.id.as_str())
         .collect();
-    let from = leaves
-        .iter()
-        .position(|id| *id == start)
+    let from = start
+        .and_then(|start| leaves.iter().position(|id| *id == start))
         .map_or(0, |i| i + 1);
     let unfinished = |id: &&str| !gamebuddy_core::step_complete(guide, progress, id);
     let ahead: Vec<&str> = leaves[from..].iter().copied().filter(unfinished).collect();
-    let _ = &route;
     if let Some(index) = ahead.iter().position(|id| in_area(id))
         && first_passed
             .as_deref()

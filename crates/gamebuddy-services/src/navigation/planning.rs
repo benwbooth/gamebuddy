@@ -233,6 +233,21 @@ pub fn first_detour(store: &Store, guide: &Guide) -> Result<Option<(String, Stri
 /// seconds and the route cursor is in another area, report that area like a
 /// player location report, once per change. This moves the cursor to the
 /// area's steps (forward, or back over steps a wrong jump only passed).
+/// The area a map shows: its title without a page or part suffix, so the
+/// pages of a level map ("Ropey Rampage (map page 2)") all name the level.
+pub fn map_area(title: &str) -> String {
+    let trimmed = title.trim();
+    match trimmed.rfind(" (") {
+        Some(i)
+            if trimmed.ends_with(')')
+                && ["map page ", "part "].iter().any(|p| trimmed[i + 2..].starts_with(p)) =>
+        {
+            trimmed[..i].to_owned()
+        }
+        _ => trimmed.to_owned(),
+    }
+}
+
 pub fn sync_area(store: &Store, guide: &Guide, at_ms: u64) -> Result<()> {
     let atlas = super::atlas(store, guide)?;
     let session = crate::screen::status(store)
@@ -244,7 +259,7 @@ pub fn sync_area(store: &Store, guide: &Guide, at_ms: u64) -> Result<()> {
         .filter(|o| session.is_empty() || o["tracker"]["session"] == session.as_str())
         .and_then(|o| o["map_registration"]["map_id"].as_str().map(str::to_owned))
         .and_then(|id| atlas.maps.iter().find(|m| m.id == id))
-        .map(|m| m.title.clone())
+        .map(|m| map_area(&m.title))
     else {
         return Ok(());
     };
