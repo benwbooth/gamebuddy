@@ -1566,6 +1566,10 @@ impl ffi::Buddy {
                         if let Err(error) = services::game_data::sync_widgets(&store, guide) {
                             eprintln!("GameBuddy reference widgets: {error:#}");
                         }
+                        // Have "what now?" answered before it is asked.
+                        if prepare {
+                            services::voice::prefetch::schedule(store.root.clone(), guide.clone());
+                        }
                     }
                 }
                 if prepare && let Some(guide) = &guide {

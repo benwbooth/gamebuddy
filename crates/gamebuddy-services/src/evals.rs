@@ -237,7 +237,19 @@ pub fn scorecard(store: &Store) -> Result<Value> {
 pub fn score_location_vision(store: &Store, guide: &Guide) -> Result<Value> {
     let cases = load(store, guide)?;
     let atlas = crate::navigation::atlas(store, guide)?;
-    let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    let mut settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    // Bake-offs: GAMEBUDDY_EVAL_VISION_MODEL=ollama:qwen3.5:9b tries another model.
+    if let Some(choice) = std::env::var("GAMEBUDDY_EVAL_VISION_MODEL").ok()
+        && let Some(model) = choice.strip_prefix("ollama:")
+    {
+        settings.vision = crate::ProviderConfig {
+            kind: crate::ProviderKind::Ollama,
+            endpoint: "http://127.0.0.1:11434".into(),
+            model: model.into(),
+            api_key_env: String::new(),
+            reasoning_effort: String::new(),
+        };
+    }
     let provider = crate::HttpProvider::new(settings.vision.clone())?;
     let base = dir(store, guide);
     let catalog: Vec<Value> = atlas

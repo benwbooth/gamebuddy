@@ -7,6 +7,7 @@ pub mod input;
 pub mod live;
 pub mod mute;
 pub mod narration;
+pub mod prefetch;
 pub mod prepared;
 pub mod priority;
 pub mod prompts;

@@ -1155,6 +1155,19 @@ impl ffi::RealtimeVoice {
                                 diagnostics.record("local_reply", json!({"utterance":utterance}));
                                 continue;
                             }
+                            // "What now?" worked out in the background since the
+                            // objective last changed: answer it without a model call.
+                            if let Ok(Some(answer)) =
+                                gamebuddy_services::voice::prefetch::reply(&store, &game, &request)
+                            {
+                                response_step = answer.step_id.map(|id| (utterance, id));
+                                delivery.complete(utterance, &request, &answer.text);
+                                diagnostics.record(
+                                    "prefetched_reply",
+                                    json!({"utterance":utterance}),
+                                );
+                                continue;
+                            }
                             if let Ok(Some(answer)) =
                                 gamebuddy_services::voice::prepared::reply(&store, &game, &request)
                             {
