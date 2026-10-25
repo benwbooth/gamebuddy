@@ -33,6 +33,7 @@ impl Diagnostics {
         Self(tx)
     }
     pub fn record(&self, kind: &str, value: Value) {
+        crate::flight::event("voice", json!({"kind": kind, "value": value}));
         let _ = self
             .0
             .try_send(json!({"at_ms":crate::screen::now_ms(),"kind":kind,"value":value}));

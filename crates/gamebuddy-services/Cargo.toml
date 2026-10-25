@@ -20,6 +20,7 @@ sha2 = "0.10"
 schemars.workspace = true
 scraper = "0.24"
 fs2 = "0.4"
+libc = "0.2"
 webrtc-vad = "0.4"
 hound = "3.5"
 unicode-segmentation = "1.13"

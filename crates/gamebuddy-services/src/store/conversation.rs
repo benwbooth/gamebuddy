@@ -44,6 +44,7 @@ impl Store {
         if text.trim().is_empty() {
             return Ok(());
         }
+        crate::flight::event("said", serde_json::json!({"role": role, "text": text, "session": session}));
         self.connection.execute(
             "INSERT INTO conversation_messages(game,session_id,message_id,role,text)
              VALUES(?1,?2,?3,?4,?5) ON CONFLICT(game,session_id,message_id) DO NOTHING",

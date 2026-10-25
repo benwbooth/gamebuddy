@@ -290,7 +290,9 @@ impl Store {
         .collect()
     }
     pub fn put<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,serde_json::to_string(value)?])?;
+        let body = serde_json::to_string(value)?;
+        self.connection.execute("INSERT INTO documents(key,body) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET body=excluded.body",params![key,body])?;
+        crate::flight::document(key, &body);
         Ok(())
     }
     /// A background UI snapshot must not republish a previous guide's session
@@ -842,6 +844,10 @@ impl Store {
         Ok(progress)
     }
     pub fn save_progress(&self, guide: &Guide, progress: &Progress, kind: &str) -> Result<()> {
+        crate::flight::event(
+            "progress",
+            serde_json::json!({"guide": guide.id, "step": progress.current_step, "completed": progress.completed.len(), "epoch": progress.epoch, "reason": kind}),
+        );
         let tx = self.connection.unchecked_transaction()?;
         ensure!(
             progress.epoch >= self.progress(guide)?.epoch,

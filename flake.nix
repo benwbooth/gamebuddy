@@ -17,6 +17,9 @@
           QMAKE = "${qtEnv}/bin/qmake";
           FLAKE_INPUTS = builtins.concatStringsSep ":" (map (input: input.outPath) (builtins.attrValues (builtins.removeAttrs inputs [ "self" ])));
           shellHook = ''
+            # A host-wide -L/usr/lib (nix-ld's system glibc) would link the
+            # app against a newer glibc than the shell's Qt runtime provides.
+            unset NIX_CFLAGS_LINK
             export QMAKE="${qtEnv}/bin/qmake"
             export PATH="${qtEnv}/bin:${qtEnv}/libexec:$PATH"
             export QT_INCLUDE_PATH="${qtEnv}/include"

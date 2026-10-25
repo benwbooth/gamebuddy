@@ -261,6 +261,7 @@ pub fn publish_at(
         .thumbnail(cropped.width().min(1280), cropped.height().min(960))
         .to_rgb8();
     let (width, height) = image.dimensions();
+    crate::flight::frame(at, &image);
     let mut bytes = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85).encode_image(&image)?;
     let jpeg = STANDARD.encode(bytes);

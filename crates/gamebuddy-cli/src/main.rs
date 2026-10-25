@@ -19,6 +19,10 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Summarise a recorded play session (the newest when no directory is given).
+    SessionReport {
+        dir: Option<PathBuf>,
+    },
     /// Index the pixels of cached 2D maps for geometric viewport registration.
     PrepareMapPixels {
         guide: String,
@@ -337,6 +341,16 @@ fn main() -> Result<()> {
                     &serde_json::json!({"candidates":candidates,"choice":choice})
                 )?
             );
+        }
+        Action::SessionReport { dir } => {
+            let dir = match dir {
+                Some(dir) => dir,
+                None => flight::sessions(&store.root)
+                    .into_iter()
+                    .next()
+                    .context("No recorded sessions yet")?,
+            };
+            println!("{}", serde_json::to_string_pretty(&flight::report(&dir)?)?);
         }
         Action::Doctor => {
             println!("Data: {}", store.root.display());

@@ -43,6 +43,35 @@ fn main() {
             std::process::exit(1);
         }
     }
+    // A play session gets a flight recorder: a timeline, sampled frames and
+    // a copy of everything printed, kept after the game closes.
+    let arg = |name: &str| {
+        let args: Vec<String> = std::env::args().collect();
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    if let Some(game) = arg("--game") {
+        let root = arg("--data-dir")
+            .map(std::path::PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(gamebuddy_services::data_dir);
+        let details = serde_json::json!({
+            "args": std::env::args().skip(1).collect::<Vec<_>>(),
+            "platform": arg("--platform"),
+            "game_id": arg("--game-id"),
+            "session_id": arg("--session-id"),
+        });
+        match root.and_then(|root| gamebuddy_services::flight::start(&root, &game, details)) {
+            Ok(dir) => {
+                if let Err(error) = gamebuddy_services::flight::tee_stderr(&dir.join("app.log")) {
+                    eprintln!("GameBuddy flight recorder log: {error:#}");
+                }
+                eprintln!("GAMEBUDDY_FLIGHT {}", dir.display());
+            }
+            Err(error) => eprintln!("GameBuddy flight recorder: {error:#}"),
+        }
+    }
     webengine::initialize();
     QQuickStyle::set_style(&QString::from("Basic"));
     let mut app = webengine::application();

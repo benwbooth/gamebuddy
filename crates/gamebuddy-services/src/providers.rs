@@ -478,7 +478,28 @@ impl HttpProvider {
             self.complete_with_schema(r.clone(), schema.clone())
         })
     }
+    /// Every model call, timed, into the flight recorder.
     fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
+        let started = std::time::Instant::now();
+        let purpose: String = r.system.chars().take(80).collect();
+        let (images, prompt_bytes) = (r.images.len(), r.prompt.len());
+        let result = self.complete_unrecorded(r, schema);
+        crate::flight::event(
+            "model",
+            serde_json::json!({
+                "provider": format!("{:?}", self.config.kind),
+                "model": self.config.model,
+                "purpose": purpose,
+                "ms": started.elapsed().as_millis() as u64,
+                "images": images,
+                "prompt_bytes": prompt_bytes,
+                "reply_bytes": result.as_ref().map(|t| t.len()).unwrap_or(0),
+                "error": result.as_ref().err().map(|e| format!("{e:#}").chars().take(300).collect::<String>()),
+            }),
+        );
+        result
+    }
+    fn complete_unrecorded(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
         match self.config.kind {
             ProviderKind::Codex => {
                 let mut client = self
