@@ -87,6 +87,22 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
     let world = spatial::load(store, guide)?.context("Prepare the world first")?;
     let mut engine = spatial::Engine::for_world(store, &world, "evaluation")?;
     let base = dir(store, guide);
+    // Cases from one session share a TV bezel/shader: find the lit screen
+    // per session and crop to it, as the live path does.
+    let rectify = std::env::var_os("GAMEBUDDY_EVAL_RAW").is_none();
+    let mut bounds: std::collections::HashMap<String, Option<gamebuddy_core::Crop>> = Default::default();
+    if rectify {
+        let mut sessions: std::collections::HashMap<String, Vec<image::DynamicImage>> = Default::default();
+        for case in &cases {
+            if let Ok(img) = image::open(base.join(&case.image)) {
+                let key = format!("{}x{}", img.width(), img.height());
+                sessions.entry(key).or_default().push(img);
+            }
+        }
+        for (key, frames) in sessions {
+            bounds.insert(key, crate::screen::screen_bounds(&frames));
+        }
+    }
     let (mut right, mut wrong, mut abstained, mut unlabelled) = (0, 0, 0, 0);
     let mut same_area = 0;
     // Places on the same map (a town and its shops) share an area.
@@ -108,7 +124,10 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
         // frame a few times as if the player stood there for two seconds
         // (the tracker wants agreeing frames before it commits).
         let mut tracker = gamebuddy_core::spatial::Tracker::default();
-        let frame = image::open(base.join(&case.image))?;
+        let mut frame = image::open(base.join(&case.image))?;
+        if let Some(Some(crop)) = bounds.get(&format!("{}x{}", frame.width(), frame.height())) {
+            frame = crop.apply(&frame)?;
+        }
         let mut result = Value::Null;
         for k in 0..4u64 {
             result = spatial::locate(
@@ -162,6 +181,7 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
         "accuracy": if scored > 0 { right as f64 / scored as f64 } else { 0. },
         "area_accuracy": if scored > 0 { (right + same_area) as f64 / scored as f64 } else { 0. },
         "median_seconds": seconds.get(seconds.len() / 2),
+        "rectified": rectify,
         "misses": misses,
     }))
 }
@@ -204,7 +224,82 @@ pub fn scorecard(store: &Store) -> Result<Value> {
             continue;
         }
         let location = score_location(store, &guide).unwrap_or_else(|e| json!({"error": format!("{e:#}")}));
-        guides.push(json!({"game": guide.game, "guide": guide.id, "location": location}));
+        // The vision model costs a call per case; opt in.
+        let vision = std::env::var_os("GAMEBUDDY_EVAL_VISION")
+            .map(|_| score_location_vision(store, &guide).unwrap_or_else(|e| json!({"error": format!("{e:#}")})));
+        guides.push(json!({"game": guide.game, "guide": guide.id, "location": location, "location_vision": vision}));
     }
     Ok(json!({"guides": guides, "latency": score_sessions(&store.root, 10)}))
+}
+
+/// Score the vision model reading the frame directly: shown the screen and
+/// the guide's places, which one is it? One model call per case.
+pub fn score_location_vision(store: &Store, guide: &Guide) -> Result<Value> {
+    let cases = load(store, guide)?;
+    let atlas = crate::navigation::atlas(store, guide)?;
+    let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    let provider = crate::HttpProvider::new(settings.vision.clone())?;
+    let base = dir(store, guide);
+    let catalog: Vec<Value> = atlas
+        .places
+        .iter()
+        .map(|p| json!({"id": p.id, "label": p.label, "landmarks": p.landmarks.chars().take(120).collect::<String>()}))
+        .collect();
+    let area = |id: &str| {
+        atlas.places.iter().find(|p| p.id == id).map(|p| {
+            p.map_id.clone().unwrap_or_else(|| p.label.split_whitespace().next().unwrap_or_default().to_lowercase())
+        })
+    };
+    let (mut right, mut same_area, mut wrong) = (0, 0, 0);
+    let mut seconds = vec![];
+    let mut misses = vec![];
+    for case in cases.iter().filter(|c| c.source != "screen report") {
+        let Some(expected) = case.expected_place.as_deref().filter(|p| atlas.places.iter().any(|x| x.id == *p)) else { continue };
+        let started = std::time::Instant::now();
+        let answer = crate::ReasoningProvider::complete(
+            &provider,
+            crate::ModelRequest {
+                system: "You identify where a player is in a video game from a screenshot. The screenshot may show a TV bezel or CRT effect; judge the game picture. Return JSON only.".into(),
+                prompt: format!(
+                    "Game: {}. Which of these places does the screenshot show? Places: {}. Reply {{\"place_id\": one id from the list, \"confidence\": 0 to 1}}.",
+                    guide.game,
+                    serde_json::to_string(&catalog)?
+                ),
+                images: vec![crate::image_base64(base.join(&case.image))?],
+                json: true,
+            },
+        );
+        seconds.push(started.elapsed().as_secs_f64());
+        let failure = answer.as_ref().err().map(|e| format!("{e:#}").chars().take(160).collect::<String>());
+        let predicted = answer
+            .ok()
+            .and_then(|t| crate::parse_json::<Value>(&t).ok())
+            .and_then(|v| v["place_id"].as_str().map(str::to_owned));
+        let label = |id: &str| atlas.places.iter().find(|p| p.id == id).map(|p| p.label.clone());
+        match predicted.as_deref() {
+            Some(p) if p == expected => right += 1,
+            Some(p) => {
+                wrong += 1;
+                if area(p).is_some() && area(p) == area(expected) {
+                    same_area += 1;
+                }
+                misses.push(json!({"case": case.id, "expected": label(expected), "predicted": label(p), "evidence": case.evidence}));
+            }
+            None => {
+                wrong += 1;
+                misses.push(json!({"case": case.id, "expected": label(expected), "predicted": null, "error": failure}));
+            }
+        }
+    }
+    let scored = right + wrong;
+    seconds.sort_by(f64::total_cmp);
+    Ok(json!({
+        "model": format!("{:?} {}", settings.vision.kind, settings.vision.model),
+        "scored": scored,
+        "right": right,
+        "accuracy": if scored > 0 { right as f64 / scored as f64 } else { 0. },
+        "area_accuracy": if scored > 0 { (right + same_area) as f64 / scored as f64 } else { 0. },
+        "median_seconds": seconds.get(seconds.len() / 2),
+        "misses": misses,
+    }))
 }

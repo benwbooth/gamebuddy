@@ -325,6 +325,27 @@ pub fn load_cached(store: &Store, guide: &Guide) -> Result<Option<std::sync::Arc
             && w.profile.background.validate().is_ok()
     }))
 }
+/// A reference frame that is nearly one colour (a fade, a black transition,
+/// a loading screen) matches any dark scene and says nothing about place.
+fn blank_view(path: &str) -> bool {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, bool>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(&known) = cache.lock().unwrap().get(path) {
+        return known;
+    }
+    let blank = image::open(path)
+        .map(|img| {
+            let small = img.resize_exact(32, 24, image::imageops::FilterType::Triangle).to_luma8();
+            let px: Vec<f32> = small.pixels().map(|p| p.0[0] as f32).collect();
+            let mean = px.iter().sum::<f32>() / px.len() as f32;
+            let var = px.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / px.len() as f32;
+            var.sqrt() < 12.
+        })
+        .unwrap_or(false);
+    cache.lock().unwrap().insert(path.to_owned(), blank);
+    blank
+}
+
 pub fn candidates(
     world: &World,
     guide: &Guide,
@@ -335,7 +356,7 @@ pub fn candidates(
         .views
         .iter()
         .enumerate()
-        .filter(|(_, v)| guide.source_enabled(&v.source_id))
+        .filter(|(_, v)| guide.source_enabled(&v.source_id) && !blank_view(&v.image_path))
         .map(|(i, v)| (i, spatial::retrieval(features, &v.features)))
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
