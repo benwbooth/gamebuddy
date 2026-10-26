@@ -32,6 +32,14 @@ fn frames(root: &Path) -> PathBuf {
 
 /// Write the RetroArch config the launcher appends, and return its path.
 /// The folder must be outside /tmp: Flatpak RetroArch has a private /tmp.
+/// Raw frames are off while `<data>/retroarch/off` exists: GameBuddy then
+/// looks at the game window as the player sees it, and RetroArch is never
+/// asked for a screenshot. For telling whether the frame requests disturb
+/// the picture, and for emulators or shaders where they do.
+pub fn disabled(root: &Path) -> bool {
+    dir(root).join("off").is_file()
+}
+
 pub fn write_config(root: &Path) -> Result<PathBuf> {
     let frames = frames(root);
     std::fs::create_dir_all(&frames)?;
@@ -39,6 +47,13 @@ pub fn write_config(root: &Path) -> Result<PathBuf> {
         let _ = std::fs::remove_file(old.path());
     }
     let path = dir(root).join("raw-frames.cfg");
+    if disabled(root) {
+        std::fs::write(
+            &path,
+            "# Written by GameBuddy. Raw frames are turned off (retroarch/off exists).\n",
+        )?;
+        return Ok(path);
+    }
     std::fs::write(
         &path,
         format!(
@@ -72,7 +87,7 @@ static HEALTH: Mutex<Health> = Mutex::new(Health {
 /// after three misses in a row it is left alone for a minute.
 pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
     let frames = frames(root);
-    if !dir(root).join("raw-frames.cfg").is_file() || !frames.is_dir() {
+    if disabled(root) || !dir(root).join("raw-frames.cfg").is_file() || !frames.is_dir() {
         return Ok(None);
     }
     {
