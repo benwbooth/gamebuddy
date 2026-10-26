@@ -182,6 +182,18 @@ pub fn think(
     guide: &Guide,
     question: Option<&str>,
 ) -> Result<(Situation, Option<String>)> {
+    think_with(store, guide, question, &[])
+}
+
+/// `moments` are earlier frames since the last update on which something
+/// happened (a dialogue box, a room change): the brain reads what they show
+/// even when it has already left the current screen.
+pub fn think_with(
+    store: &Store,
+    guide: &Guide,
+    question: Option<&str>,
+    moments: &[screen::Snapshot],
+) -> Result<(Situation, Option<String>)> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     // Without a fresh screen (paused, stale, menu transition) the brain
     // still answers from the plan and state rather than failing.
@@ -234,6 +246,33 @@ pub fn think(
         request.prompt.push_str(&format!(
             "\n\nImage 2 is the walkthrough video at this same spot; image 3 is the walkthrough player {:.0} seconds later. Set direction by where they went from here: compare the player sprite and the screen between images 2 and 3 (a ladder climbed is up, a scrolled or exited-left screen is left), and check it against the current screenshot (image 1).",
             seconds as f64 / 1000.0
+        ));
+    }
+    if snapshot.is_some() && !moments.is_empty() {
+        let first = request.images.len() + 1;
+        for moment in moments {
+            request.images.push(moment.jpeg.clone());
+        }
+        let last = request.images.len();
+        let ages: Vec<String> = moments
+            .iter()
+            .map(|m| {
+                format!(
+                    "{:.0} s ago",
+                    screen::now_ms().saturating_sub(m.captured_at_ms) as f64 / 1000.0
+                )
+            })
+            .collect();
+        request.prompt.push_str(&format!(
+            "\n\nImage{} {} {} earlier moments since the last update when the screen changed or showed text ({}), oldest first. Read what happened in them even though it may be gone from the current screenshot: a message awarding a rank or item, a purchase confirmation, a defeated boss, a new room. Report those in changes and record any tracked fact they establish.",
+            if first == last { "" } else { "s" },
+            if first == last {
+                first.to_string()
+            } else {
+                format!("{first} to {last}")
+            },
+            if first == last { "is an" } else { "are" },
+            ages.join(", ")
         ));
     }
     let started = std::time::Instant::now();
@@ -344,13 +383,19 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     let since = snapshot.captured_at_ms.saturating_sub(job.last_at);
-    if job.running || since < 8_000 {
+    if job.running || since < 3_000 {
         return;
     }
+    // Something happened on screen since the last update (new text, a big
+    // change): read it now, with those frames, rather than on the clock.
+    let moments = crate::activity::moments_since(&store.root, &snapshot.ticket, job.last_at, 2);
     let Ok((signature, changed)) = screen::scene_change(store, job.scene.as_deref()) else {
         return;
     };
-    if !changed && since < settings.brain.interval_secs.max(10) * 1000 {
+    if moments.is_empty() && since < 8_000 {
+        return;
+    }
+    if moments.is_empty() && !changed && since < settings.brain.interval_secs.max(10) * 1000 {
         return;
     }
     job.running = true;
@@ -359,7 +404,8 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     let root = store.root.clone();
     let guide = guide.clone();
     std::thread::spawn(move || {
-        let result = Store::open(&root).and_then(|store| think(&store, &guide, None).map(|_| ()));
+        let result = Store::open(&root)
+            .and_then(|store| think_with(&store, &guide, None, &moments).map(|_| ()));
         if let Ok(store) = Store::open(&root) {
             let _ = store.put(
                 "brain-status",

@@ -117,6 +117,42 @@ pub(crate) fn remember(
     }
 }
 
+/// Frames captured after `since` on which something happened: the picture
+/// changed a lot or new words appeared. Newest last, at most `limit`.
+pub(crate) fn moments_since(
+    root: &Path,
+    ticket: &screen::Ticket,
+    since: u64,
+    limit: usize,
+) -> Vec<screen::Snapshot> {
+    let windows = WINDOWS.get_or_init(Default::default).lock().unwrap();
+    let Some(window) = windows.get(root).filter(|w| w.ticket == *ticket) else {
+        return vec![];
+    };
+    let mut moments: Vec<&Kept> = window
+        .frames
+        .iter()
+        .filter(|k| k.snapshot.captured_at_ms > since && (k.text || k.change >= 8))
+        .collect();
+    moments.sort_by_key(|k| std::cmp::Reverse(k.change as u64 + if k.text { 1_000 } else { 0 }));
+    let mut picked: Vec<&Kept> = vec![];
+    for kept in moments {
+        if picked.len() >= limit {
+            break;
+        }
+        if !picked.iter().any(|p| {
+            p.snapshot
+                .captured_at_ms
+                .abs_diff(kept.snapshot.captured_at_ms)
+                < 1_500
+        }) {
+            picked.push(kept);
+        }
+    }
+    picked.sort_by_key(|k| k.snapshot.captured_at_ms);
+    picked.into_iter().map(|k| k.snapshot.clone()).collect()
+}
+
 /// Which earlier frames to show the verifier: the first (what things looked
 /// like before), the moments that changed the picture most or carried new
 /// text (the event itself), and the last. Indices into `usable`.
