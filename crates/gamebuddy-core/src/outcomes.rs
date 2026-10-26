@@ -170,6 +170,21 @@ pub struct Bypass {
     pub evidence_step_ids: Vec<String>,
 }
 
+/// A message the game prints on screen that establishes a fact, so the screen
+/// updates the plan without a model call: a shop's "Thank you" after buying
+/// the key, "You got the Magic Rod", a boss's defeat banner.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenRule {
+    pub fact_id: String,
+    pub value: bool,
+    /// Exact on-screen phrases (case and spacing do not matter), as the source
+    /// quotes them. Short generic words never qualify.
+    pub phrases: Vec<String>,
+    pub reason: String,
+    pub evidence_step_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutcomeModel {
@@ -179,6 +194,24 @@ pub struct OutcomeModel {
     pub actions: Vec<ActionRule>,
     #[serde(default)]
     pub bypasses: Vec<Bypass>,
+    #[serde(default)]
+    pub screen_rules: Vec<ScreenRule>,
+}
+
+/// Lower-case, single spaces, no punctuation: how screen text is compared.
+pub fn normalize_screen_text(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn within(guide: &Guide, id: &str, parent: &str) -> bool {
@@ -207,6 +240,24 @@ impl OutcomeModel {
                 .retain(|b| b.skip_step_ids != bypass.skip_step_ids);
             self.bypasses.push(bypass);
         }
+        for rule in incoming.screen_rules {
+            self.screen_rules
+                .retain(|r| r.fact_id != rule.fact_id || r.value != rule.value);
+            self.screen_rules.push(rule);
+        }
+    }
+    /// The screen rules whose phrase appears in this on-screen text.
+    pub fn screen_facts(&self, text: &str) -> Vec<&ScreenRule> {
+        let text = format!(" {} ", normalize_screen_text(text));
+        self.screen_rules
+            .iter()
+            .filter(|rule| {
+                rule.phrases.iter().any(|phrase| {
+                    let phrase = normalize_screen_text(phrase);
+                    !phrase.is_empty() && text.contains(&format!(" {phrase} "))
+                })
+            })
+            .collect()
     }
     pub fn validate(&self, guide: &Guide) -> Result<()> {
         ensure!(
@@ -217,6 +268,30 @@ impl OutcomeModel {
         );
         let facts: HashSet<_> = self.facts.iter().map(|f| f.id.as_str()).collect();
         ensure!(facts.len() == self.facts.len(), "Duplicate outcome facts");
+        ensure!(self.screen_rules.len() <= 64, "Too many screen rules");
+        for rule in &self.screen_rules {
+            ensure!(
+                facts.contains(rule.fact_id.as_str()),
+                "Screen rule names an unknown fact"
+            );
+            ensure!(
+                !rule.phrases.is_empty()
+                    && rule.phrases.len() <= 6
+                    && rule.phrases.iter().all(|p| {
+                        let n = normalize_screen_text(p);
+                        (6..=80).contains(&n.len()) && n.contains(' ')
+                    }),
+                "Screen rule phrases must be specific multi-word messages"
+            );
+            ensure!(
+                !rule.evidence_step_ids.is_empty()
+                    && rule
+                        .evidence_step_ids
+                        .iter()
+                        .all(|id| { guide.step(id).is_some_and(|s| guide.step_enabled(s)) }),
+                "Screen rules need enabled source evidence"
+            );
+        }
         let evidence = |ids: &[String]| -> Result<()> {
             ensure!(
                 !ids.is_empty()
@@ -582,6 +657,7 @@ mod tests {
                     .into(),
                 evidence_step_ids: vec!["step-3".into(), "step-4".into()],
             }],
+            screen_rules: vec![],
         };
         model.validate(&guide).unwrap();
         let mut progress = Progress {
@@ -794,5 +870,38 @@ mod tests {
         model.bypasses.clear();
         model.actions[0].effects[0].id = "invented".into();
         assert!(model.validate(&guide).is_err());
+    }
+}
+
+#[cfg(test)]
+mod screen_rule_tests {
+    use super::*;
+
+    #[test]
+    fn screen_text_matches_rules_by_exact_phrase_only() {
+        let model = OutcomeModel {
+            facts: vec![FactDefinition {
+                id: "has_wing_boots".into(),
+                description: "Wing Boots".into(),
+                possession_names: vec!["Wing Boots".into()],
+                evidence_step_ids: vec!["s1".into()],
+            }],
+            screen_rules: vec![ScreenRule {
+                fact_id: "has_wing_boots".into(),
+                value: true,
+                phrases: vec!["You got the Wing Boots".into()],
+                reason: "Bought at the tool shop.".into(),
+                evidence_step_ids: vec!["s1".into()],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(model.screen_facts("YOU GOT THE\nWING  BOOTS!").len(), 1);
+        assert_eq!(model.screen_facts("you got the wing boots").len(), 1);
+        assert!(model.screen_facts("Wing Boots 2500 gold").is_empty());
+        assert!(model.screen_facts("you got the wing").is_empty());
+        assert_eq!(
+            normalize_screen_text("  Thank You, come again! "),
+            "thank you come again"
+        );
     }
 }

@@ -3,6 +3,7 @@
 use crate::{Store, screen};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use gamebuddy_core::Guide;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -25,15 +26,28 @@ pub struct Event {
     #[serde(skip)]
     pub signature: Vec<u8>,
 }
+/// Everything one OCR pass read: a text event, if any, and every confident
+/// line (for the game's screen rules, which turn messages into facts).
+#[derive(Clone, Debug, Default)]
+pub struct Reading {
+    pub event: Option<Event>,
+    pub lines: Vec<String>,
+}
+
+type Job = (screen::Snapshot, Option<Guide>, Arc<dyn Fn() + Send + Sync>);
+
 #[derive(Default)]
 struct State {
     running: bool,
-    pending: Option<(screen::Snapshot, Arc<dyn Fn() + Send + Sync>)>,
+    pending: Option<Job>,
     candidate: Option<Event>,
     confirmed: Option<Event>,
+    /// Fact ids the screen rules matched on the previous distinct capture;
+    /// a fact is recorded only when two captures agree.
+    text_candidate: Option<(Vec<String>, u64)>,
     last_at: u64,
     unavailable: bool,
-    cached: Option<(String, Option<Event>)>,
+    cached: Option<(String, Reading)>,
 }
 static STATES: OnceLock<Mutex<HashMap<PathBuf, State>>> = OnceLock::new();
 
@@ -48,7 +62,23 @@ fn normalized(text: &str) -> String {
 
 /// Read Tesseract word confidence and retain line boundaries. A phrase in an
 /// instruction such as "avoid the game over screen" is never an event.
-pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
+/// Every line Tesseract read with confidence, in reading order.
+pub fn lines_from_tsv(tsv: &str) -> Vec<String> {
+    grouped(tsv)
+        .values()
+        .filter(|words| !words.is_empty() && words.iter().all(|(_, c)| *c >= 70.0))
+        .map(|words| {
+            words
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|line| line.trim().len() >= 3)
+        .collect()
+}
+
+fn grouped(tsv: &str) -> BTreeMap<(u32, u32, u32), Vec<(String, f32)>> {
     let mut lines: BTreeMap<(u32, u32, u32), Vec<(String, f32)>> = BTreeMap::new();
     for line in tsv.lines().skip(1) {
         let f: Vec<_> = line.splitn(12, '\t').collect();
@@ -65,6 +95,11 @@ pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
         );
         lines.entry(id).or_default().push((f[11].into(), conf));
     }
+    lines
+}
+
+pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
+    let lines = grouped(tsv);
     for words in lines.values() {
         if words.is_empty() || words.iter().any(|(_, confidence)| *confidence < 85.0) {
             continue;
@@ -104,7 +139,7 @@ pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
     None
 }
 
-pub fn inspect(snapshot: &screen::Snapshot) -> Result<Option<Event>> {
+pub fn inspect(snapshot: &screen::Snapshot) -> Result<Reading> {
     let image = image::load_from_memory(&STANDARD.decode(&snapshot.jpeg)?)?;
     // Text events are generally central overlays. Preserve enough resolution
     // for bitmap fonts; no model or full-frame text generation is required.
@@ -143,8 +178,9 @@ pub fn inspect(snapshot: &screen::Snapshot) -> Result<Option<Event>> {
     let bytes = output
         .join()
         .map_err(|_| anyhow::anyhow!("OCR reader stopped"))??;
-    Ok(
-        event_from_tsv(&String::from_utf8_lossy(&bytes)).map(|(event, text, evidence)| Event {
+    let tsv = String::from_utf8_lossy(&bytes);
+    Ok(Reading {
+        event: event_from_tsv(&tsv).map(|(event, text, evidence)| Event {
             event,
             text,
             evidence,
@@ -152,10 +188,16 @@ pub fn inspect(snapshot: &screen::Snapshot) -> Result<Option<Event>> {
             ticket: snapshot.ticket.clone(),
             signature,
         }),
-    )
+        lines: lines_from_tsv(&tsv),
+    })
 }
 
-pub fn schedule(store: &Store, snapshot: screen::Snapshot, notify: Arc<dyn Fn() + Send + Sync>) {
+pub fn schedule(
+    store: &Store,
+    snapshot: screen::Snapshot,
+    guide: Option<Guide>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+) {
     let root = store.root.clone();
     let states = STATES.get_or_init(Default::default);
     let mut all = states.lock().unwrap();
@@ -169,7 +211,7 @@ pub fn schedule(store: &Store, snapshot: screen::Snapshot, notify: Arc<dyn Fn() 
     if state.unavailable || snapshot.captured_at_ms.saturating_sub(state.last_at) < 150 {
         return;
     }
-    state.pending = Some((snapshot, notify));
+    state.pending = Some((snapshot, guide, notify));
     if state.running {
         return;
     }
@@ -191,7 +233,7 @@ pub fn schedule(store: &Store, snapshot: screen::Snapshot, notify: Arc<dyn Fn() 
                     }
                 }
             };
-            let Some((snapshot, notify)) = job else {
+            let Some((snapshot, guide, notify)) = job else {
                 return;
             };
             // Identical pixels need no second OCR inference. They still count
@@ -203,23 +245,69 @@ pub fn schedule(store: &Store, snapshot: screen::Snapshot, notify: Arc<dyn Fn() 
                 .get(&root)
                 .and_then(|state| state.cached.as_ref())
                 .filter(|(key, _)| key == &digest)
-                .map(|(_, event)| event.clone());
-            let result = if let Some(event) = cached {
-                Ok(event.map(|mut event| {
+                .map(|(_, reading)| reading.clone());
+            let result = if let Some(mut reading) = cached {
+                if let Some(event) = reading.event.as_mut() {
                     event.ticket = snapshot.ticket.clone();
                     event.captured_at_ms = snapshot.captured_at_ms;
-                    event
-                }))
+                }
+                Ok(reading)
             } else {
                 inspect(&snapshot)
             };
-            let current = Store::open(&root)
-                .ok()
-                .is_some_and(|s| screen::still_current(&s, &snapshot).unwrap_or(false));
+            let store = Store::open(&root).ok();
+            let current = store
+                .as_ref()
+                .is_some_and(|s| screen::still_current(s, &snapshot).unwrap_or(false));
+            // The game's screen rules: a message that establishes a fact is
+            // recorded once two distinct captures within a few seconds show it.
+            if let (Ok(reading), Some(store), Some(guide)) = (&result, &store, &guide)
+                && current
+            {
+                let matched: Vec<String> = crate::outcomes::prepared(store, guide)
+                    .ok()
+                    .flatten()
+                    .map(|p| {
+                        let mut ids: Vec<String> = p
+                            .model
+                            .screen_facts(&reading.lines.join(" \n "))
+                            .iter()
+                            .map(|r| format!("{}={}", r.fact_id, r.value))
+                            .collect();
+                        ids.sort();
+                        ids.dedup();
+                        ids
+                    })
+                    .unwrap_or_default();
+                let mut all = states.lock().unwrap();
+                let state = all.get_mut(&root).unwrap();
+                let agreed = !matched.is_empty()
+                    && state.text_candidate.as_ref().is_some_and(|(ids, at)| {
+                        ids == &matched
+                            && snapshot.captured_at_ms > *at
+                            && snapshot.captured_at_ms.saturating_sub(*at) < 4_000
+                    });
+                state.text_candidate =
+                    (!matched.is_empty()).then_some((matched, snapshot.captured_at_ms));
+                drop(all);
+                if agreed
+                    && let Err(error) = crate::outcomes::observe_screen_text(
+                        store,
+                        guide,
+                        &reading.lines,
+                        snapshot.captured_at_ms,
+                    )
+                {
+                    eprintln!("Screen facts: {error:#}");
+                }
+            }
             let mut all = states.lock().unwrap();
             let state = all.get_mut(&root).unwrap();
-            state.cached = result.as_ref().ok().map(|event| (digest, event.clone()));
-            match result {
+            state.cached = result
+                .as_ref()
+                .ok()
+                .map(|reading| (digest, reading.clone()));
+            match result.map(|r| r.event) {
                 Ok(Some(event))
                     if current && screen::now_ms().saturating_sub(event.captured_at_ms) < 1200 =>
                 {

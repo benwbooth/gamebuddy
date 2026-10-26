@@ -262,6 +262,7 @@ fn source_backed_rule_repair_unblocks_guidance_without_inventing_completion() ->
         &outcomes::Prepared {
             guide_revision: guide.revision,
             reviewed_scopes: vec![],
+            screen_rules_scopes: vec![],
             model: rules,
             provider_model: "fixture".into(),
             elapsed_ms: 0,

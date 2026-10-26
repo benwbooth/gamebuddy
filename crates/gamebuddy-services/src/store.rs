@@ -221,6 +221,7 @@ impl Store {
             .unwrap_or(crate::outcomes::Prepared {
                 guide_revision: old.revision,
                 reviewed_scopes: vec![],
+                screen_rules_scopes: vec![],
                 model: Default::default(),
                 provider_model: "plan_recovery".into(),
                 elapsed_ms: 0,
@@ -738,6 +739,7 @@ impl Store {
             .unwrap_or(crate::outcomes::Prepared {
                 guide_revision: guide.revision,
                 reviewed_scopes: vec![],
+                screen_rules_scopes: vec![],
                 model: Default::default(),
                 provider_model: "conversation_review".into(),
                 elapsed_ms: 0,
@@ -813,7 +815,7 @@ impl Store {
                 gamebuddy_core::outcomes::KnownFact {
                     value: fact.value,
                     evidence: update.player_report.clone(),
-                    source: "player_report".into(),
+                    source: update.source.unwrap_or("player_report").into(),
                     step_id: None,
                     at_ms: crate::screen::now_ms(),
                 },

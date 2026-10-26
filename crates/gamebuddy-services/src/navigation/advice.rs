@@ -667,6 +667,7 @@ mod tests {
                 include_optional: Some(false),
                 goal: None,
                 clear_goal: false,
+                source: None,
             },
         )?;
         assert_eq!(result["guidance"]["now"]["id"], "step-2");
@@ -812,6 +813,7 @@ mod tests {
             &crate::outcomes::Prepared {
                 guide_revision: guide.revision,
                 reviewed_scopes: vec![],
+                screen_rules_scopes: vec![],
                 model: model.clone(),
                 provider_model: "fixture".into(),
                 elapsed_ms: 0,

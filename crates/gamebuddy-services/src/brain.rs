@@ -291,6 +291,7 @@ fn apply(store: &Store, guide: &Guide, situation: &Situation) -> Result<()> {
                 include_optional: None,
                 goal: None,
                 clear_goal: false,
+                source: Some("screen"),
             },
         );
     }

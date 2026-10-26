@@ -922,6 +922,7 @@ impl ffi::Buddy {
                     services::fast_perception::schedule(
                         &store,
                         snapshot.clone(),
+                        guide.clone(),
                         spatial_notify.clone(),
                     );
                     services::telemetry::schedule(

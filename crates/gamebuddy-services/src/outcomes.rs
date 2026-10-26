@@ -18,9 +18,20 @@ use std::{
 pub struct Prepared {
     pub guide_revision: u64,
     pub reviewed_scopes: Vec<String>,
+    /// Scopes compiled since screen rules were asked for; an older model is
+    /// compiled once more so the screen can update its facts.
+    #[serde(default)]
+    pub screen_rules_scopes: Vec<String>,
     pub model: OutcomeModel,
     pub provider_model: String,
     pub elapsed_ms: u64,
+}
+impl Prepared {
+    /// Nothing left to compile for this scope.
+    pub fn compiled(&self, scope: &str) -> bool {
+        self.reviewed_scopes.iter().any(|s| s == scope)
+            && self.screen_rules_scopes.iter().any(|s| s == scope)
+    }
 }
 fn key(guide: &Guide) -> String {
     format!("outcomes:{}", guide.id)
@@ -140,7 +151,7 @@ pub fn compile(
     let (scope_id, ids) = scope(guide, &progress);
     let previous = prepared(store, guide)?;
     if let Some(previous) = &previous
-        && previous.reviewed_scopes.contains(&scope_id)
+        && previous.compiled(&scope_id)
     {
         return Ok((**previous).clone());
     }
@@ -172,7 +183,8 @@ Return the schema {}. Focus on the current source region AND its cross-chapter c
 Action effects record what is true AFTER that entire action actually finishes. For each required fact, also compile its source-established producer actions from the whole route, including earlier chapters. Keep separately accomplished objectives as separate facts joined by all; do not create an aggregate fact such as other_two_objectives_done with no action able to establish it. If no source action establishes a fact, leave it explicitly unknown rather than inventing a producer. Put item acquisition effects on the precise pickup leaf, never merely entering its room. Consumption sets possession false only when the source establishes a unique item or that the last copy is consumed. Using one of an unknown number must put its possession ID in invalidate_facts instead: the remaining quantity is unknown, not zero. Never both set and invalidate the same fact. A parent effect is valid only when ALL its children establish the result. Do not conflate possession with killing a boss, reaching a place, or completing every demonstrated step.
 For actions with verified world requirements, requires replaces the old step-ID prerequisites: use fact, all (AND), any (OR), or always. Leave requires null when source evidence is insufficient. If several methods produce the same outcome, give each the same fact effect. unnecessary_when describes when the action's PURPOSE is already satisfied, not when the action was completed. Annotate necessary traversal toward an optional objective along with that objective when source evidence supports avoiding the entire detour. Optional acquisition, extra money/experience, optional battles, shopping inspections and demonstrations should not become mandatory progress. optional=true means ALWAYS optional for ordinary progress. If an action is only optional WHEN another method already satisfied its requirement, use unnecessary_when instead and keep optional=false. Never unconditionally skip the only remaining producer of a required item.
 A bypass needs an explicit condition, entry_step_ids identifying the approach or just-completed acquisition actions from which the shortcut is valid, the precise skip_step_ids (containers include descendants), a source-backed resume_step_id reachable from the entry of that skipped detour, and a reason naming the satisfied objective and any rewards forgone. The bypass activates only while the saved current action is within entry_step_ids. Include the focus pickup action when that is its entrance, but never include an entire upper region: a player already inside still needs the return traversal. Never route an early shortcut through a descent from an upper room the player has not visited. Prefer the existing exit/return instruction that starts in their entrance area. Source place bindings may identify that an entrance and a later return/exit instruction belong to the same room. If the intervening climb/fight/treasure only serves outcomes that are satisfied or optional, bypass the whole detour to that entrance-room exit instruction, including an upper-level descent that an early exit never needs. This is a conditional route choice, not a claim that the skipped rooms were visited. Never omit a required traversal just because a fight is optional. If the continuation is not established, omit the bypass and explain only the supported unnecessary action. Merely being in the same room does not establish inventory or progress.
-Use the normal finish-the-game route; preserve optional branches so a player can choose them. A 100% source title is not a player preference. Do not invent missing mechanics. A consumable described as helping combat, with no source-established progression requirement, is an optional reward for the normal finish-the-game route. Include such side rewards and their approach in a bypass when the remaining branch only serves an outcome that is already satisfied. Avoid padding rules for unrelated movement; compile only meaningful outcomes/alternatives/requirements. The model is evaluated locally later and must work for players arriving by another route, already carrying an item, or restoring an earlier save. Reason strings are shown and spoken to the player: use at most two short, natural sentences explaining the purpose, future use and relevant return cost. Do not mention compilation, rules, route-readiness machinery or the distinction between planning and physical restrictions in those strings."#,
+Use the normal finish-the-game route; preserve optional branches so a player can choose them. A 100% source title is not a player preference. Do not invent missing mechanics. A consumable described as helping combat, with no source-established progression requirement, is an optional reward for the normal finish-the-game route. Include such side rewards and their approach in a bypass when the remaining branch only serves an outcome that is already satisfied. Avoid padding rules for unrelated movement; compile only meaningful outcomes/alternatives/requirements. The model is evaluated locally later and must work for players arriving by another route, already carrying an item, or restoring an earlier save. Reason strings are shown and spoken to the player: use at most two short, natural sentences explaining the purpose, future use and relevant return cost. Do not mention compilation, rules, route-readiness machinery or the distinction between planning and physical restrictions in those strings.
+screen_rules let the game's own screen text update facts without a model: for each fact, when the source quotes or clearly describes the exact message the game prints at the moment the fact becomes true (a shopkeeper's "Thank you, come again" after the purchase, "You got the Wing Boots", a boss defeat banner), add a rule with that fact_id, the value it establishes and the phrases exactly as printed. Phrases must be specific multi-word messages of at least six characters; never a single word, a menu label, an item name alone or a message that also appears when the fact is false. Omit screen_rules when the source gives no such message."#,
             guide.game, progress.current_step.as_deref().unwrap_or("start"), serde_json::to_string(&steps)?, serde_json::to_string(&places)?, serde_json::to_string(&known_facts)?, serde_json::to_string(&proposed)?, serde_json::to_string(&confirmed)?, schema),
         images: vec![], json: true,
     }, schema)?;
@@ -221,13 +233,17 @@ Use the normal finish-the-game route; preserve optional branches so a player can
         .unwrap_or(Prepared {
             guide_revision: guide.revision,
             reviewed_scopes: vec![],
+            screen_rules_scopes: vec![],
             model: OutcomeModel::default(),
             provider_model: provider_model.into(),
             elapsed_ms: 0,
         });
     result.model.merge(incoming);
     result.model.validate(guide)?;
-    result.reviewed_scopes.push(scope_id);
+    if !result.reviewed_scopes.contains(&scope_id) {
+        result.reviewed_scopes.push(scope_id.clone());
+    }
+    result.screen_rules_scopes.push(scope_id);
     result.provider_model = provider_model.into();
     result.elapsed_ms = started.elapsed().as_millis() as u64;
     // A conversational correction made while this job ran takes precedence.
@@ -350,6 +366,87 @@ pub struct Report {
     pub goal: Option<OutcomeGoal>,
     #[serde(default)]
     pub clear_goal: bool,
+    /// Who established the facts: the player's words unless set (`screen`).
+    #[serde(skip)]
+    pub source: Option<&'static str>,
+}
+
+/// Text read off the screen matched against the game's screen rules: a fact
+/// the rules establish, not yet known with that value, is recorded with the
+/// screen as its source. Returns the fact ids recorded.
+pub fn observe_screen_text(
+    store: &Store,
+    guide: &Guide,
+    lines: &[String],
+    captured_at_ms: u64,
+) -> Result<Vec<String>> {
+    let Some(prepared) = prepared(store, guide)? else {
+        return Ok(vec![]);
+    };
+    let text = lines.join(" \n ");
+    let matched = prepared.model.screen_facts(&text);
+    if matched.is_empty() {
+        return Ok(vec![]);
+    }
+    let progress = store.progress(guide)?;
+    let mut facts = vec![];
+    let mut evidence = vec![];
+    for rule in matched {
+        if progress
+            .world
+            .facts
+            .get(&rule.fact_id)
+            .is_some_and(|known| known.value == rule.value)
+            || facts
+                .iter()
+                .any(|f: &gamebuddy_core::outcomes::FactValue| f.id == rule.fact_id)
+        {
+            continue;
+        }
+        facts.push(gamebuddy_core::outcomes::FactValue {
+            id: rule.fact_id.clone(),
+            value: rule.value,
+        });
+        evidence.push(format!(
+            "{} = {}: the screen showed \"{}\" ({})",
+            rule.fact_id,
+            rule.value,
+            rule.phrases
+                .iter()
+                .find(|p| text
+                    .to_lowercase()
+                    .contains(&gamebuddy_core::outcomes::normalize_screen_text(p)))
+                .cloned()
+                .unwrap_or_else(|| rule.phrases[0].clone()),
+            rule.reason
+        ));
+    }
+    if facts.is_empty() {
+        return Ok(vec![]);
+    }
+    let ids: Vec<String> = facts.iter().map(|f| f.id.clone()).collect();
+    crate::flight::event(
+        "screen_fact",
+        json!({"guide": guide.id, "facts": facts, "captured_at_ms": captured_at_ms}),
+    );
+    report(
+        store,
+        guide,
+        Report {
+            expected_revision: guide.revision,
+            epoch: progress.epoch,
+            player_report: format!("Screen: {}", evidence.join("; "))
+                .chars()
+                .take(1500)
+                .collect(),
+            facts,
+            include_optional: None,
+            goal: None,
+            clear_goal: false,
+            source: Some("screen"),
+        },
+    )?;
+    Ok(ids)
 }
 
 pub fn report(store: &Store, guide: &Guide, update: Report) -> Result<Value> {
@@ -440,7 +537,7 @@ pub fn schedule(store: &Store, guide: &Guide) {
     if prepared(store, guide)
         .ok()
         .flatten()
-        .is_some_and(|p| p.reviewed_scopes.contains(&scope))
+        .is_some_and(|p| p.compiled(&scope))
     {
         return;
     }
@@ -561,6 +658,7 @@ pub fn quick_report(store: &Store, game: &str, text: &str) -> Result<Option<Stri
             include_optional: None,
             goal: None,
             clear_goal: false,
+            source: None,
         },
     )?;
     let progress: Progress = serde_json::from_value(result["progress"].clone())?;
@@ -655,6 +753,7 @@ mod tests {
             &Prepared {
                 guide_revision: guide.revision,
                 reviewed_scopes: vec![],
+                screen_rules_scopes: vec![],
                 model,
                 provider_model: "test".into(),
                 elapsed_ms: 0,
@@ -822,6 +921,7 @@ mod tests {
             include_optional: None,
             goal: None,
             clear_goal: false,
+            source: None,
         };
         assert!(report(&store, &guide, make(0, "invented")).is_err());
         report(&store, &guide, make(0, "has_key"))?;

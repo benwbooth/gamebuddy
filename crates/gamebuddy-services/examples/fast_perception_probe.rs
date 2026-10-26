@@ -19,7 +19,7 @@ fn main() -> Result<()> {
         let result = fast_perception::inspect(&frame)?;
         println!(
             "{}",
-            serde_json::json!({"elapsed_ms":start.elapsed().as_millis(),"event":result})
+            serde_json::json!({"elapsed_ms":start.elapsed().as_millis(),"event":result.event,"lines":result.lines})
         );
     }
     Ok(())
