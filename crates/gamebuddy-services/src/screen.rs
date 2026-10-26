@@ -287,7 +287,7 @@ pub fn publish_at(
         c.source = source.into();
         c.error.clear()
     })?;
-    crate::activity::remember(store, ticket, at, &jpeg);
+    crate::activity::remember(store, ticket, at, &jpeg, &signature);
     Ok(())
 }
 

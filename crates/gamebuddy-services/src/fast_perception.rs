@@ -45,6 +45,8 @@ struct State {
     /// Fact ids the screen rules matched on the previous distinct capture;
     /// a fact is recorded only when two captures agree.
     text_candidate: Option<(Vec<String>, u64)>,
+    /// Word lines on the previous capture, to notice new text appearing.
+    last_lines: Vec<String>,
     last_at: u64,
     unavailable: bool,
     cached: Option<(String, Reading)>,
@@ -259,6 +261,26 @@ pub fn schedule(
             let current = store
                 .as_ref()
                 .is_some_and(|s| screen::still_current(s, &snapshot).unwrap_or(false));
+            // New words on screen (a dialogue, a shop line) mark this capture
+            // as a moment the action verifier must see.
+            if let Ok(reading) = &result
+                && current
+            {
+                let words: Vec<String> = reading
+                    .lines
+                    .iter()
+                    .filter(|l| l.chars().filter(|c| c.is_alphabetic()).count() >= 6)
+                    .cloned()
+                    .collect();
+                let mut all = states.lock().unwrap();
+                let state = all.get_mut(&root).unwrap();
+                let fresh = words.iter().any(|w| !state.last_lines.contains(w));
+                state.last_lines = words;
+                drop(all);
+                if fresh {
+                    crate::activity::text_moment(&root, &snapshot.ticket, snapshot.captured_at_ms);
+                }
+            }
             // The game's screen rules: a message that establishes a fact is
             // recorded once two distinct captures within a few seconds show it.
             if let (Ok(reading), Some(store), Some(guide)) = (&result, &store, &guide)

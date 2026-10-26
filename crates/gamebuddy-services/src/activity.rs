@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
@@ -18,19 +18,61 @@ const MAX_FRAMES: usize = 24;
 mod coaching;
 pub use coaching::{Coaching, current_coaching, save_review};
 
+/// A captured frame with how much the picture changed from the one before
+/// (a room change, a dialogue box appearing) and whether the text reader saw
+/// new words on it. Brief moments like a guru's one-line message are the
+/// evidence a verifier needs, and an evenly spaced sample skips them.
+struct Kept {
+    snapshot: screen::Snapshot,
+    signature: Vec<u8>,
+    change: u32,
+    text: bool,
+}
+
 struct Window {
     ticket: screen::Ticket,
     context: Option<(String, u64, u64)>,
-    frames: VecDeque<screen::Snapshot>,
+    frames: VecDeque<Kept>,
+}
+
+fn difference(a: &[u8], b: &[u8]) -> u32 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0;
+    }
+    (a.iter()
+        .zip(b)
+        .map(|(a, b)| a.abs_diff(*b) as u64)
+        .sum::<u64>()
+        / a.len() as u64) as u32
+}
+
+/// The text reader saw new words on the frame captured at `at`.
+pub(crate) fn text_moment(root: &Path, ticket: &screen::Ticket, at: u64) {
+    let mut windows = WINDOWS.get_or_init(Default::default).lock().unwrap();
+    if let Some(window) = windows.get_mut(root).filter(|w| w.ticket == *ticket)
+        && let Some(kept) = window
+            .frames
+            .iter_mut()
+            .min_by_key(|k| k.snapshot.captured_at_ms.abs_diff(at))
+            .filter(|k| k.snapshot.captured_at_ms.abs_diff(at) <= 600)
+    {
+        kept.text = true;
+    }
 }
 static WINDOWS: OnceLock<Mutex<HashMap<PathBuf, Window>>> = OnceLock::new();
 
-pub(crate) fn remember(store: &Store, ticket: &screen::Ticket, at: u64, jpeg: &str) {
+pub(crate) fn remember(
+    store: &Store,
+    ticket: &screen::Ticket,
+    at: u64,
+    jpeg: &str,
+    signature: &[u8],
+) {
     let mut windows = WINDOWS.get_or_init(Default::default).lock().unwrap();
     windows.retain(|_, w| {
         w.frames
             .back()
-            .is_some_and(|f| at.saturating_sub(f.captured_at_ms) < WINDOW_MS)
+            .is_some_and(|f| at.saturating_sub(f.snapshot.captured_at_ms) < WINDOW_MS)
     });
     if windows.len() >= 16 && !windows.contains_key(&store.root) {
         return;
@@ -45,27 +87,73 @@ pub(crate) fn remember(store: &Store, ticket: &screen::Ticket, at: u64, jpeg: &s
         window.context = None;
         window.frames.clear();
     }
-    if window
-        .frames
-        .back()
-        .is_some_and(|f| f.jpeg == jpeg || at.saturating_sub(f.captured_at_ms) < 500)
-    {
+    if window.frames.back().is_some_and(|f| {
+        f.snapshot.jpeg == jpeg || at.saturating_sub(f.snapshot.captured_at_ms) < 500
+    }) {
         return;
     }
-    window.frames.push_back(screen::Snapshot {
-        ticket: ticket.clone(),
-        captured_at_ms: at,
-        jpeg: jpeg.into(),
-        metadata: Value::Null,
+    let change = window
+        .frames
+        .back()
+        .map_or(0, |f| difference(&f.signature, signature));
+    window.frames.push_back(Kept {
+        snapshot: screen::Snapshot {
+            ticket: ticket.clone(),
+            captured_at_ms: at,
+            jpeg: jpeg.into(),
+            metadata: Value::Null,
+        },
+        signature: signature.to_vec(),
+        change,
+        text: false,
     });
     while window.frames.len() > MAX_FRAMES
         || window
             .frames
             .front()
-            .is_some_and(|f| at.saturating_sub(f.captured_at_ms) > WINDOW_MS)
+            .is_some_and(|f| at.saturating_sub(f.snapshot.captured_at_ms) > WINDOW_MS)
     {
         window.frames.pop_front();
     }
+}
+
+/// Which earlier frames to show the verifier: the first (what things looked
+/// like before), the moments that changed the picture most or carried new
+/// text (the event itself), and the last. Indices into `usable`.
+fn review_picks(usable: &[&Kept]) -> Vec<usize> {
+    let mut picks = vec![];
+    if usable.is_empty() {
+        return picks;
+    }
+    picks.push(0);
+    let mut moments: Vec<usize> = (1..usable.len()).collect();
+    moments.sort_by_key(|&i| {
+        std::cmp::Reverse(usable[i].change as u64 + if usable[i].text { 1_000 } else { 0 })
+    });
+    for i in moments {
+        if picks.len() >= 3 {
+            break;
+        }
+        let kept = usable[i];
+        let notable = kept.text || kept.change >= 8;
+        if notable
+            && !picks.iter().any(|&p| {
+                usable[p]
+                    .snapshot
+                    .captured_at_ms
+                    .abs_diff(kept.snapshot.captured_at_ms)
+                    < 1_500
+            })
+        {
+            picks.push(i);
+        }
+    }
+    let last = usable.len() - 1;
+    if picks.len() < 3 && !picks.contains(&last) {
+        picks.push(last);
+    }
+    picks.sort_unstable();
+    picks
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -195,26 +283,29 @@ pub fn prepare(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) -> Res
         if window.context.as_ref().is_some_and(|old| *old != context) {
             window
                 .frames
-                .retain(|f| f.captured_at_ms >= snapshot.captured_at_ms);
+                .retain(|f| f.snapshot.captured_at_ms >= snapshot.captured_at_ms);
         }
         window.context = Some(context);
-        let usable: Vec<_> = window
+        let usable: Vec<&Kept> = window
             .frames
             .iter()
             .filter(|f| {
-                f.captured_at_ms < snapshot.captured_at_ms
-                    && snapshot.captured_at_ms.saturating_sub(f.captured_at_ms) <= WINDOW_MS
+                f.snapshot.captured_at_ms < snapshot.captured_at_ms
+                    && snapshot
+                        .captured_at_ms
+                        .saturating_sub(f.snapshot.captured_at_ms)
+                        <= WINDOW_MS
             })
             .collect();
-        // Keep the start, middle and end of the short history plus the current
-        // frame. HUD-only changes count; room-similarity filtering loses them.
-        for index in [0, usable.len() / 2, usable.len().saturating_sub(1)] {
+        // The start, the moments that changed the picture or showed new text,
+        // and the end of the short history, plus the current frame.
+        for index in review_picks(&usable) {
             if let Some(frame) = usable.get(index)
                 && !frames
                     .iter()
-                    .any(|f: &screen::Snapshot| f.captured_at_ms == frame.captured_at_ms)
+                    .any(|f: &screen::Snapshot| f.captured_at_ms == frame.snapshot.captured_at_ms)
             {
-                frames.push((*frame).clone());
+                frames.push(frame.snapshot.clone());
             }
         }
     }
@@ -558,5 +649,56 @@ mod tests {
         assert!(save(&store, &observation, &[event]).is_err());
         assert!(store.progress(&observation.guide)?.completed.is_empty());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod review_pick_tests {
+    use super::*;
+
+    fn kept(at: u64, change: u32, text: bool) -> Kept {
+        Kept {
+            snapshot: screen::Snapshot {
+                ticket: screen::Ticket {
+                    session: "test".into(),
+                    epoch: 0,
+                    game: "Game".into(),
+                    crop: Default::default(),
+                },
+                captured_at_ms: at,
+                jpeg: at.to_string(),
+                metadata: Value::Null,
+            },
+            signature: vec![],
+            change,
+            text,
+        }
+    }
+
+    #[test]
+    fn a_brief_dialogue_moment_is_reviewed_instead_of_the_middle_frame() {
+        // Twenty quiet seconds of fighting, a dialogue box for one capture at
+        // second 13, then quiet again: the even sample would skip second 13.
+        let frames: Vec<Kept> = (0..20u64)
+            .map(|i| kept(100_000 + i * 1_000, if i == 13 { 40 } else { 2 }, false))
+            .collect();
+        let usable: Vec<&Kept> = frames.iter().collect();
+        let picks = review_picks(&usable);
+        assert_eq!(picks, vec![0, 13, 19], "{picks:?}");
+    }
+
+    #[test]
+    fn new_text_outranks_a_scroll_and_quiet_history_keeps_start_and_end() {
+        let frames: Vec<Kept> = (0..10u64)
+            .map(|i| kept(100_000 + i * 1_000, if i == 4 { 30 } else { 1 }, i == 7))
+            .collect();
+        let usable: Vec<&Kept> = frames.iter().collect();
+        assert_eq!(review_picks(&usable), vec![0, 4, 7]);
+        let quiet: Vec<Kept> = (0..5u64)
+            .map(|i| kept(100_000 + i * 1_000, 1, false))
+            .collect();
+        let usable: Vec<&Kept> = quiet.iter().collect();
+        assert_eq!(review_picks(&usable), vec![0, 4]);
+        assert!(review_picks(&[]).is_empty());
     }
 }
