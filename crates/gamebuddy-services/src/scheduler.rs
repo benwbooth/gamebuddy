@@ -27,6 +27,9 @@ struct Lane {
     background: usize,
     live_waiting: usize,
     cooldown_until: Option<Instant>,
+    /// The account is out of quota: nothing but the player's own questions
+    /// goes to this provider until then.
+    quota_until: Option<Instant>,
 }
 
 struct Queue {
@@ -53,6 +56,7 @@ fn slots(kind: &ProviderKind) -> usize {
 
 const BACKGROUND_SLOTS: usize = 2;
 const COOLDOWN: Duration = Duration::from_secs(60);
+const QUOTA_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 /// A held slot; dropping it frees the slot for the next caller.
 pub struct Permit {
@@ -91,12 +95,17 @@ pub fn acquire(kind: &ProviderKind, priority: Priority) -> Permit {
         let free = match priority {
             Priority::Live => lane.in_flight < total,
             // One slot stays free for the player's next question.
-            Priority::Watching => lane.in_flight + 1 < total.max(2) && lane.live_waiting == 0,
+            Priority::Watching => {
+                lane.in_flight + 1 < total.max(2)
+                    && lane.live_waiting == 0
+                    && lane.quota_until.is_none_or(|t| Instant::now() >= t)
+            }
             Priority::Background => {
                 lane.in_flight + 1 < total.max(2)
                     && lane.live_waiting == 0
                     && lane.background < BACKGROUND_SLOTS
                     && lane.cooldown_until.is_none_or(|t| Instant::now() >= t)
+                    && lane.quota_until.is_none_or(|t| Instant::now() >= t)
             }
         };
         if free {
@@ -121,6 +130,16 @@ pub fn acquire(kind: &ProviderKind, priority: Priority) -> Permit {
         priority,
         waited: started.elapsed(),
     }
+}
+
+/// The account has no quota left: hold everything but live questions for a
+/// while, instead of failing hundreds of times until the plan resets.
+pub fn quota_exhausted(kind: &ProviderKind) {
+    let q = queue();
+    let mut lanes = q.lanes.lock().unwrap();
+    lanes.entry(format!("{kind:?}")).or_default().quota_until =
+        Some(Instant::now() + QUOTA_COOLDOWN);
+    q.changed.notify_all();
 }
 
 /// The provider asked us to slow down: hold background work for a minute.

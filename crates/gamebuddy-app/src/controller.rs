@@ -467,7 +467,7 @@ impl ffi::Buddy {
                     .map(|u| u.to_string());
                 let screen = services::screen::status(&store)?;
                 let seen_screen = services::screen::seen::context(&store, &screen)?;
-                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"journal":journal,"screen":screen,"seen_screen":seen_screen,"fast_event":services::fast_perception::context(&store),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
+                Ok(json!({"game":data.game,"guides":guides,"guide":data.guide,"selected":selected,"current":current,"navigation":navigation,"journal":journal,"screen":screen,"seen_screen":seen_screen,"fast_event":services::fast_perception::context(&store),"provider_outage":services::providers::outage(),"progress":data.sync.progress,"estimate":data.estimate,"reference_count":count,"frame_url":frame_url,"data_dir":data.root,"widgets":widgets,"layouts":layouts,"widget_visibility":widget_visibility,"preparation":preparation,"book_url":book_url,"launch_context":{"game_id":argument("--game-id"),"platform":argument("--platform"),"game_pid":argument("--game-pid"),"session_id":argument("--session-id")}}).to_string())
             })();
             if std::env::args().any(|a| a == "--ui-trace") {
                 eprintln!(

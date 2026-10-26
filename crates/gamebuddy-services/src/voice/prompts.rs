@@ -136,6 +136,7 @@ pub fn gemini_context(
         "authored_route": if guidance["plan_detour"] == true { Value::Null } else { full["navigation"]["authored_route"].clone() },
         "location": full["navigation"]["location"],
         "location_estimate": full["navigation"]["location_estimate"],
+        "provider_outage": crate::providers::outage().map(|o| json!({"message": o["message"], "instruction": "GameBuddy's reasoning model is out of quota. Tell the player once, in one sentence, when it will be back if the message says so, and answer from this context and the walkthrough instead of waiting for tools."})),
         "place": full["navigation"]["map"]["current_place"]["label"],
         "screen": {"status": full["screen"]["status"], "age_ms": full["screen"]["age_ms"]},
         "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),

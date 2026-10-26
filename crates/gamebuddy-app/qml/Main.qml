@@ -132,7 +132,7 @@ ApplicationWindow {
     }
     Buddy {
         id: buddy
-        onState_jsonChanged: root.session = JSON.parse(state_json)
+        onState_jsonChanged: { root.session = JSON.parse(state_json); if (root.session.provider_outage) root.noteOutOfTokens(root.session.provider_outage.message) }
         onMap_preview_ready: (id, preview) => widgetView.runJavaScript("gamebuddy.mapPreview("+JSON.stringify(id)+","+JSON.stringify(preview)+")")
         Component.onCompleted: initialize()
         onChat_errorChanged: root.noteOutOfTokens(chat_error)

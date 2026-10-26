@@ -494,10 +494,20 @@ impl HttpProvider {
         let purpose: String = r.system.chars().take(80).collect();
         let (images, prompt_bytes) = (r.images.len(), r.prompt.len());
         let result = self.complete_unrecorded(r, schema);
-        if let Err(error) = &result
-            && is_rate_limited(error)
-        {
-            crate::scheduler::rate_limited(&self.config.kind);
+        if let Err(error) = &result {
+            let text = format!("{error:#}");
+            if text.starts_with(OUT_OF_TOKENS) {
+                crate::scheduler::quota_exhausted(&self.config.kind);
+                *OUTAGE.lock().unwrap() = Some(json!({
+                    "provider": format!("{:?}", self.config.kind),
+                    "message": text.chars().take(400).collect::<String>(),
+                    "at_ms": crate::screen::now_ms(),
+                }));
+            } else if is_rate_limited(error) {
+                crate::scheduler::rate_limited(&self.config.kind);
+            }
+        } else if OUTAGE.lock().unwrap().is_some() {
+            *OUTAGE.lock().unwrap() = None;
         }
         let queued_ms = permit.waited.as_millis() as u64;
         drop(permit);
@@ -721,6 +731,14 @@ pub fn image_base64(path: impl AsRef<Path>) -> Result<String> {
 /// Errors meaning the account is out of tokens, quota or credit start with
 /// this, so the app can tell the player instead of showing a generic failure.
 pub const OUT_OF_TOKENS: &str = "Out of tokens:";
+
+static OUTAGE: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
+/// The latest out-of-quota failure from any model call in this process, until
+/// a call succeeds again: `{provider, message, at_ms}`.
+pub fn outage() -> Option<Value> {
+    OUTAGE.lock().unwrap().clone()
+}
 
 pub fn is_quota_error(text: &str) -> bool {
     let text = text.to_lowercase();

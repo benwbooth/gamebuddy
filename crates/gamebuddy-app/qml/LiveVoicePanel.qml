@@ -42,6 +42,9 @@ WebEngineView {
     property bool greeted: false
     property double greetSince: 0
     property string ownAnswer: ""
+    // The page reports a heartbeat every two seconds while a session runs;
+    // a page that stops talking (a renderer crash, a hung script) is reloaded.
+    property double lastPageEventAt: 0
     readonly property bool conversationActive: started && (assistantSpeaking || workPending || userSpeaking)
     signal transcript(string text)
     signal outOfTokens(string message)
@@ -242,9 +245,23 @@ WebEngineView {
         else permission.deny()
     }
     onNavigationRequested: request => { if (!pageOrigin.length || request.url.toString() !== pageOrigin + "gemini") request.action = WebEngineView.IgnoreRequest }
+    onRenderProcessTerminated: (status, code) => recoverPage("render process ended (" + status + ", " + code + ")")
+    Timer {
+        interval: 5000; repeat: true; running: panel.started
+        onTriggered: if (panel.lastPageEventAt && Date.now() - panel.lastPageEventAt > 15000) panel.recoverPage("no word from the voice page for 15 s")
+    }
+    function recoverPage(reason) {
+        gemini.note(session.data_dir || "", "page-recovered", JSON.stringify(reason))
+        console.warn("GAMEBUDDY_GEMINI_PAGE_RECOVERY " + reason)
+        shutdown("Voice restarting…")
+        lastPageEventAt = 0; loaded = false; greeted = false
+        reload()
+    }
     onJavaScriptConsoleMessage: (level, message, line, source) => {
         if (!message.startsWith("GAMEBUDDY_GEMINI ")) return
         const event = JSON.parse(message.slice(17)), v = event.value
+        lastPageEventAt = Date.now()
+        if (event.type === "heartbeat") return
         if (trace && event.type !== "input-text" && event.type !== "caption") console.warn("GAMEBUDDY_GEMINI_EVENT " + JSON.stringify(event))
         if (!started) return
         if (["tool-call", "input-final", "output-final", "caption"].includes(event.type) && !bookkeeping) lastTurnAt = Date.now()

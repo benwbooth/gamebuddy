@@ -13,6 +13,7 @@
   let interactionTools=0,recoveryAttempts=0,toolFailure=false,receivingInput=false,canRecover=false;
   const silent=()=>bookkeeping;
   const emit=(type,value)=>console.info('GAMEBUDDY_GEMINI '+JSON.stringify({type,value,at:Date.now()}));
+  let heartbeat=null;
   const send=message=>{if(ws?.readyState===WebSocket.OPEN&&ready)ws.send(JSON.stringify(message))};
   function base64(bytes){let s='';for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(s)}
   function stopPlayback(){for(const s of sources){s.onended=null;try{s.stop()}catch{}}sources.clear();playAt=0;setSpeaking(false)}
@@ -164,6 +165,7 @@
     }catch(e){if(stream)stream.getTracks().forEach(t=>t.stop());if(!stale())emit('microphone-error',e.name+': '+e.message)}
   }
   function stop(){
+    if(heartbeat){clearInterval(heartbeat);heartbeat=null}
     generation++;stopping=true;closeMic();stopPlayback();pendingTools.clear();inputText='';outputText='';bookkeeping=false;quietTurn=false;receivingInput=false;beginInteraction(false);setWorkPending(false);
     if(ws){ws.onclose=null;try{ws.close()}catch{}}ws=null;ready=false;config=null;resumeHandle=null;reconnects=0;
     if(speaker){speaker.close().catch(()=>{});speaker=null}
@@ -173,6 +175,7 @@
     async start(session,deviceName,capture){
       stop();
       if(session.error){emit('error',session.error);return}
+      heartbeat=setInterval(()=>emit('heartbeat',Date.now()),2000);
       config=session;extendedThinking=session.setup.model.endsWith('gemini-3.8-live-extended-thinking');speaker=new AudioContext({sampleRate:24000});await speaker.resume();
       // A stalled background reasoner may send neither IDLE nor an error.
       // Do not replay an uncertain request. Close the old session so late

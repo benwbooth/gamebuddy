@@ -378,11 +378,20 @@ pub(crate) fn codex_complete_scoped(
             }
             Some("turn/completed") => {
                 let turn = &event["params"]["turn"];
-                ensure!(
-                    turn["status"] == "completed",
-                    "Codex turn failed: {}",
-                    turn["error"]
-                );
+                if turn["status"] != "completed" {
+                    let detail = turn["error"].to_string();
+                    // An exhausted plan is told to the player and pauses
+                    // background work; other failures are ordinary errors.
+                    if turn["error"]["codexErrorInfo"] == "usageLimitExceeded"
+                        || crate::providers::is_quota_error(&detail)
+                    {
+                        return Err(crate::providers::out_of_tokens(
+                            "Codex",
+                            turn["error"]["message"].as_str().unwrap_or(&detail),
+                        ));
+                    }
+                    bail!("Codex turn failed: {detail}");
+                }
                 ensure!(!answer.trim().is_empty(), "Codex returned no answer");
                 if trace {
                     eprintln!(
