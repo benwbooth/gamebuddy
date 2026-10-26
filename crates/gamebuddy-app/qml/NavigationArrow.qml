@@ -60,7 +60,7 @@ Rectangle {
         id: directionLabel
         objectName: "navigationArrowDirection"
         anchors { left: parent.left; leftMargin: 88; top: parent.top; topMargin: 12; right: parent.right; rightMargin: 14 }
-        text: navigation.heading ? (navigation.width < 360 ? "" : "Next movement · ") + navigation.heading[1] : ""
+        text: navigation.heading ? (navigation.width < 360 ? "" : (navigation.cue?.source === "geometry" ? "On the map · " : "Next movement · ")) + navigation.heading[1] + (navigation.cue?.source === "geometry" && navigation.cue?.target && navigation.width >= 360 ? " toward " + navigation.cue.target : "") : ""
         textFormat: Text.PlainText
         color: "#86decb"; font.pixelSize: 15; font.weight: Font.DemiBold
         elide: Text.ElideRight

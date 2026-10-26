@@ -5,7 +5,10 @@ use crate::{Store, screen};
 use anyhow::Result;
 use gamebuddy_core::{
     Atlas, Guidance, Guide, PlaceTracker, Progress,
-    navigation::direction::{DirectionCue, ScreenDirection, movement},
+    navigation::{
+        direction::{DirectionCue, ScreenDirection, bearing, movement},
+        estimate::LocationEstimate,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +20,36 @@ pub(super) struct View<'a> {
     pub atlas: &'a Atlas,
     pub location: &'a PlaceTracker,
     pub now: u64,
+    pub estimate: &'a LocationEstimate,
+    /// Where the current step's place sits on a map: `(map_id, region)`.
+    pub target_region: Option<(String, [f32; 4])>,
+    pub target_label: Option<String>,
+    /// Width over height of that map, for angles in pixel space.
+    pub map_aspect: f32,
+}
+
+/// The direction from the fused position toward the target's spot on the same
+/// map. Geometry decides; words never choose left or right when this is known.
+fn geometric(view: &View<'_>) -> Option<(ScreenDirection, u64)> {
+    let position = view.estimate.position.as_ref()?;
+    let (map_id, region) = view.target_region.as_ref()?;
+    if &position.map_id != map_id
+        || !view.estimate.is_known()
+        || view.now.saturating_sub(view.estimate.located_at_ms) >= screen::FRESH_MS
+    {
+        return None;
+    }
+    // Inside the target's own area there is nothing left to point at.
+    if position.x >= region[0]
+        && position.x <= region[0] + region[2]
+        && position.y >= region[1]
+        && position.y <= region[1] + region[3]
+    {
+        return None;
+    }
+    let center = [region[0] + region[2] / 2., region[1] + region[3] / 2.];
+    bearing([position.x, position.y], center, view.map_aspect)
+        .map(|d| (d, view.estimate.located_at_ms))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -43,6 +76,17 @@ pub(super) fn cue(
     else {
         return Ok(None);
     };
+    if let Some((direction, located_at_ms)) = geometric(&view) {
+        return Ok(Some(DirectionCue {
+            direction,
+            step_id: action.id.clone(),
+            label: action.title.clone(),
+            instruction: action.instructions.clone(),
+            valid_until_ms: located_at_ms.saturating_add(screen::FRESH_MS),
+            source: "geometry",
+            target: view.target_label.clone(),
+        }));
+    }
     let explicit = view
         .recommendation
         .filter(|r| r.step_id == action.id)
@@ -126,6 +170,12 @@ pub(super) fn cue(
         label: action.title.clone(),
         instruction: action.instructions.clone(),
         valid_until_ms: frame.captured_at_ms.saturating_add(screen::FRESH_MS),
+        source: if explicit.is_some() {
+            "advice"
+        } else {
+            "instructions"
+        },
+        target: view.target_label.clone(),
     }))
 }
 
@@ -230,6 +280,10 @@ mod tests {
                     atlas: &self.atlas,
                     location: &self.location,
                     now,
+                    estimate: &LocationEstimate::default(),
+                    target_region: None,
+                    target_label: None,
+                    map_aspect: 1.0,
                 },
             )
         }

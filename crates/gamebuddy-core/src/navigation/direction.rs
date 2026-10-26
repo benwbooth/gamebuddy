@@ -23,6 +23,37 @@ pub struct DirectionCue {
     pub label: String,
     pub instruction: String,
     pub valid_until_ms: u64,
+    /// `geometry` (worked out from positions on the map), `advice` (GameBuddy's
+    /// explicit movement suggestion) or `instructions` (the step's wording).
+    #[serde(default)]
+    pub source: &'static str,
+    /// The place the cue leads toward, when the map knows it.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+/// The screen direction from one map position toward another, both in
+/// fractions of the map; `aspect` is the map's width over its height so the
+/// angle is measured in pixels. Map axes are screen axes on a 2D map.
+/// `None` when the two are practically on top of each other.
+pub fn bearing(from: [f32; 2], to: [f32; 2], aspect: f32) -> Option<ScreenDirection> {
+    let dx = (to[0] - from[0]) * aspect.max(0.05);
+    let dy = to[1] - from[1];
+    if !dx.is_finite() || !dy.is_finite() || dx.hypot(dy) < 0.015 {
+        return None;
+    }
+    let degrees = dy.atan2(dx).to_degrees();
+    let sector = ((degrees + 360. + 22.5) / 45.).floor() as i32 % 8;
+    Some(match sector {
+        0 => ScreenDirection::Right,
+        1 => ScreenDirection::DownRight,
+        2 => ScreenDirection::Down,
+        3 => ScreenDirection::DownLeft,
+        4 => ScreenDirection::Left,
+        5 => ScreenDirection::UpLeft,
+        6 => ScreenDirection::Up,
+        _ => ScreenDirection::UpRight,
+    })
 }
 
 /// Deliberately accept only a leading, explicit movement instruction. Words
@@ -123,6 +154,8 @@ pub fn cue(
         label: action.title.clone(),
         instruction: action.instructions.clone(),
         valid_until_ms: location.located_at_ms.saturating_add(15_000),
+        source: "instructions",
+        target: None,
     })
 }
 
@@ -130,6 +163,19 @@ pub fn cue(
 mod tests {
     use super::*;
     use crate::{PlaceBinding, import_markdown};
+
+    #[test]
+    fn bearing_follows_map_geometry_in_pixel_space() {
+        use ScreenDirection::*;
+        assert_eq!(bearing([0.2, 0.5], [0.8, 0.5], 1.0), Some(Right));
+        assert_eq!(bearing([0.5, 0.8], [0.5, 0.2], 1.0), Some(Up));
+        assert_eq!(bearing([0.2, 0.2], [0.8, 0.8], 1.0), Some(DownRight));
+        assert_eq!(bearing([0.8, 0.8], [0.2, 0.2], 1.0), Some(UpLeft));
+        // On a map four times wider than tall, a small fraction sideways is
+        // a long way in pixels: this is mostly rightward, not diagonal.
+        assert_eq!(bearing([0.2, 0.5], [0.4, 0.4], 4.0), Some(Right));
+        assert_eq!(bearing([0.5, 0.5], [0.505, 0.5], 1.0), None);
+    }
 
     #[test]
     fn reads_only_immediate_explicit_screen_movement() {

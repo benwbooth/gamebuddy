@@ -845,19 +845,6 @@ pub fn context(
             "GameBuddy's latest suggested action. This does not mark any task complete.".into();
     }
     let cursor = advice.now.clone();
-    let direction = direction::cue(
-        store,
-        guide,
-        progress,
-        direction::View {
-            guidance: &advice,
-            recommendation: recommendation.as_ref(),
-            spatial: &spatial,
-            atlas: &atlas,
-            location: &tracker,
-            now,
-        },
-    )?;
     let current_place = tracker
         .place_id
         .as_deref()
@@ -921,6 +908,41 @@ pub fn context(
             target_place_id: target_place.map(|p| p.id.as_str()),
             session: &session,
             now,
+        },
+    )?;
+    // The arrow: from the fused position toward the target's spot on the map
+    // when both are known, else from the step's wording as before.
+    let target_marker = target_place
+        .map(|p| placement::get(store, guide, &p.id))
+        .transpose()?
+        .flatten()
+        .and_then(|p| p.marker)
+        .filter(|m| m.validate(&atlas).is_ok());
+    let map_aspect = target_marker
+        .as_ref()
+        .and_then(|m| atlas.maps.iter().find(|a| a.id == m.map_id))
+        .and_then(|a| image::image_dimensions(cached_map_path(store, a)).ok())
+        .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
+    let direction = direction::cue(
+        store,
+        guide,
+        progress,
+        direction::View {
+            guidance: &advice,
+            recommendation: recommendation.as_ref(),
+            spatial: &spatial,
+            atlas: &atlas,
+            location: &tracker,
+            now,
+            estimate: &location_estimate,
+            target_region: target_marker.as_ref().map(|m| {
+                (
+                    m.map_id.clone(),
+                    [m.region.x, m.region.y, m.region.width, m.region.height],
+                )
+            }),
+            target_label: target_place.map(|p| p.label.clone()),
+            map_aspect,
         },
     )?;
     // A fused estimate that is sure of its map outranks guesses from the plan.
