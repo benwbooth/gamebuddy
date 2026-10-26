@@ -4,7 +4,9 @@
 //! curved glass, scanlines, a bezel), which the walkthrough's clean frames
 //! do not. RetroArch can save the core's own frame instead: with
 //! `video_gpu_screenshot` off, its `SCREENSHOT` network command writes the
-//! unfiltered picture (256x240 for the NES) in about 30 ms. The launcher adds
+//! unfiltered picture (256x240 for the NES) in about 30 ms. RetroArch's
+//! screenshot flash and popup are turned off, or every frame GameBuddy asks
+//! for would flicker the player's screen. The launcher adds
 //! this module's config to RetroArch's appended configs when GameBuddy runs;
 //! the capture loop then asks for a frame and falls back to the window when
 //! none arrives. Only the picture is read, never the emulator's memory.
@@ -45,6 +47,8 @@ pub fn write_config(root: &Path) -> Result<PathBuf> {
              network_cmd_port = \"{PORT}\"\n\
              video_gpu_screenshot = \"false\"\n\
              notification_show_screenshot = \"false\"\n\
+             notification_show_screenshot_flash = \"0\"\n\
+             notification_show_screenshot_duration = \"0\"\n\
              screenshots_in_content_dir = \"false\"\n\
              screenshot_directory = \"{}\"\n",
             frames.display()
