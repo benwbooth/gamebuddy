@@ -2,50 +2,67 @@
 //!
 //! A captured window shows whatever the player's shader draws (a CRT's
 //! curved glass, scanlines, a bezel), which the walkthrough's clean frames
-//! do not. RetroArch can save the core's own frame instead: with
-//! `video_gpu_screenshot` off, its `SCREENSHOT` network command writes the
-//! unfiltered picture (256x240 for the NES) in about 30 ms. RetroArch's
-//! screenshot flash and popup are turned off, or every frame GameBuddy asks
-//! for would flicker the player's screen. The launcher adds
-//! this module's config to RetroArch's appended configs when GameBuddy runs;
-//! the capture loop then asks for a frame and falls back to the window when
-//! none arrives. Only the picture is read, never the emulator's memory.
-use anyhow::Result;
+//! do not. RetroArch can record the core's own output instead: with
+//! `video_gpu_record` off, its recorder writes every unfiltered frame
+//! (256x240 for the NES, 60 a second) to a file without touching what the
+//! player sees. Asking it for screenshots instead flickered the screen, since
+//! each one re-presented a frame. GameBuddy starts the recording over
+//! RetroArch's command port, follows the growing file with ffmpeg, which
+//! writes the newest frame as a PNG four times a second, and hands that to
+//! the capture loop. Only the picture is read, never the emulator's memory.
+//!
+//! The launcher adds this module's config to RetroArch's appended configs
+//! when GameBuddy runs; the capture loop asks for a frame and falls back to
+//! the window until the recording is up.
+use anyhow::{Context, Result};
 use std::{
     net::UdpSocket,
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 /// RetroArch's command port while GameBuddy runs (not its 55355 default, so
 /// it never collides with a port the player set up for something else).
 pub const PORT: u16 = 55393;
+/// Frames per second ffmpeg extracts from the recording.
+const FRAMES_PER_SECOND: u32 = 4;
+/// A recording this old is from an earlier game, not the one running now.
+const STALE_RECORDING: Duration = Duration::from_secs(60);
+/// Start a fresh recording file this often (a one-line RetroArch notice each
+/// time) so a long evening does not leave one multi-gigabyte file.
+const ROTATE_AFTER: Duration = Duration::from_secs(45 * 60);
+/// Without a new frame for this long the follower is restarted.
+const FOLLOWER_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub fn dir(root: &Path) -> PathBuf {
     root.join("retroarch")
 }
 
-fn frames(root: &Path) -> PathBuf {
-    dir(root).join("frames")
+fn recordings(root: &Path) -> PathBuf {
+    dir(root).join("recordings")
 }
 
-/// Write the RetroArch config the launcher appends, and return its path.
-/// The folder must be outside /tmp: Flatpak RetroArch has a private /tmp.
+fn latest_png(root: &Path) -> PathBuf {
+    dir(root).join("latest.png")
+}
+
 /// Raw frames are off while `<data>/retroarch/off` exists: GameBuddy then
 /// looks at the game window as the player sees it, and RetroArch is never
-/// asked for a screenshot. For telling whether the frame requests disturb
-/// the picture, and for emulators or shaders where they do.
+/// asked for anything. For emulators or setups where the recorder misbehaves.
 pub fn disabled(root: &Path) -> bool {
     dir(root).join("off").is_file()
 }
 
 pub fn write_config(root: &Path) -> Result<PathBuf> {
-    let frames = frames(root);
-    std::fs::create_dir_all(&frames)?;
-    for old in std::fs::read_dir(&frames)?.flatten() {
+    let recordings = recordings(root);
+    std::fs::create_dir_all(&recordings)?;
+    for old in std::fs::read_dir(&recordings)?.flatten() {
         let _ = std::fs::remove_file(old.path());
     }
+    let _ = std::fs::remove_file(latest_png(root));
+    let _ = std::fs::remove_dir_all(dir(root).join("frames"));
     let path = dir(root).join("raw-frames.cfg");
     if disabled(root) {
         std::fs::write(
@@ -60,89 +77,180 @@ pub fn write_config(root: &Path) -> Result<PathBuf> {
             "# Written by GameBuddy for the duration of a game it watches.\n\
              network_cmd_enable = \"true\"\n\
              network_cmd_port = \"{PORT}\"\n\
-             video_gpu_screenshot = \"false\"\n\
-             notification_show_screenshot = \"false\"\n\
-             notification_show_screenshot_flash = \"0\"\n\
-             notification_show_screenshot_duration = \"0\"\n\
-             screenshots_in_content_dir = \"false\"\n\
-             screenshot_directory = \"{}\"\n",
-            frames.display()
+             record_driver = \"ffmpeg\"\n\
+             video_gpu_record = \"false\"\n\
+             video_post_filter_record = \"false\"\n\
+             video_record_quality = \"3\"\n\
+             video_record_threads = \"2\"\n\
+             video_record_scale_factor = \"1\"\n\
+             recording_output_directory = \"{}\"\n",
+            recordings.display()
         ),
     )?;
     Ok(path)
 }
 
-struct Health {
-    misses: u32,
-    paused_until: Option<Instant>,
+#[derive(Default)]
+struct Recording {
+    /// The file RetroArch is writing and when it was first seen.
+    file: Option<(PathBuf, Instant)>,
+    follower: Option<Child>,
+    last_toggle: Option<Instant>,
+    /// Modification time of the last frame handed out, and when it arrived.
+    served: Option<SystemTime>,
+    last_frame_at: Option<Instant>,
+    /// Set after a rotation stop; the next call starts the new recording.
+    restarting: bool,
 }
 
-static HEALTH: Mutex<Health> = Mutex::new(Health {
-    misses: 0,
-    paused_until: None,
+static RECORDING: Mutex<Recording> = Mutex::new(Recording {
+    file: None,
+    follower: None,
+    last_toggle: None,
+    served: None,
+    last_frame_at: None,
+    restarting: false,
 });
 
-/// Ask RetroArch for the current unfiltered frame and move it to `out`.
-/// None when RetroArch is not answering (an older launch, another emulator):
-/// after three misses in a row it is left alone for a minute.
-pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
-    let frames = frames(root);
-    if disabled(root) || !dir(root).join("raw-frames.cfg").is_file() || !frames.is_dir() {
-        return Ok(None);
-    }
-    {
-        let health = HEALTH.lock().unwrap();
-        if health.paused_until.is_some_and(|t| Instant::now() < t) {
-            return Ok(None);
-        }
-    }
-    let before: Vec<PathBuf> = pngs(&frames);
+fn toggle_recording(state: &mut Recording) -> Result<()> {
     let socket = UdpSocket::bind("127.0.0.1:0")?;
-    socket.send_to(b"SCREENSHOT", ("127.0.0.1", PORT))?;
-    let deadline = Instant::now() + Duration::from_millis(250);
-    let fresh = loop {
-        if let Some(path) = pngs(&frames).into_iter().find(|p| !before.contains(p)) {
-            break Some(path);
-        }
-        if Instant::now() >= deadline {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let mut health = HEALTH.lock().unwrap();
-    let Some(path) = fresh else {
-        health.misses += 1;
-        if health.misses >= 3 {
-            health.misses = 0;
-            health.paused_until = Some(Instant::now() + Duration::from_secs(60));
-        }
-        return Ok(None);
-    };
-    health.misses = 0;
-    drop(health);
-    // The file appears before RetroArch finishes writing it: wait until it
-    // decodes, briefly.
-    let written = Instant::now() + Duration::from_millis(200);
-    while image::open(&path).is_err() {
-        if Instant::now() >= written {
-            let _ = std::fs::remove_file(&path);
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    std::fs::rename(&path, out)?;
-    for stale in before {
-        let _ = std::fs::remove_file(stale);
-    }
-    Ok(Some(out.to_path_buf()))
+    socket.send_to(b"RECORDING_TOGGLE", ("127.0.0.1", PORT))?;
+    state.last_toggle = Some(Instant::now());
+    Ok(())
 }
 
-fn pngs(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
+fn newest_recording(root: &Path) -> Option<(PathBuf, SystemTime)> {
+    std::fs::read_dir(recordings(root))
+        .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "png"))
-        .collect()
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| ["mkv", "webm", "mp4", "avi"].contains(&e.to_str().unwrap_or("")))
+        })
+        .filter_map(|p| {
+            let modified = std::fs::metadata(&p).ok()?.modified().ok()?;
+            Some((p, modified))
+        })
+        .max_by_key(|(_, modified)| *modified)
+}
+
+fn stop_follower(state: &mut Recording) {
+    if let Some(mut child) = state.follower.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn start_follower(root: &Path, file: &Path) -> Result<Child> {
+    Command::new("ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-follow", "1", "-i"])
+        .arg(file)
+        .args([
+            "-vf",
+            &format!("fps={FRAMES_PER_SECOND}"),
+            "-atomic_writing",
+            "1",
+            "-update",
+            "1",
+            "-y",
+        ])
+        .arg(latest_png(root))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("ffmpeg is needed to follow RetroArch's recording")
+}
+
+/// The newest unfiltered frame, copied to `out`. `None` while the recording
+/// is not up yet (RetroArch still starting, another emulator, raw frames
+/// turned off): the caller then captures the window. Once frames flow, the
+/// previous frame is handed out again between new ones, so the picture
+/// GameBuddy looks at never flips between the clean and the shaded source.
+pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
+    if disabled(root) || !dir(root).join("raw-frames.cfg").is_file() {
+        return Ok(None);
+    }
+    let mut state = RECORDING.lock().unwrap();
+    let now = Instant::now();
+    if let Some(child) = state.follower.as_mut()
+        && child.try_wait()?.is_some()
+    {
+        state.follower = None;
+    }
+    // A long recording is cut into a new file; the old one is deleted.
+    if let Some((file, since)) = state.file.clone()
+        && now.duration_since(since) > ROTATE_AFTER
+        && !state.restarting
+    {
+        stop_follower(&mut state);
+        toggle_recording(&mut state)?;
+        state.file = None;
+        state.restarting = true;
+        let _ = std::fs::remove_file(file);
+        return Ok(state
+            .served
+            .map(|_| out.to_path_buf())
+            .filter(|p| p.is_file()));
+    }
+    if state.file.is_none() {
+        let fresh = newest_recording(root).filter(|(_, modified)| {
+            SystemTime::now()
+                .duration_since(*modified)
+                .is_ok_and(|age| age < STALE_RECORDING)
+        });
+        match fresh {
+            Some((file, _)) => {
+                state.file = Some((file, now));
+                state.restarting = false;
+            }
+            None => {
+                // Ask once, then give RetroArch time: a second toggle would
+                // stop the recording that the first one started.
+                if state
+                    .last_toggle
+                    .is_none_or(|t| now.duration_since(t) > Duration::from_secs(8))
+                {
+                    toggle_recording(&mut state)?;
+                }
+                return Ok(None);
+            }
+        }
+    }
+    if state.follower.is_none()
+        && let Some((file, _)) = state.file.clone()
+    {
+        state.follower = Some(start_follower(root, &file)?);
+        state.last_frame_at = Some(now);
+    }
+    let latest = latest_png(root);
+    let modified = std::fs::metadata(&latest)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    if let Some(modified) = modified
+        && state.served != Some(modified)
+    {
+        // ffmpeg writes atomically; a copy keeps `out` stable while it runs.
+        std::fs::copy(&latest, out)?;
+        state.served = Some(modified);
+        state.last_frame_at = Some(now);
+        return Ok(Some(out.to_path_buf()));
+    }
+    if state
+        .last_frame_at
+        .is_some_and(|t| now.duration_since(t) > FOLLOWER_TIMEOUT)
+    {
+        // The recording stopped (RetroArch was paused for long, or the
+        // player toggled it): start over from whatever is current.
+        stop_follower(&mut state);
+        state.file = None;
+        state.last_toggle = None;
+        state.last_frame_at = None;
+        return Ok(None);
+    }
+    Ok(state
+        .served
+        .map(|_| out.to_path_buf())
+        .filter(|p| p.is_file()))
 }
