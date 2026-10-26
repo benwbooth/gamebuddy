@@ -6,11 +6,24 @@ fn main() -> anyhow::Result<()> {
     let store = gamebuddy_services::Store::open(&a[1])?;
     let id: String = store.get("active_guide")?.context("No active guide")?;
     let guide = store.guide(&id)?;
-    let source = guide.sources.iter().find(|s| s.media_path.is_some()).context("No video")?;
+    let source = guide
+        .sources
+        .iter()
+        .find(|s| s.media_path.is_some())
+        .context("No video")?;
     let profile = gamebuddy_services::spatial::profile(&store, &guide)?;
-    let c = profile.source_crops.get(&source.id).copied().unwrap_or_default();
+    let c = profile
+        .source_crops
+        .get(&source.id)
+        .copied()
+        .unwrap_or_default();
     let b = profile.background;
-    let crop = gamebuddy_core::Crop { x: c.x + b.x * c.width, y: c.y + b.y * c.height, width: b.width * c.width, height: b.height * c.height };
+    let crop = gamebuddy_core::Crop {
+        x: c.x + b.x * c.width,
+        y: c.y + b.y * c.height,
+        width: b.width * c.width,
+        height: b.height * c.height,
+    };
     let started = std::time::Instant::now();
     let pieces = gamebuddy_services::level_maps::stitch(
         std::path::Path::new(source.media_path.as_ref().unwrap()),
@@ -22,8 +35,18 @@ fn main() -> anyhow::Result<()> {
     for (i, p) in pieces.iter().enumerate() {
         let path = format!("{}/piece-{i}.jpg", a[4]);
         p.image.save(&path)?;
-        println!("{path} {}x{} {}..{}s", p.image.width(), p.image.height(), p.start_ms / 1000, p.end_ms / 1000);
+        println!(
+            "{path} {}x{} {}..{}s",
+            p.image.width(),
+            p.image.height(),
+            p.start_ms / 1000,
+            p.end_ms / 1000
+        );
     }
-    println!("{} pieces in {:.1}s", pieces.len(), started.elapsed().as_secs_f32());
+    println!(
+        "{} pieces in {:.1}s",
+        pieces.len(),
+        started.elapsed().as_secs_f32()
+    );
     Ok(())
 }

@@ -38,7 +38,12 @@ fn state(store: &Store, guide: &Guide) -> Result<(String, Option<String>)> {
     let step = nav["guidance"]["now"]["id"].as_str().map(str::to_owned);
     let place = nav["location"]["place_id"].as_str().unwrap_or_default();
     Ok((
-        format!("{}|{}|{}", progress.epoch, step.as_deref().unwrap_or_default(), place),
+        format!(
+            "{}|{}|{}",
+            progress.epoch,
+            step.as_deref().unwrap_or_default(),
+            place
+        ),
         step,
     ))
 }
@@ -59,7 +64,9 @@ pub fn refresh(store: &Store, guide: &Guide) -> Result<bool> {
     };
     let question = "Where should I go now, and is there anything I need to get first?";
     let evidence = crate::harness::context_for_request(store, question)?;
-    let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    let settings = store
+        .get::<crate::Settings>("settings")?
+        .unwrap_or_default();
     let provider = crate::HttpProvider::new(settings.reasoning)?;
     let reply = provider.complete(ModelRequest {
         system: format!(
@@ -110,16 +117,24 @@ pub fn schedule(root: std::path::PathBuf, guide: Guide) {
 }
 
 /// The prepared answer for a plain "what now?" question, if it still fits.
-pub fn reply(store: &Store, game: &str, request: &str) -> Result<Option<super::prepared::Response>> {
+pub fn reply(
+    store: &Store,
+    game: &str,
+    request: &str,
+) -> Result<Option<super::prepared::Response>> {
     if super::prepared::intent(request) != Some("next") {
         return Ok(None);
     }
-    let Some(id) = store.get::<String>("active_guide")? else { return Ok(None) };
+    let Some(id) = store.get::<String>("active_guide")? else {
+        return Ok(None);
+    };
     let guide = store.guide(&id)?;
     if !guide.game.eq_ignore_ascii_case(game) {
         return Ok(None);
     }
-    let Some(saved) = store.get::<Prefetched>(&key(&guide))? else { return Ok(None) };
+    let Some(saved) = store.get::<Prefetched>(&key(&guide))? else {
+        return Ok(None);
+    };
     let now = screen::now_ms();
     // A live capture must still be running: the answer was made from it.
     if screen::movement_frame(store, now)?.is_none() {

@@ -68,7 +68,9 @@ fn mcp_overrides() -> Vec<String> {
         .get_or_init(|| {
             let home = std::env::var_os("CODEX_HOME")
                 .map(std::path::PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".codex")));
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".codex"))
+                });
             let config = home
                 .and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
                 .unwrap_or_default();
@@ -81,7 +83,10 @@ fn mcp_overrides() -> Vec<String> {
                         .map(str::to_owned)
                 })
                 // Sub-tables (`name.env`) and quoted names are not server names.
-                .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)))
+                .filter(|n| {
+                    n.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+                })
                 .collect();
             names.dedup();
             names

@@ -146,8 +146,17 @@ fn step_at(guide: &Guide, card: &Value) -> Option<String> {
 
 fn chart(card: &Value) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     let table = &card["table"];
-    let cell = |v: &Value| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
-    let columns: Vec<String> = table["columns"].as_array()?.iter().map(cell).take(12).collect();
+    let cell = |v: &Value| {
+        v.as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| v.to_string())
+    };
+    let columns: Vec<String> = table["columns"]
+        .as_array()?
+        .iter()
+        .map(cell)
+        .take(12)
+        .collect();
     let rows: Vec<Vec<String>> = table["rows"]
         .as_array()?
         .iter()
@@ -183,7 +192,9 @@ pub fn sync_widgets(store: &Store, guide: &Guide) -> Result<()> {
     }
     let mut wanted: Vec<Widget> = vec![];
     for card in all.iter().filter(|c| c["scope"] != "area") {
-        let Some((columns, rows)) = chart(card) else { continue };
+        let Some((columns, rows)) = chart(card) else {
+            continue;
+        };
         let name = card["name"].as_str().unwrap_or("Chart");
         let slug: String = name
             .to_lowercase()
@@ -222,13 +233,25 @@ pub fn sync_widgets(store: &Store, guide: &Guide) -> Result<()> {
                         let place = p["place"].as_str().unwrap_or_default();
                         match p["gold"].as_u64() {
                             Some(gold) => Some(format!("{place} {gold}").trim().to_owned()),
-                            None => p["text"].as_str().filter(|t| !t.is_empty()).map(str::to_owned),
+                            None => p["text"]
+                                .as_str()
+                                .filter(|t| !t.is_empty())
+                                .map(str::to_owned),
                         }
                     }),
                     summary(c, "stats", |s| {
-                        Some(format!("{} {}", s["name"].as_str()?, s["value"].as_str().unwrap_or_default()))
+                        Some(format!(
+                            "{} {}",
+                            s["name"].as_str()?,
+                            s["value"].as_str().unwrap_or_default()
+                        ))
                     }),
-                    c["notes"].as_str().unwrap_or_default().chars().take(220).collect(),
+                    c["notes"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(220)
+                        .collect(),
                 ]
             })
             .collect();
@@ -236,7 +259,10 @@ pub fn sync_widgets(store: &Store, guide: &Guide) -> Result<()> {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| {
-                Some(WidgetItemSources { item_index: i, source_step_ids: vec![step_at(guide, c)?] })
+                Some(WidgetItemSources {
+                    item_index: i,
+                    source_step_ids: vec![step_at(guide, c)?],
+                })
             })
             .collect();
         wanted.push(Widget {

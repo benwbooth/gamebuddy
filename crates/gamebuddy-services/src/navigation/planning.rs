@@ -240,7 +240,9 @@ pub fn map_area(title: &str) -> String {
     match trimmed.rfind(" (") {
         Some(i)
             if trimmed.ends_with(')')
-                && ["map page ", "part "].iter().any(|p| trimmed[i + 2..].starts_with(p)) =>
+                && ["map page ", "part "]
+                    .iter()
+                    .any(|p| trimmed[i + 2..].starts_with(p)) =>
         {
             trimmed[..i].to_owned()
         }

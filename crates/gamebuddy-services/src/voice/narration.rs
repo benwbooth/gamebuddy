@@ -220,8 +220,12 @@ impl Narrator {
                 cue(context)
             } else if context["new_game"] == true && context["preparation_status"] == "running" {
                 self.welcomed_new_game = true;
-                let game = Some(field(context, "game")).filter(|g| !g.is_empty()).unwrap_or("this game");
-                format!("Looks like we're starting a new game of {game}. Let me gather the walkthrough, charts and maps for it first. Go ahead and play; I'll tell you when it's ready.")
+                let game = Some(field(context, "game"))
+                    .filter(|g| !g.is_empty())
+                    .unwrap_or("this game");
+                format!(
+                    "Looks like we're starting a new game of {game}. Let me gather the walkthrough, charts and maps for it first. Go ahead and play; I'll tell you when it's ready."
+                )
             } else if context["preparing"] == true && context["guide_ready"] != true {
                 "I'm preparing your guide. I'll talk you through the next steps as you play.".into()
             } else {
@@ -244,7 +248,9 @@ impl Narrator {
                 .filter_map(Value::as_str)
                 .filter(|l| !l.starts_with("Walkthrough:"))
                 .collect();
-            let game = Some(field(context, "game")).filter(|g| !g.is_empty()).unwrap_or("the game");
+            let game = Some(field(context, "game"))
+                .filter(|g| !g.is_empty())
+                .unwrap_or("the game");
             let mut line = format!("Okay, I'm all set for {game}");
             if !gathered.is_empty() {
                 line.push_str(&format!(": {}", gathered.join(", ")));

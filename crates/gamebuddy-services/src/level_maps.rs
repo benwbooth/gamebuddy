@@ -134,7 +134,11 @@ fn ncc(a: &[f32], b: &[f32], w: usize, h: usize, dx: i32, dy: i32) -> Option<f32
     let n = area as f64;
     let cov = sab - sa * sb / n;
     let var = (saa - sa * sa / n) * (sbb - sb * sb / n);
-    Some(if var <= 1e-6 { 0. } else { (cov / var.sqrt()) as f32 })
+    Some(if var <= 1e-6 {
+        0.
+    } else {
+        (cov / var.sqrt()) as f32
+    })
 }
 
 fn best(
@@ -210,12 +214,17 @@ pub fn stitch(video: &Path, crop: Crop, start_ms: u64, end_ms: u64) -> Result<Ve
             continue;
         }
         let gap = (i - anchor_at.0) as f32;
-        let prior = ((velocity.0 * gap).round() as i32, (velocity.1 * gap).round() as i32);
+        let prior = (
+            (velocity.0 * gap).round() as i32,
+            (velocity.1 * gap).round() as i32,
+        );
         let (dx, dy, score) = motion(&anchor, &current, w, h, prior);
         let smooth_motion = (dx - prior.0).abs() <= 3 && (dy - prior.1).abs() <= 3;
         let accepted = score > 0.5 || (score > 0.35 && smooth_motion);
         if debug {
-            eprintln!("STITCH {i} d=({dx},{dy}) prior={prior:?} score={score:.3} accepted={accepted}");
+            eprintln!(
+                "STITCH {i} d=({dx},{dy}) prior={prior:?} score={score:.3} accepted={accepted}"
+            );
         }
         if accepted {
             let (x, y) = (anchor_at.1 + dx as i64, anchor_at.2 + dy as i64);
@@ -280,12 +289,24 @@ pub fn stitch(video: &Path, crop: Crop, start_ms: u64, end_ms: u64) -> Result<Ve
 
 fn video_size(video: &Path) -> Result<(u32, u32)> {
     let output = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
         .arg(video)
         .output()
         .context("Could not start ffprobe")?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let (w, h) = text.trim().split_once(',').context("ffprobe gave no video size")?;
+    let (w, h) = text
+        .trim()
+        .split_once(',')
+        .context("ffprobe gave no video size")?;
     Ok((w.trim().parse()?, h.trim().parse()?))
 }
 
@@ -303,16 +324,25 @@ fn within(guide: &Guide, step: &gamebuddy_core::Step, chapter: &str) -> bool {
 }
 
 /// The first map made for the video chapter containing `step_id`.
-pub fn map_for_step<'a>(guide: &Guide, atlas: &'a gamebuddy_core::Atlas, step_id: &str) -> Option<&'a str> {
+pub fn map_for_step<'a>(
+    guide: &Guide,
+    atlas: &'a gamebuddy_core::Atlas,
+    step_id: &str,
+) -> Option<&'a str> {
     let mut step = guide.step(step_id)?;
     for _ in 0..16 {
-        let Some(parent) = step.parent_id.as_deref().and_then(|p| guide.step(p)) else { break };
+        let Some(parent) = step.parent_id.as_deref().and_then(|p| guide.step(p)) else {
+            break;
+        };
         step = parent;
     }
-    [format!("guide-map-{}-1", step.id), format!("stitched-{}-1", step.id)]
-        .iter()
-        .find_map(|id| atlas.maps.iter().find(|m| &m.id == id && m.enabled))
-        .map(|m| m.id.as_str())
+    [
+        format!("guide-map-{}-1", step.id),
+        format!("stitched-{}-1", step.id),
+    ]
+    .iter()
+    .find_map(|id| atlas.maps.iter().find(|m| &m.id == id && m.enabled))
+    .map(|m| m.id.as_str())
 }
 
 fn key(guide: &Guide) -> String {
@@ -332,9 +362,19 @@ fn keep(mut pieces: Vec<Piece>) -> Vec<Piece> {
 fn panel_region(game: Crop) -> Option<Crop> {
     let right = 1. - (game.x + game.width);
     if game.x >= right && game.x > 0.15 {
-        Some(Crop { x: 0., y: 0., width: game.x, height: 1. })
+        Some(Crop {
+            x: 0.,
+            y: 0.,
+            width: game.x,
+            height: 1.,
+        })
     } else if right > 0.15 {
-        Some(Crop { x: game.x + game.width, y: 0., width: right, height: 1. })
+        Some(Crop {
+            x: game.x + game.width,
+            y: 0.,
+            width: right,
+            height: 1.,
+        })
     } else {
         None
     }
@@ -342,10 +382,17 @@ fn panel_region(game: Crop) -> Option<Crop> {
 
 /// Distinct pages the guide panel shows during a chapter: one frame for each
 /// state it holds for at least two seconds.
-fn panel_pages(video: &Path, region: Crop, start_ms: u64, end_ms: u64) -> Result<Vec<(u64, image::RgbImage)>> {
+fn panel_pages(
+    video: &Path,
+    region: Crop,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<Vec<(u64, image::RgbImage)>> {
     const W: usize = 48;
     let (vw, vh) = video_size(video)?;
-    let h = ((W as f64 * region.height as f64 * vh as f64 / (region.width as f64 * vw as f64)).round() as usize).max(8);
+    let h = ((W as f64 * region.height as f64 * vh as f64 / (region.width as f64 * vw as f64))
+        .round() as usize)
+        .max(8);
     let filter = format!(
         "crop=iw*{:.5}:ih*{:.5}:iw*{:.5}:ih*{:.5},fps=1,scale={W}:{h}:flags=area,format=rgb24",
         region.width, region.height, region.x, region.y
@@ -363,9 +410,18 @@ fn panel_pages(video: &Path, region: Crop, start_ms: u64, end_ms: u64) -> Result
         .context("Could not start ffmpeg")?;
     let mut bytes = vec![];
     child.stdout.take().unwrap().read_to_end(&mut bytes)?;
-    ensure!(child.wait()?.success(), "ffmpeg could not read the guide panel");
+    ensure!(
+        child.wait()?.success(),
+        "ffmpeg could not read the guide panel"
+    );
     let frames: Vec<&[u8]> = bytes.chunks_exact(W * h * 3).collect();
-    let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f32).sum::<f32>() / a.len() as f32;
+    let diff = |a: &[u8], b: &[u8]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(*y) as f32)
+            .sum::<f32>()
+            / a.len() as f32
+    };
     let mut kept: Vec<(usize, &[u8])> = vec![];
     for i in 1..frames.len() {
         let stable = diff(frames[i - 1], frames[i]) < 6.;
@@ -387,7 +443,14 @@ fn panel_pages(video: &Path, region: Crop, start_ms: u64, end_ms: u64) -> Result
 /// Save the panel at full video resolution.
 fn panel_image(video: &Path, region: Crop, at_ms: u64, destination: &Path) -> Result<()> {
     let status = Command::new("ffmpeg")
-        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-ss"])
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+        ])
         .arg(format!("{:.3}", at_ms as f64 / 1000.))
         .arg("-i")
         .arg(video)
@@ -405,7 +468,10 @@ fn panel_image(video: &Path, region: Crop, at_ms: u64, destination: &Path) -> Re
         .arg(destination)
         .status()
         .context("Could not start ffmpeg")?;
-    ensure!(status.success() && destination.is_file(), "No panel frame at {at_ms} ms");
+    ensure!(
+        status.success() && destination.is_file(),
+        "No panel frame at {at_ms} ms"
+    );
     Ok(())
 }
 
@@ -420,11 +486,19 @@ fn map_pages(
     for (n, chunk) in pages.chunks(8).enumerate() {
         const TW: u32 = 240;
         const TH: u32 = 360;
-        let mut sheet = image::RgbImage::from_pixel(TW * 4 + 6, TH * 2 + 2, image::Rgb([255, 0, 255]));
+        let mut sheet =
+            image::RgbImage::from_pixel(TW * 4 + 6, TH * 2 + 2, image::Rgb([255, 0, 255]));
         for (k, (_, _, path)) in chunk.iter().enumerate() {
             if let Ok(img) = image::open(path) {
-                let tile = img.resize_exact(TW, TH, image::imageops::FilterType::Triangle).to_rgb8();
-                image::imageops::replace(&mut sheet, &tile, (k as u32 % 4 * (TW + 2)) as i64, (k as u32 / 4 * (TH + 2)) as i64);
+                let tile = img
+                    .resize_exact(TW, TH, image::imageops::FilterType::Triangle)
+                    .to_rgb8();
+                image::imageops::replace(
+                    &mut sheet,
+                    &tile,
+                    (k as u32 % 4 * (TW + 2)) as i64,
+                    (k as u32 / 4 * (TH + 2)) as i64,
+                );
             }
         }
         let sheet_path = work.join(format!("pages-{n}.jpg"));
@@ -444,7 +518,12 @@ fn map_pages(
             })
         });
         if let Ok(value) = answer.and_then(|t| crate::parse_json::<serde_json::Value>(&t)) {
-            for i in value["maps"].as_array().into_iter().flatten().filter_map(|v| v.as_u64()) {
+            for i in value["maps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_u64())
+            {
                 if let Some(slot) = maps.get_mut(n * 8 + i as usize) {
                     *slot = true;
                 }
@@ -457,14 +536,23 @@ fn map_pages(
 
 /// Point the chapter's places at a map unless they already have one.
 fn link_places(guide: &Guide, atlas: &mut gamebuddy_core::Atlas, chapter: &str, map_id: &str) {
-    let steps: Vec<&str> = guide.steps.iter().filter(|s| within(guide, s, chapter)).map(|s| s.id.as_str()).collect();
+    let steps: Vec<&str> = guide
+        .steps
+        .iter()
+        .filter(|s| within(guide, s, chapter))
+        .map(|s| s.id.as_str())
+        .collect();
     let places: Vec<String> = atlas
         .bindings
         .iter()
         .filter(|b| steps.contains(&b.step_id.as_str()))
         .map(|b| b.place_id.clone())
         .collect();
-    for place in atlas.places.iter_mut().filter(|p| places.contains(&p.id) && p.map_id.is_none()) {
+    for place in atlas
+        .places
+        .iter_mut()
+        .filter(|p| places.contains(&p.id) && p.map_id.is_none())
+    {
         place.map_id = Some(map_id.to_owned());
     }
 }
@@ -474,7 +562,10 @@ fn link_places(guide: &Guide, atlas: &mut gamebuddy_core::Atlas, chapter: &str, 
 /// otherwise maps stitched from the gameplay. Runs once per guide; returns
 /// how many maps were added.
 pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<usize> {
-    if store.get::<serde_json::Value>(&key(guide))?.is_some_and(|v| v["phase"] == "done") {
+    if store
+        .get::<serde_json::Value>(&key(guide))?
+        .is_some_and(|v| v["phase"] == "done")
+    {
         return Ok(0);
     }
     let profile = crate::spatial::profile(store, guide)?;
@@ -483,14 +574,23 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         .iter()
         .filter(|s| s.parent_id.is_none() && guide.step_enabled(s))
         .filter_map(|s| {
-            let a = s.anchors.iter().find(|a| a.start_ms.is_some() && a.end_ms.is_some())?;
+            let a = s
+                .anchors
+                .iter()
+                .find(|a| a.start_ms.is_some() && a.end_ms.is_some())?;
             let source = guide.sources.iter().find(|x| x.id == a.source_id)?;
-            let url = source.url.as_deref().filter(|u| u.starts_with("https://"))?;
+            let url = source
+                .url
+                .as_deref()
+                .filter(|u| u.starts_with("https://"))?;
             let video = source.media_path.as_deref()?;
             Some((s, source, url, Path::new(video), a.start_ms?, a.end_ms?))
         })
         .collect();
-    let work = store.root.join("work").join(format!("level-maps-{}", guide.id));
+    let work = store
+        .root
+        .join("work")
+        .join(format!("level-maps-{}", guide.id));
     std::fs::create_dir_all(&work)?;
     // Guide pages shown beside the game, for every chapter at once. The page
     // list and each batch of answers are saved, so quitting the game part
@@ -509,13 +609,29 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         .unwrap_or_default();
     if saved.is_empty() {
         for (n, (step, source, _, video, start, end)) in chapters.iter().enumerate() {
-            let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
-            let Some(region) = panel_region(game) else { continue };
-            progress(format!("Looking for level maps in the walkthrough: {} of {} · {}", n + 1, chapters.len(), step.title));
+            let game = profile
+                .source_crops
+                .get(&source.id)
+                .copied()
+                .unwrap_or_default();
+            let Some(region) = panel_region(game) else {
+                continue;
+            };
+            progress(format!(
+                "Looking for level maps in the walkthrough: {} of {} · {}",
+                n + 1,
+                chapters.len(),
+                step.title
+            ));
             for (at, _) in panel_pages(video, region, *start, *end).unwrap_or_default() {
                 let path = work.join(format!("page-{n}-{at}.jpg"));
                 if panel_image(video, region, at, &path).is_ok() {
-                    saved.push(Page { chapter: n, at, path, map: None });
+                    saved.push(Page {
+                        chapter: n,
+                        at,
+                        path,
+                        map: None,
+                    });
                 }
             }
         }
@@ -524,26 +640,43 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
     if saved.iter().any(|p| p.map.is_none()) {
         // Three batches at a time, each with its own model connection: one
         // at a time took most of half an hour on a long walkthrough.
-        let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+        let settings = store
+            .get::<crate::Settings>("settings")?
+            .unwrap_or_default();
         let total = saved.len();
         let batches: Vec<(usize, Vec<(usize, u64, PathBuf)>)> = (0..total)
             .step_by(8)
             .map(|start| (start, &saved[start..(start + 8).min(total)]))
             .filter(|(_, pages)| pages.iter().any(|p| p.map.is_none()))
-            .map(|(start, pages)| (start, pages.iter().map(|p| (p.chapter, p.at, p.path.clone())).collect()))
+            .map(|(start, pages)| {
+                (
+                    start,
+                    pages
+                        .iter()
+                        .map(|p| (p.chapter, p.at, p.path.clone()))
+                        .collect(),
+                )
+            })
             .collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let (sender, receiver) = std::sync::mpsc::channel::<(usize, Vec<bool>)>();
         let mut checked = total - batches.iter().map(|(_, b)| b.len()).sum::<usize>();
         std::thread::scope(|scope| -> Result<()> {
             for _ in 0..3 {
-                let (sender, next, batches, work, game) = (sender.clone(), &next, &batches, &work, &guide.game);
+                let (sender, next, batches, work, game) =
+                    (sender.clone(), &next, &batches, &work, &guide.game);
                 let config = settings.reasoning.clone();
                 scope.spawn(move || {
-                    let Ok(provider) = crate::HttpProvider::new(config).map(crate::HttpProvider::patient) else { return };
+                    let Ok(provider) =
+                        crate::HttpProvider::new(config).map(crate::HttpProvider::patient)
+                    else {
+                        return;
+                    };
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((start, batch)) = batches.get(i) else { break };
+                        let Some((start, batch)) = batches.get(i) else {
+                            break;
+                        };
                         let dir = work.join(format!("batch-{start}"));
                         let _ = std::fs::create_dir_all(&dir);
                         let answers = map_pages(&provider, game, batch, &dir);
@@ -561,17 +694,28 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
                     page.map = Some(map);
                 }
                 store.put(&pages_key, &saved)?;
-                store.put(&key(guide), &json!({"phase":"building","done":checked,"total":total,"stitched":[]}))?;
-                progress(format!("Checking walkthrough panel pages for level maps: {checked} of {total}"));
+                store.put(
+                    &key(guide),
+                    &json!({"phase":"building","done":checked,"total":total,"stitched":[]}),
+                )?;
+                progress(format!(
+                    "Checking walkthrough panel pages for level maps: {checked} of {total}"
+                ));
             }
             Ok(())
         })?;
     }
-    let pages: Vec<(usize, u64, PathBuf)> = saved.iter().map(|p| (p.chapter, p.at, p.path.clone())).collect();
+    let pages: Vec<(usize, u64, PathBuf)> = saved
+        .iter()
+        .map(|p| (p.chapter, p.at, p.path.clone()))
+        .collect();
     let is_map: Vec<bool> = saved.iter().map(|p| p.map == Some(true)).collect();
     let mut atlas = crate::navigation::atlas(store, guide)?;
     let mut added = 0;
-    let save_map = |atlas: &mut gamebuddy_core::Atlas, map: MapAsset, image: &dyn Fn(&Path) -> Result<()>| -> Result<()> {
+    let save_map = |atlas: &mut gamebuddy_core::Atlas,
+                    map: MapAsset,
+                    image: &dyn Fn(&Path) -> Result<()>|
+     -> Result<()> {
         let path = crate::navigation::cached_map_path(store, &map);
         std::fs::create_dir_all(path.parent().unwrap())?;
         image(&path)?;
@@ -583,18 +727,29 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
     // as the pages are sorted.
     let mut mapped: Vec<usize> = vec![];
     for (n, (step, source, url, _, _, _)) in chapters.iter().enumerate() {
-        let guide_pages: Vec<_> = pages.iter().zip(&is_map).filter(|((c, _, _), m)| *c == n && **m).map(|(p, _)| p).collect();
+        let guide_pages: Vec<_> = pages
+            .iter()
+            .zip(&is_map)
+            .filter(|((c, _, _), m)| *c == n && **m)
+            .map(|(p, _)| p)
+            .collect();
         for (i, (_, at, path)) in guide_pages.iter().enumerate() {
             let id = format!("guide-map-{}-{}", step.id, i + 1);
             let map = MapAsset {
                 id: id.clone(),
-                title: if guide_pages.len() > 1 { format!("{} (map page {})", step.title, i + 1) } else { step.title.clone() },
+                title: if guide_pages.len() > 1 {
+                    format!("{} (map page {})", step.title, i + 1)
+                } else {
+                    step.title.clone()
+                },
                 url: format!("{url}#gamebuddy-map={id}"),
                 source_url: format!("{url}&t={}s", at / 1000),
                 credit: format!("Shown in {}", source.title),
                 enabled: true,
             };
-            save_map(&mut atlas, map, &|dest| Ok(std::fs::copy(path, dest).map(|_| ())?))?;
+            save_map(&mut atlas, map, &|dest| {
+                Ok(std::fs::copy(path, dest).map(|_| ())?)
+            })?;
             added += 1;
             if i == 0 {
                 link_places(guide, &mut atlas, &step.id, &id);
@@ -611,7 +766,11 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
         .unwrap_or_default();
     // Short chapters are codes, menus or cutscenes, not levels.
     let todo: Vec<usize> = (0..chapters.len())
-        .filter(|n| !mapped.contains(n) && !stitched.contains(n) && chapters[*n].5 - chapters[*n].4 >= 45_000)
+        .filter(|n| {
+            !mapped.contains(n)
+                && !stitched.contains(n)
+                && chapters[*n].5 - chapters[*n].4 >= 45_000
+        })
         .collect();
     let have = atlas.maps.len();
     for (k, &n) in todo.iter().enumerate() {
@@ -624,7 +783,11 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
             step.title,
             have.max(atlas.maps.len())
         ));
-        let game = profile.source_crops.get(&source.id).copied().unwrap_or_default();
+        let game = profile
+            .source_crops
+            .get(&source.id)
+            .copied()
+            .unwrap_or_default();
         // Exclude the HUD so counters do not smear across the map.
         let b = profile.background;
         let crop = Crop {
@@ -645,7 +808,11 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
             let id = format!("stitched-{}-{}", step.id, i + 1);
             let map = MapAsset {
                 id: id.clone(),
-                title: if total > 1 { format!("{} (part {})", step.title, i + 1) } else { step.title.clone() },
+                title: if total > 1 {
+                    format!("{} (part {})", step.title, i + 1)
+                } else {
+                    step.title.clone()
+                },
                 url: format!("{url}#gamebuddy-map={id}"),
                 source_url: format!("{url}&t={}s", piece.start_ms / 1000),
                 credit: format!("Stitched by GameBuddy from {}", source.title),
@@ -653,7 +820,8 @@ pub fn build(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<
             };
             let image = piece.image;
             save_map(&mut atlas, map, &|dest| {
-                Ok(image::DynamicImage::ImageRgb8(image.clone()).save_with_format(dest, image::ImageFormat::Jpeg)?)
+                Ok(image::DynamicImage::ImageRgb8(image.clone())
+                    .save_with_format(dest, image::ImageFormat::Jpeg)?)
             })?;
             added += 1;
             if i == 0 {

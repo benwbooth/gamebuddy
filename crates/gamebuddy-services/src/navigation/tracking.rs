@@ -281,15 +281,15 @@ fn chapter_named(guide: &Guide, id: &str, area: &str) -> bool {
             None => break,
         }
     }
-    let Some(title) = step.map(|s| s.title.to_lowercase()) else { return false };
+    let Some(title) = step.map(|s| s.title.to_lowercase()) else {
+        return false;
+    };
     // Whole words only: "rampage" must not match inside another word.
-    title
-        .match_indices(area)
-        .any(|(i, _)| {
-            let before = title[..i].chars().last();
-            let after = title[i + area.len()..].chars().next();
-            before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
-        })
+    title.match_indices(area).any(|(i, _)| {
+        let before = title[..i].chars().last();
+        let after = title[i + area.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+    })
 }
 
 /// The latest step before the current one that the source places in the

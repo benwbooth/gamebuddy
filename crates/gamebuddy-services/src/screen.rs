@@ -259,7 +259,11 @@ pub fn publish_at(
     // RetroArch's own frame is already just the game, at native resolution:
     // no window crop, and enlarged so vision models can read its text.
     let cropped = if source == "retroarch_raw" {
-        original.resize(original.width() * 3, original.height() * 3, image::imageops::FilterType::Nearest)
+        original.resize(
+            original.width() * 3,
+            original.height() * 3,
+            image::imageops::FilterType::Nearest,
+        )
     } else {
         ticket.crop.apply(&original)?
     };
@@ -894,14 +898,18 @@ pub fn screen_bounds(frames: &[image::DynamicImage]) -> Option<Crop> {
     let (sw, sh) = (160u32, (160 * h / w.max(1)).max(1));
     let mut lit = vec![0u8; (sw * sh) as usize];
     for frame in frames.iter().filter(|f| f.width() == w && f.height() == h) {
-        let small = frame.resize_exact(sw, sh, image::imageops::FilterType::Triangle).to_luma8();
+        let small = frame
+            .resize_exact(sw, sh, image::imageops::FilterType::Triangle)
+            .to_luma8();
         for (m, p) in lit.iter_mut().zip(small.as_raw()) {
             *m = (*m).max(*p);
         }
     }
     // Rows and columns where a good share of pixels were lit at some point.
-    let row = |y: u32| (0..sw).filter(|x| lit[(y * sw + x) as usize] > 60).count() as f32 / sw as f32;
-    let col = |x: u32| (0..sh).filter(|y| lit[(y * sw + x) as usize] > 60).count() as f32 / sh as f32;
+    let row =
+        |y: u32| (0..sw).filter(|x| lit[(y * sw + x) as usize] > 60).count() as f32 / sw as f32;
+    let col =
+        |x: u32| (0..sh).filter(|y| lit[(y * sw + x) as usize] > 60).count() as f32 / sh as f32;
     let rows: Vec<u32> = (0..sh).filter(|y| row(*y) > 0.3).collect();
     let cols: Vec<u32> = (0..sw).filter(|x| col(*x) > 0.3).collect();
     let (y0, y1) = (*rows.first()?, *rows.last()?);
@@ -913,5 +921,7 @@ pub fn screen_bounds(frames: &[image::DynamicImage]) -> Option<Crop> {
         height: (y1 + 1 - y0) as f32 / sh as f32,
     };
     // A full-frame answer means there was no bezel to remove.
-    (crop.width < 0.97 || crop.height < 0.97).then_some(crop).filter(|c| c.width > 0.4 && c.height > 0.4)
+    (crop.width < 0.97 || crop.height < 0.97)
+        .then_some(crop)
+        .filter(|c| c.width > 0.4 && c.height > 0.4)
 }

@@ -39,13 +39,23 @@ fn price_subject(request: &str) -> Option<String> {
 }
 
 fn singular(word: &str) -> &str {
-    word.strip_suffix('s').filter(|w| w.len() > 2).unwrap_or(word)
+    word.strip_suffix('s')
+        .filter(|w| w.len() > 2)
+        .unwrap_or(word)
 }
 
 /// "How much is a red potion?" answered from the walkthrough's data cards.
-pub fn price_reply(store: &Store, game: &str, request: &str) -> Result<Option<super::prepared::Response>> {
-    let Some(subject) = price_subject(request) else { return Ok(None) };
-    let Some(id) = store.get::<String>("active_guide")? else { return Ok(None) };
+pub fn price_reply(
+    store: &Store,
+    game: &str,
+    request: &str,
+) -> Result<Option<super::prepared::Response>> {
+    let Some(subject) = price_subject(request) else {
+        return Ok(None);
+    };
+    let Some(id) = store.get::<String>("active_guide")? else {
+        return Ok(None);
+    };
     let guide = store.guide(&id)?;
     if !guide.game.eq_ignore_ascii_case(game) {
         return Ok(None);
@@ -81,21 +91,35 @@ pub fn price_reply(store: &Store, game: &str, request: &str) -> Result<Option<su
         .flatten()
         .map(|a| a.to_lowercase());
     if let Some(here) = &here
-        && let Some(local) = prices.iter().find(|p| p.to_lowercase().ends_with(&format!(" in {here}")))
+        && let Some(local) = prices
+            .iter()
+            .find(|p| p.to_lowercase().ends_with(&format!(" in {here}")))
     {
         let gold = local.split(" gold").next().unwrap_or_default();
         let others = prices.len() - 1;
         let text = if others == 0 {
             format!("{name} costs {gold} gold here.")
         } else {
-            format!("{name} costs {gold} gold here; {others} other shop{} sell{} it.", if others == 1 { "" } else { "s" }, if others == 1 { "s" } else { "" })
+            format!(
+                "{name} costs {gold} gold here; {others} other shop{} sell{} it.",
+                if others == 1 { "" } else { "s" },
+                if others == 1 { "s" } else { "" }
+            )
         };
-        return Ok(Some(super::prepared::Response { text, kind: "price".into(), step_id: None }));
+        return Ok(Some(super::prepared::Response {
+            text,
+            kind: "price".into(),
+            step_id: None,
+        }));
     }
     let list = match prices.len() {
         1 => prices[0].clone(),
         2 => format!("{} and {}", prices[0], prices[1]),
-        _ => format!("{}, and {}", prices[..prices.len() - 1].join(", "), prices.last().unwrap()),
+        _ => format!(
+            "{}, and {}",
+            prices[..prices.len() - 1].join(", "),
+            prices.last().unwrap()
+        ),
     };
     Ok(Some(super::prepared::Response {
         text: format!("{name} costs {list}."),
@@ -109,9 +133,21 @@ mod tests {
     use super::*;
     #[test]
     fn reads_the_item_out_of_a_price_question() {
-        assert_eq!(price_subject("How much is a red potion?").as_deref(), Some("red potion"));
-        assert_eq!(price_subject("how much does the long sword cost").as_deref(), Some("long sword"));
-        assert_eq!(price_subject("Where can I buy elixirs?").as_deref(), Some("elixirs"));
-        assert_eq!(price_subject("how much is it to get to the next town from here then"), None);
+        assert_eq!(
+            price_subject("How much is a red potion?").as_deref(),
+            Some("red potion")
+        );
+        assert_eq!(
+            price_subject("how much does the long sword cost").as_deref(),
+            Some("long sword")
+        );
+        assert_eq!(
+            price_subject("Where can I buy elixirs?").as_deref(),
+            Some("elixirs")
+        );
+        assert_eq!(
+            price_subject("how much is it to get to the next town from here then"),
+            None
+        );
     }
 }

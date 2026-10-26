@@ -8,8 +8,16 @@ fn main() -> anyhow::Result<()> {
     let added = gamebuddy_services::level_maps::build(&store, &guide, &|m| eprintln!("{m}"))?;
     let atlas = gamebuddy_services::navigation::atlas(&store, &guide)?;
     for map in &atlas.maps {
-        println!("{} | {} | {}", map.id, map.title, gamebuddy_services::navigation::cached_map_path(&store, map).display());
+        println!(
+            "{} | {} | {}",
+            map.id,
+            map.title,
+            gamebuddy_services::navigation::cached_map_path(&store, map).display()
+        );
     }
-    println!("{added} maps added; {} places on a map", atlas.places.iter().filter(|p| p.map_id.is_some()).count());
+    println!(
+        "{added} maps added; {} places on a map",
+        atlas.places.iter().filter(|p| p.map_id.is_some()).count()
+    );
     Ok(())
 }

@@ -58,7 +58,10 @@ struct Health {
     paused_until: Option<Instant>,
 }
 
-static HEALTH: Mutex<Health> = Mutex::new(Health { misses: 0, paused_until: None });
+static HEALTH: Mutex<Health> = Mutex::new(Health {
+    misses: 0,
+    paused_until: None,
+});
 
 /// Ask RetroArch for the current unfiltered frame and move it to `out`.
 /// None when RetroArch is not answering (an older launch, another emulator):

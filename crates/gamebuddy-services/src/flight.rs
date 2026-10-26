@@ -99,16 +99,21 @@ fn write_line(recorder: &mut Recorder, line: &str) {
 
 /// Record one event. A no-op when no session is being recorded.
 pub fn event(kind: &str, value: Value) {
-    let Ok(mut guard) = current().lock() else { return };
-    let Some(recorder) = guard.as_mut() else { return };
+    let Ok(mut guard) = current().lock() else {
+        return;
+    };
+    let Some(recorder) = guard.as_mut() else {
+        return;
+    };
     let line = json!({"t": now_ms(), "kind": kind, "value": value}).to_string();
     write_line(recorder, &line);
 }
 
 /// Store documents whose changes are worth a line in the timeline: where
 /// GameBuddy thinks the player is, what it plans next, widget input.
-const DOCUMENTS: [&str; 9] = [
+const DOCUMENTS: [&str; 10] = [
     "place-tracker:",
+    "location-estimate:",
     "world-tracker:",
     "next-action:",
     "off-route:",
@@ -125,8 +130,12 @@ pub fn document(key: &str, body: &str) {
     if !DOCUMENTS.iter().any(|p| key.starts_with(p)) {
         return;
     }
-    let Ok(mut guard) = current().lock() else { return };
-    let Some(recorder) = guard.as_mut() else { return };
+    let Ok(mut guard) = current().lock() else {
+        return;
+    };
+    let Some(recorder) = guard.as_mut() else {
+        return;
+    };
     let hash = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -159,8 +168,12 @@ fn signature(image: &image::RgbImage) -> Vec<u8> {
 /// Keep a downscaled copy of a captured game frame when the screen changed
 /// (or every ten seconds), at most once a second.
 pub fn frame(at_ms: u64, image: &image::RgbImage) {
-    let Ok(mut guard) = current().lock() else { return };
-    let Some(recorder) = guard.as_mut() else { return };
+    let Ok(mut guard) = current().lock() else {
+        return;
+    };
+    let Some(recorder) = guard.as_mut() else {
+        return;
+    };
     let sig = signature(image);
     if let Some((last_at, last_sig)) = &recorder.last_frame {
         let gap = at_ms.saturating_sub(*last_at);
@@ -356,19 +369,35 @@ pub fn report(dir: &Path) -> Result<Value> {
         let v = &e["value"];
         match kind {
             "model" => {
-                let purpose: String = v["purpose"].as_str().unwrap_or_default().chars().take(48).collect();
-                let entry = models.entry(format!("{} · {}", v["model"].as_str().unwrap_or("?"), purpose)).or_default();
+                let purpose: String = v["purpose"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(48)
+                    .collect();
+                let entry = models
+                    .entry(format!(
+                        "{} · {}",
+                        v["model"].as_str().unwrap_or("?"),
+                        purpose
+                    ))
+                    .or_default();
                 entry.0.push(v["ms"].as_f64().unwrap_or(0.) / 1000.);
                 if v["error"].is_string() {
                     entry.1 += 1;
-                    if v["error"].as_str().is_some_and(|s| s.contains("429") || s.contains("Too Many Requests")) {
+                    if v["error"]
+                        .as_str()
+                        .is_some_and(|s| s.contains("429") || s.contains("Too Many Requests"))
+                    {
                         rate_limited += 1;
                     }
                 }
             }
             "voice" => match v["kind"].as_str().unwrap_or_default() {
                 // The player finished speaking; the next audio out is the reply.
-                "thread/realtime/transcript/done" if v["value"]["role"] == "user" => heard_at = Some(t),
+                "thread/realtime/transcript/done" if v["value"]["role"] == "user" => {
+                    heard_at = Some(t)
+                }
                 "browser/output-active" => {
                     if let Some(h) = heard_at.take() {
                         reply_start.push(t.saturating_sub(h) as f64 / 1000.);
@@ -382,7 +411,11 @@ pub fn report(dir: &Path) -> Result<Value> {
                 }
                 _ => {}
             },
-            "doc" if e["key"].as_str().is_some_and(|k| k.starts_with("place-tracker:")) => {
+            "doc"
+                if e["key"]
+                    .as_str()
+                    .is_some_and(|k| k.starts_with("place-tracker:")) =>
+            {
                 place_changes += 1;
                 if let Some(p) = v["place_id"].as_str()
                     && !places.iter().any(|x| x == p)

@@ -1157,7 +1157,9 @@ impl ffi::RealtimeVoice {
                             }
                             // Prices straight from the walkthrough's data cards.
                             if let Ok(Some(answer)) =
-                                gamebuddy_services::voice::briefing::price_reply(&store, &game, &request)
+                                gamebuddy_services::voice::briefing::price_reply(
+                                    &store, &game, &request,
+                                )
                             {
                                 delivery.complete(utterance, &request, &answer.text);
                                 diagnostics.record("price_reply", json!({"utterance":utterance}));
@@ -1170,10 +1172,8 @@ impl ffi::RealtimeVoice {
                             {
                                 response_step = answer.step_id.map(|id| (utterance, id));
                                 delivery.complete(utterance, &request, &answer.text);
-                                diagnostics.record(
-                                    "prefetched_reply",
-                                    json!({"utterance":utterance}),
-                                );
+                                diagnostics
+                                    .record("prefetched_reply", json!({"utterance":utterance}));
                                 continue;
                             }
                             if let Ok(Some(answer)) =

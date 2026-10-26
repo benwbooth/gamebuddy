@@ -12,9 +12,16 @@ fn main() -> anyhow::Result<()> {
     screen::publish(&store, &ticket, &frame, "probe")?;
     let started = std::time::Instant::now();
     let stored = prefetch::refresh(&store, &guide)?;
-    println!("refresh stored={stored} in {:.1}s", started.elapsed().as_secs_f32());
+    println!(
+        "refresh stored={stored} in {:.1}s",
+        started.elapsed().as_secs_f32()
+    );
     let started = std::time::Instant::now();
     let answer = prefetch::reply(&store, &guide.game, "What now?")?;
-    println!("reply in {} ms: {:?}", started.elapsed().as_millis(), answer.map(|a| a.text));
+    println!(
+        "reply in {} ms: {:?}",
+        started.elapsed().as_millis(),
+        answer.map(|a| a.text)
+    );
     Ok(())
 }

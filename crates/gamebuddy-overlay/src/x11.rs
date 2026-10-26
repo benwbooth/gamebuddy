@@ -184,12 +184,19 @@ impl Overlay {
         // resting over a widget that still goes to the game is the failure
         // behind widgets that cannot be dragged.
         let over_widget = regions.iter().skip(1).any(|r| {
-            r[2] > 0 && r[3] > 0 && at[0] >= r[0] && at[1] >= r[1] && at[0] < r[0] + r[2] && at[1] < r[1] + r[3]
+            r[2] > 0
+                && r[3] > 0
+                && at[0] >= r[0]
+                && at[1] >= r[1]
+                && at[0] < r[0] + r[2]
+                && at[1] < r[1] + r[3]
         });
         if shown
             && mode == 0
             && over_widget
-            && self.missed_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5))
+            && self
+                .missed_at
+                .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(5))
         {
             self.missed_at = Some(std::time::Instant::now());
             self.events.push((

@@ -126,7 +126,14 @@ pub fn candidates(frames: &[Vec<u8>]) -> Vec<usize> {
 
 fn frame(video: &Path, at_ms: u64, width: u32, destination: &Path) -> Result<()> {
     let status = Command::new("ffmpeg")
-        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-ss"])
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+        ])
         .arg(format!("{:.3}", at_ms as f64 / 1000.0))
         .arg("-i")
         .arg(video)
@@ -186,7 +193,12 @@ fn pick(
         .collect())
 }
 
-fn transcribe(provider: &dyn ReasoningProvider, game: &str, path: &Path, subject: &str) -> Result<Value> {
+fn transcribe(
+    provider: &dyn ReasoningProvider,
+    game: &str,
+    path: &Path,
+    subject: &str,
+) -> Result<Value> {
     let text = provider.complete(ModelRequest {
         system: SYSTEM.into(),
         prompt: format!(
@@ -237,7 +249,9 @@ fn text_tables(guide: &Guide) -> Vec<Value> {
 
 /// Scan every source once and store what was found as game data.
 pub fn scan(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<usize> {
-    let settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    let settings = store
+        .get::<crate::Settings>("settings")?
+        .unwrap_or_default();
     let provider = crate::HttpProvider::new(settings.reasoning)?.patient();
     scan_with(store, guide, &provider, progress)
 }
@@ -300,7 +314,10 @@ pub fn scan_with(
     progress: &dyn Fn(String),
 ) -> Result<usize> {
     let mut found = text_tables(guide);
-    let work = store.root.join("work").join(format!("reference-scan-{}", guide.id));
+    let work = store
+        .root
+        .join("work")
+        .join(format!("reference-scan-{}", guide.id));
     std::fs::create_dir_all(&work)?;
     let status = |message: &str, done: usize, total: usize| {
         let _ = store.put(
@@ -329,7 +346,11 @@ pub fn scan_with(
                     None => crate::media::video_duration(media)? / 1000,
                 };
                 let interval = 2u64.max(duration_s.div_ceil(3000));
-                status("Looking for charts and data cards in the walkthrough video…", 0, 0);
+                status(
+                    "Looking for charts and data cards in the walkthrough video…",
+                    0,
+                    0,
+                );
                 let picks = candidates(&thumbnails(media, interval)?);
                 Pending {
                     source_id: source.id.clone(),
@@ -342,37 +363,48 @@ pub fn scan_with(
         let interval = job.interval;
         let sheets = std::mem::take(&mut job.sheets);
         // Contact sheets: which sampled frames carry reference material.
-        let chosen = parallel(&sheets, |n, chunk| -> Result<Vec<(u64, String)>> {
-            let tiles: Vec<PathBuf> = chunk
-                .iter()
-                .map(|&i| {
-                    let path = work.join(format!("{}-{i}.jpg", source.id));
-                    frame(media, i as u64 * interval * 1000, 640, &path).map(|_| path)
-                })
-                .collect::<Result<_>>()?;
-            let sheet_path = work.join(format!("sheet-{n}.jpg"));
-            sheet(&tiles, &sheet_path)?;
-            let picked = pick(provider, &guide.game, &sheet_path, tiles.len());
-            for path in tiles.iter().chain([&sheet_path]) {
-                let _ = std::fs::remove_file(path);
-            }
-            Ok(picked?
-                .into_iter()
-                .map(|(index, subject)| (chunk[index] as u64 * interval * 1000, subject))
-                .collect())
-        }, |done| {
-            status(
-                &format!("Looking for charts in the walkthrough: {done} of {} frame sheets", sheets.len()),
-                done,
-                sheets.len(),
-            )
-        });
+        let chosen = parallel(
+            &sheets,
+            |n, chunk| -> Result<Vec<(u64, String)>> {
+                let tiles: Vec<PathBuf> = chunk
+                    .iter()
+                    .map(|&i| {
+                        let path = work.join(format!("{}-{i}.jpg", source.id));
+                        frame(media, i as u64 * interval * 1000, 640, &path).map(|_| path)
+                    })
+                    .collect::<Result<_>>()?;
+                let sheet_path = work.join(format!("sheet-{n}.jpg"));
+                sheet(&tiles, &sheet_path)?;
+                let picked = pick(provider, &guide.game, &sheet_path, tiles.len());
+                for path in tiles.iter().chain([&sheet_path]) {
+                    let _ = std::fs::remove_file(path);
+                }
+                Ok(picked?
+                    .into_iter()
+                    .map(|(index, subject)| (chunk[index] as u64 * interval * 1000, subject))
+                    .collect())
+            },
+            |done| {
+                status(
+                    &format!(
+                        "Looking for charts in the walkthrough: {done} of {} frame sheets",
+                        sheets.len()
+                    ),
+                    done,
+                    sheets.len(),
+                )
+            },
+        );
         // The same card stays on screen for a while; read each subject once.
         for (result, chunk) in chosen.into_iter().zip(sheets) {
             match result {
                 Ok(list) => {
                     for (at, subject) in list {
-                        if !job.subjects.iter().any(|(_, s)| s.eq_ignore_ascii_case(&subject)) {
+                        if !job
+                            .subjects
+                            .iter()
+                            .any(|(_, s)| s.eq_ignore_ascii_case(&subject))
+                        {
                             job.subjects.push((at, subject));
                         }
                     }
@@ -384,22 +416,29 @@ pub fn scan_with(
             }
         }
         let subjects = std::mem::take(&mut job.subjects);
-        let cards = parallel(&subjects, |n, (at_ms, subject)| -> Result<Value> {
-            let full = work.join(format!("full-{n}.jpg"));
-            frame(media, *at_ms, 1280, &full)?;
-            let card = transcribe(provider, &guide.game, &full, subject);
-            let _ = std::fs::remove_file(&full);
-            let mut card = card?;
-            card["t"] = json!(at_ms / 1000);
-            card["source_id"] = json!(source.id.clone());
-            Ok(card)
-        }, |done| {
-            status(
-                &format!("Reading walkthrough charts and data cards: {done} of {}", subjects.len()),
-                done,
-                subjects.len(),
-            )
-        });
+        let cards = parallel(
+            &subjects,
+            |n, (at_ms, subject)| -> Result<Value> {
+                let full = work.join(format!("full-{n}.jpg"));
+                frame(media, *at_ms, 1280, &full)?;
+                let card = transcribe(provider, &guide.game, &full, subject);
+                let _ = std::fs::remove_file(&full);
+                let mut card = card?;
+                card["t"] = json!(at_ms / 1000);
+                card["source_id"] = json!(source.id.clone());
+                Ok(card)
+            },
+            |done| {
+                status(
+                    &format!(
+                        "Reading walkthrough charts and data cards: {done} of {}",
+                        subjects.len()
+                    ),
+                    done,
+                    subjects.len(),
+                )
+            },
+        );
         for (card, entry) in cards.into_iter().zip(subjects) {
             match card {
                 Ok(card) => found.push(card),
@@ -424,13 +463,18 @@ pub fn scan_with(
         merged.push(card);
     }
     let count = crate::game_data::import(store, guide, &merged)?;
-    let unread: usize = left.iter().map(|p| p.subjects.len() + p.sheets.len() * TILES).sum();
+    let unread: usize = left
+        .iter()
+        .map(|p| p.subjects.len() + p.sheets.len() * TILES)
+        .sum();
     store.put(&pending_key(guide), &left)?;
     if left.is_empty() {
         store.put(&key(guide), &json!({"phase":"done","found":count,"message":format!("{count} charts and data cards found")}))?;
     } else {
         store.put(&key(guide), &json!({"phase":"partial","found":count,"message":format!("{count} charts and data cards found; some could not be read yet and will be retried")}))?;
-        progress(format!("{count} charts and data cards found; about {unread} frames left to retry on the next launch"));
+        progress(format!(
+            "{count} charts and data cards found; about {unread} frames left to retry on the next launch"
+        ));
     }
     Ok(count)
 }

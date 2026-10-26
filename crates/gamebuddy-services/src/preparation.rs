@@ -210,7 +210,10 @@ pub fn compile_walkthrough(
             "Reviewed {reviewed} of {} pending sections. {} sections failed; retry preparation to continue{}.",
             pending.len(),
             failed.len(),
-            if failed.last().is_some_and(|e| e.contains("429") || e.contains("Too Many Requests")) {
+            if failed
+                .last()
+                .is_some_and(|e| e.contains("429") || e.contains("Too Many Requests"))
+            {
                 " (the model kept limiting requests, so the rest were left for later)"
             } else {
                 ""

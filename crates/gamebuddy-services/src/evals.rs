@@ -46,13 +46,18 @@ pub fn bootstrap(store: &Store, guide: &Guide) -> Result<usize> {
     let out = dir(store, guide);
     std::fs::create_dir_all(&out)?;
     let mut cases = load(store, guide).unwrap_or_default();
-    for case in cases.iter_mut().filter(|c| c.source == "player report" && c.evidence.starts_with("Screen:")) {
+    for case in cases
+        .iter_mut()
+        .filter(|c| c.source == "player report" && c.evidence.starts_with("Screen:"))
+    {
         case.source = "screen report".into();
     }
     let before = cases.len();
     for (id, body) in store.events_of(guide, "player_location")? {
         let value: Value = serde_json::from_str(&body)?;
-        let Some(path) = value["journal_image"]["path"].as_str().map(Path::new) else { continue };
+        let Some(path) = value["journal_image"]["path"].as_str().map(Path::new) else {
+            continue;
+        };
         let case_id = format!("report-{id}");
         if !path.is_file() || cases.iter().any(|c| c.id == case_id) {
             continue;
@@ -62,13 +67,21 @@ pub fn bootstrap(store: &Store, guide: &Guide) -> Result<usize> {
         cases.push(Case {
             id: case_id,
             image,
-            at_ms: value["journal_image"]["captured_at_ms"].as_u64().unwrap_or(0),
-            session: value["journal_image"]["session"].as_str().unwrap_or_default().into(),
+            at_ms: value["journal_image"]["captured_at_ms"]
+                .as_u64()
+                .unwrap_or(0),
+            session: value["journal_image"]["session"]
+                .as_str()
+                .unwrap_or_default()
+                .into(),
             expected_place: value["location"]["place_id"].as_str().map(str::to_owned),
             evidence: value["report"].as_str().unwrap_or_default().into(),
             // "Screen: …" reports were GameBuddy's own reading of the screen,
             // not the player's words, so they are not ground truth.
-            source: if value["report"].as_str().is_some_and(|r| r.starts_with("Screen:")) {
+            source: if value["report"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("Screen:"))
+            {
                 "screen report".into()
             } else {
                 "player report".into()
@@ -90,9 +103,11 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
     // Cases from one session share a TV bezel/shader: find the lit screen
     // per session and crop to it, as the live path does.
     let rectify = std::env::var_os("GAMEBUDDY_EVAL_RAW").is_none();
-    let mut bounds: std::collections::HashMap<String, Option<gamebuddy_core::Crop>> = Default::default();
+    let mut bounds: std::collections::HashMap<String, Option<gamebuddy_core::Crop>> =
+        Default::default();
     if rectify {
-        let mut sessions: std::collections::HashMap<String, Vec<image::DynamicImage>> = Default::default();
+        let mut sessions: std::collections::HashMap<String, Vec<image::DynamicImage>> =
+            Default::default();
         for case in &cases {
             if let Ok(img) = image::open(base.join(&case.image)) {
                 let key = format!("{}x{}", img.width(), img.height());
@@ -108,14 +123,24 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
     // Places on the same map (a town and its shops) share an area.
     let area = |id: &str| {
         atlas.places.iter().find(|p| p.id == id).map(|p| {
-            p.map_id.clone().unwrap_or_else(|| p.label.split_whitespace().next().unwrap_or_default().to_lowercase())
+            p.map_id.clone().unwrap_or_else(|| {
+                p.label
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_lowercase()
+            })
         })
     };
     let mut seconds = vec![];
     let mut misses = vec![];
     for case in &cases {
         let trusted = case.source != "screen report";
-        let Some(expected) = case.expected_place.as_deref().filter(|p| trusted && atlas.places.iter().any(|x| x.id == *p)) else {
+        let Some(expected) = case
+            .expected_place
+            .as_deref()
+            .filter(|p| trusted && atlas.places.iter().any(|x| x.id == *p))
+        else {
             unlabelled += 1;
             continue;
         };
@@ -135,7 +160,11 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
                 guide,
                 &frame,
                 &mut tracker,
-                spatial::FrameContext { session: "evaluation", epoch: 0, at_ms: case.at_ms.max(1) + k * 600 },
+                spatial::FrameContext {
+                    session: "evaluation",
+                    epoch: 0,
+                    at_ms: case.at_ms.max(1) + k * 600,
+                },
                 &mut engine,
             )?;
             if result["tracker"]["room_id"].is_string() {
@@ -150,9 +179,13 @@ pub fn score_location(store: &Store, guide: &Guide) -> Result<Value> {
             .chain(result["related_step_ids"].as_array().into_iter().flatten())
             .filter_map(Value::as_str)
             .collect();
-        let predicted = steps.iter().find_map(|s| atlas.place_for_step(guide, s)).map(|p| p.id.as_str());
+        let predicted = steps
+            .iter()
+            .find_map(|s| atlas.place_for_step(guide, s))
+            .map(|p| p.id.as_str());
         let label = |id: Option<&str>| {
-            id.and_then(|id| atlas.places.iter().find(|p| p.id == id)).map(|p| p.label.clone())
+            id.and_then(|id| atlas.places.iter().find(|p| p.id == id))
+                .map(|p| p.label.clone())
         };
         match predicted {
             Some(p) if p == expected => right += 1,
@@ -223,10 +256,13 @@ pub fn scorecard(store: &Store) -> Result<Value> {
         if !dir(store, &guide).join("cases.json").is_file() {
             continue;
         }
-        let location = score_location(store, &guide).unwrap_or_else(|e| json!({"error": format!("{e:#}")}));
+        let location =
+            score_location(store, &guide).unwrap_or_else(|e| json!({"error": format!("{e:#}")}));
         // The vision model costs a call per case; opt in.
-        let vision = std::env::var_os("GAMEBUDDY_EVAL_VISION")
-            .map(|_| score_location_vision(store, &guide).unwrap_or_else(|e| json!({"error": format!("{e:#}")})));
+        let vision = std::env::var_os("GAMEBUDDY_EVAL_VISION").map(|_| {
+            score_location_vision(store, &guide)
+                .unwrap_or_else(|e| json!({"error": format!("{e:#}")}))
+        });
         guides.push(json!({"game": guide.game, "guide": guide.id, "location": location, "location_vision": vision}));
     }
     Ok(json!({"guides": guides, "latency": score_sessions(&store.root, 10)}))
@@ -237,7 +273,9 @@ pub fn scorecard(store: &Store) -> Result<Value> {
 pub fn score_location_vision(store: &Store, guide: &Guide) -> Result<Value> {
     let cases = load(store, guide)?;
     let atlas = crate::navigation::atlas(store, guide)?;
-    let mut settings = store.get::<crate::Settings>("settings")?.unwrap_or_default();
+    let mut settings = store
+        .get::<crate::Settings>("settings")?
+        .unwrap_or_default();
     // Bake-offs: GAMEBUDDY_EVAL_VISION_MODEL=ollama:qwen3.5:9b tries another model.
     if let Some(choice) = std::env::var("GAMEBUDDY_EVAL_VISION_MODEL").ok()
         && let Some(model) = choice.strip_prefix("ollama:")
@@ -259,14 +297,26 @@ pub fn score_location_vision(store: &Store, guide: &Guide) -> Result<Value> {
         .collect();
     let area = |id: &str| {
         atlas.places.iter().find(|p| p.id == id).map(|p| {
-            p.map_id.clone().unwrap_or_else(|| p.label.split_whitespace().next().unwrap_or_default().to_lowercase())
+            p.map_id.clone().unwrap_or_else(|| {
+                p.label
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_lowercase()
+            })
         })
     };
     let (mut right, mut same_area, mut wrong) = (0, 0, 0);
     let mut seconds = vec![];
     let mut misses = vec![];
     for case in cases.iter().filter(|c| c.source != "screen report") {
-        let Some(expected) = case.expected_place.as_deref().filter(|p| atlas.places.iter().any(|x| x.id == *p)) else { continue };
+        let Some(expected) = case
+            .expected_place
+            .as_deref()
+            .filter(|p| atlas.places.iter().any(|x| x.id == *p))
+        else {
+            continue;
+        };
         let started = std::time::Instant::now();
         let answer = crate::ReasoningProvider::complete(
             &provider,
@@ -282,12 +332,21 @@ pub fn score_location_vision(store: &Store, guide: &Guide) -> Result<Value> {
             },
         );
         seconds.push(started.elapsed().as_secs_f64());
-        let failure = answer.as_ref().err().map(|e| format!("{e:#}").chars().take(160).collect::<String>());
+        let failure = answer
+            .as_ref()
+            .err()
+            .map(|e| format!("{e:#}").chars().take(160).collect::<String>());
         let predicted = answer
             .ok()
             .and_then(|t| crate::parse_json::<Value>(&t).ok())
             .and_then(|v| v["place_id"].as_str().map(str::to_owned));
-        let label = |id: &str| atlas.places.iter().find(|p| p.id == id).map(|p| p.label.clone());
+        let label = |id: &str| {
+            atlas
+                .places
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.label.clone())
+        };
         match predicted.as_deref() {
             Some(p) if p == expected => right += 1,
             Some(p) => {

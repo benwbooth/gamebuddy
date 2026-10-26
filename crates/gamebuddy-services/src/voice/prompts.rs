@@ -135,6 +135,7 @@ pub fn gemini_context(
         "plan": plan,
         "authored_route": if guidance["plan_detour"] == true { Value::Null } else { full["navigation"]["authored_route"].clone() },
         "location": full["navigation"]["location"],
+        "location_estimate": full["navigation"]["location_estimate"],
         "place": full["navigation"]["map"]["current_place"]["label"],
         "screen": {"status": full["screen"]["status"], "age_ms": full["screen"]["age_ms"]},
         "nearby_actions": list(&full["nearby_actions"], 8, &|a| json!({"id":a["step"]["id"],"title":a["step"]["title"],"eligible":a["status"]["eligible_next_action"],"complete":a["status"]["complete"]})),
@@ -143,7 +144,7 @@ pub fn gemini_context(
         "trackable_facts": profile.map(|(store, guide)| trackable_facts(store, guide)),
         "nearby_requirements": profile.and_then(|(store, guide)| crate::navigation::planning::nearby_requirements(store, guide).ok()),
         "journal_recent": list(&full["journal"]["recent"], 5, &|e| e.clone()),
-        "instruction": "Compact live context. situation is the brain's latest reading of the screen with the plan (area, gold, life, gear, what changed, next_advice): speak from it when it is fresh (age_ms under about 30000). When ask_first is set, ask that question before giving any directions. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. plan is what to do from where the player is now: missing items first, travel, then the objective. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
+        "instruction": "Compact live context. location_estimate is GameBuddy's one fused answer for where the player is (place_id, map_id, confidence, status confident/likely/uncertain/unknown) from the screen, the map match, the player's reports and the plan; trust it over the separate sources and never ask where the player is while it is confident or likely. situation is the brain's latest reading of the screen with the plan (area, gold, life, gear, what changed, next_advice): speak from it when it is fresh (age_ms under about 30000). When ask_first is set, ask that question before giving any directions. big_picture is where this step fits: the chapter, the task it belongs to and the next tasks toward beating the game. plan is what to do from where the player is now: missing items first, travel, then the objective. guidance.now is the step to give; use expected_revision and epoch for set_next_action and other updates. Use search_guide for anything else in the walkthrough."
     })
 }
 

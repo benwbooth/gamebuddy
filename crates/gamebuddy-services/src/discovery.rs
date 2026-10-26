@@ -157,7 +157,13 @@ pub fn gathered(store: &Store, guide: &Guide) -> Vec<String> {
     let steps = guide
         .steps
         .iter()
-        .filter(|s| guide.step_enabled(s) && !guide.steps.iter().any(|c| c.parent_id.as_deref() == Some(&s.id)))
+        .filter(|s| {
+            guide.step_enabled(s)
+                && !guide
+                    .steps
+                    .iter()
+                    .any(|c| c.parent_id.as_deref() == Some(&s.id))
+        })
         .count();
     lines.push(format!("Walkthrough: {}", guide.title));
     lines.push(format!("{steps} walkthrough steps"));
@@ -173,7 +179,10 @@ pub fn gathered(store: &Store, guide: &Guide) -> Vec<String> {
     if let Ok(atlas) = crate::navigation::atlas(store, guide)
         && !atlas.places.is_empty()
     {
-        lines.push(format!("{} places in the location atlas", atlas.places.len()));
+        lines.push(format!(
+            "{} places in the location atlas",
+            atlas.places.len()
+        ));
         if !atlas.maps.is_empty() {
             lines.push(format!("{} maps and diagrams", atlas.maps.len()));
         }
@@ -440,7 +449,11 @@ fn prepare_tracked(
                 if let Ok(Some(state)) = store.get::<Value>(&key)
                     && state["total"].as_u64().is_some_and(|t| t > 0)
                 {
-                    tracker.count("charts", state["done"].as_u64().unwrap_or(0), state["total"].as_u64());
+                    tracker.count(
+                        "charts",
+                        state["done"].as_u64().unwrap_or(0),
+                        state["total"].as_u64(),
+                    );
                 }
                 tracker.message_for("charts", &message);
                 eprintln!("{message}");

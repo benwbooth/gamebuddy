@@ -110,7 +110,11 @@ pub fn acquire(kind: &ProviderKind, priority: Priority) -> Permit {
             break;
         }
         // Re-check at least every second so a cooldown can expire.
-        lanes = q.changed.wait_timeout(lanes, Duration::from_secs(1)).unwrap().0;
+        lanes = q
+            .changed
+            .wait_timeout(lanes, Duration::from_secs(1))
+            .unwrap()
+            .0;
     }
     Permit {
         key,

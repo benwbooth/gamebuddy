@@ -351,9 +351,15 @@ fn main() -> Result<()> {
         Action::EvalBootstrap { guide } => {
             let guide = store.guide(&guide)?;
             let added = evals::bootstrap(&store, &guide)?;
-            println!("Added {added} cases to {}", evals::dir(&store, &guide).display());
+            println!(
+                "Added {added} cases to {}",
+                evals::dir(&store, &guide).display()
+            );
         }
-        Action::Scorecard => println!("{}", serde_json::to_string_pretty(&evals::scorecard(&store)?)?),
+        Action::Scorecard => println!(
+            "{}",
+            serde_json::to_string_pretty(&evals::scorecard(&store)?)?
+        ),
         Action::SessionReport { dir } => {
             let dir = match dir {
                 Some(dir) => dir,
