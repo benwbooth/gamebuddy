@@ -547,17 +547,18 @@ Item {
                     id: setupPreset
                     objectName: "companionSetup"
                     Layout.fillWidth: true
-                    readonly property var values: ["openai", "gemini", "local"]
-                    model: ["OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Local · Claude + Ryan voice", "Custom (Options)"]
+                    readonly property var values: ["device", "local", "openai", "gemini"]
+                    model: ["All local · Qwen + Kokoro voice", "Claude Sonnet + local voice", "OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Custom (Options)"]
                     currentIndex: {
                         const s = JSON.parse(buddy.settings_json)
-                        if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 0
-                        if (s.speech === "gemini_live") return 1
-                        if (s.speech === "local" && s.reasoning?.kind === "claude_code") return 2
-                        return 3
+                        if (s.speech === "local" && s.reasoning?.kind === "ollama") return 0
+                        if (s.speech === "local" && s.reasoning?.kind === "claude_code") return 1
+                        if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 2
+                        if (s.speech === "gemini_live") return 3
+                        return 4
                     }
                     Accessible.name: "Assistant and voice setup"
-                    onActivated: index => { if (index < 3) buddy.apply_preset(values[index]); else { controlsTray.close(); companion.workbenchRequested() } }
+                    onActivated: index => { if (index < values.length) buddy.apply_preset(values[index]); else { controlsTray.close(); companion.workbenchRequested() } }
                 }
             }
             RowLayout {

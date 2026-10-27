@@ -60,13 +60,14 @@ ScrollView {
         width:page.availableWidth; spacing:16
         Text { text:"Models & speed"; color:"#eaf2fa"; font.pixelSize:28; Layout.margins:24; Layout.bottomMargin:0 }
         Text { text:"Choose who answers and how much time they spend thinking. Map tracking runs independently on this computer."; color:"#a3b4c7"; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24 }
-        RowLayout {
-            Layout.leftMargin:24; Layout.rightMargin:24; spacing:8
-            Text { text:"Quick setup"; color:"#a3b4c7"; font.pixelSize:12 }
+        Text { text:"Quick setup"; color:"#a3b4c7"; font.pixelSize:12; Layout.leftMargin:24 }
+        // Wraps on narrow windows: in one row the last choice fell off the edge.
+        Flow {
+            Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24; spacing:8
+            GbButton { objectName:"presetDevice"; text:"All local · this computer (Qwen + Kokoro)"; accent:true; onClicked:page.backend.apply_preset("device") }
+            GbButton { objectName:"presetLocal"; text:"Claude Sonnet + local voice"; onClicked:page.backend.apply_preset("local") }
             GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; onClicked:page.backend.apply_preset("openai") }
             GbButton { objectName:"presetGemini"; text:"Gemini Live"; onClicked:page.backend.apply_preset("gemini") }
-            GbButton { objectName:"presetLocal"; text:"Local (Claude + Ryan)"; onClicked:page.backend.apply_preset("local") }
-            GbButton { objectName:"presetDevice"; text:"On this computer (Ollama)"; onClicked:page.backend.apply_preset("device") }
         }
         RowLayout {
             Layout.leftMargin:24
