@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Persistent CPU speech synthesis. JSON lines in/out; no microphone access.
+"""Persistent speech synthesis. JSON lines in/out; no microphone access.
 
-The model argument is a Piper .onnx voice, or a .kokoro file whose first line
+The model argument is a Piper .onnx voice, a .omni file naming an LFM3-Omni
+voice (male or female, spoken by GameBuddy's own llama-server), or a .kokoro file whose first line
 names a Kokoro voice (for example am_michael): Kokoro sounds far more natural.
 """
 import base64
@@ -16,7 +17,38 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 
 model = sys.argv[1]
 
-if model.endswith(".kokoro"):
+if model.endswith(".omni"):
+    # LFM3-Omni through GameBuddy's own llama-server (`/tts`): the file
+    # names the voice, male or female.
+    import time
+    import urllib.request
+
+    with open(model, encoding="utf-8") as voice_file:
+        voice_name = voice_file.readline().strip() or "male"
+    base = "http://127.0.0.1:11441"
+    for _ in range(72):
+        try:
+            with urllib.request.urlopen(base + "/health", timeout=2) as reply:
+                if reply.status == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.25)
+
+    def synthesize(text, wav):
+        request = urllib.request.Request(
+            base + "/tts",
+            data=json.dumps({"input": text, "voice": voice_name, "lang": "en", "response_format": "wav"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=60) as reply:
+            data = reply.read()
+        with wave.open(io.BytesIO(data), "rb") as source:
+            wav.setnchannels(source.getnchannels())
+            wav.setsampwidth(source.getsampwidth())
+            wav.setframerate(source.getframerate())
+            wav.writeframes(source.readframes(source.getnframes()))
+elif model.endswith(".kokoro"):
     import numpy
     import torch
     from kokoro import KPipeline

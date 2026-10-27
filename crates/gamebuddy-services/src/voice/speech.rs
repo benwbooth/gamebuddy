@@ -37,7 +37,9 @@ impl Config {
         ensure!(self.model.is_file(), "Prepared speech model is missing");
         // A .kokoro file names a Kokoro voice; Piper voices need their JSON.
         ensure!(
-            self.model.extension().is_some_and(|e| e == "kokoro")
+            self.model
+                .extension()
+                .is_some_and(|e| e == "kokoro" || e == "omni")
                 || self.model.with_extension("onnx.json").is_file(),
             "Prepared speech model configuration is missing"
         );

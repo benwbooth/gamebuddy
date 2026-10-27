@@ -45,8 +45,8 @@ pub struct NeuralVoiceRust {
 /// checkbox only controls prepared speech inside Codex voice.
 fn installed(store: &Store) -> Option<Config> {
     // Kokoro, once installed, is the local voice: Piper sounded robotic.
-    if let Some(kokoro) = gamebuddy_services::providers::kokoro_voice() {
-        return Some(kokoro);
+    if let Some(voice) = gamebuddy_services::providers::local_voice() {
+        return Some(voice);
     }
     let mut config = store
         .get::<Settings>("settings")

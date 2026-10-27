@@ -58,6 +58,18 @@ pub fn transcribe(root: &Path, recording: &Path) -> Result<String> {
         "Could not decode the microphone recording: {}",
         String::from_utf8_lossy(&converted.stderr)
     );
+    // LFM3-Omni on the GPU transcribes in a fraction of a second; Whisper on
+    // the CPU is the fallback when it is not installed or not answering.
+    if crate::liquid::voice_installed() && crate::liquid::wait_for_voice(15) {
+        match std::fs::read(&audio)
+            .map_err(anyhow::Error::from)
+            .and_then(|wav| crate::liquid::transcribe(&wav))
+        {
+            Ok(text) if !text.is_empty() => return Ok(text),
+            Ok(_) => anyhow::bail!("No speech was detected. Try speaking again."),
+            Err(error) => eprintln!("LFM3 transcription: {error:#}"),
+        }
+    }
     let output = work.path().join("transcript");
     let executable =
         std::env::var_os("GAMEBUDDY_WHISPER_CLI").unwrap_or_else(|| "whisper-cli".into());

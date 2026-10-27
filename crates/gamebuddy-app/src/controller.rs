@@ -517,6 +517,7 @@ impl ffi::Buddy {
             if let Ok(Some(settings)) = store.get::<services::Settings>("settings") {
                 services::providers::prewarm_local(&settings);
                 services::liquid::ensure(&store);
+                services::liquid::ensure_voice();
             }
         }
         self.as_mut().poll_startup();
