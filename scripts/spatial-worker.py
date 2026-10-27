@@ -20,8 +20,86 @@ parser.add_argument("--model", default="facebook/dinov2-small")
 parser.add_argument("--device", default="auto")
 parser.add_argument("--recompute-features", action="store_true",
                     help="Benchmark extraction even when this image is already cached")
+parser.add_argument("--serve", type=Path,
+                    help="Resident mode: load the models once and answer on this Unix socket")
+parser.add_argument("--direct", action="store_true",
+                    help="Load the models in this process instead of using the resident one")
 args = parser.parse_args()
 args.cache.mkdir(parents=True, exist_ok=True)
+
+# Loading the models takes 15-30 s (most of it the GPU runtime), which made
+# the map wait half a minute on every game launch. So by default this process
+# is a thin relay to one resident worker that keeps the models loaded between
+# launches and exits after IDLE_SECONDS without use, freeing the GPU.
+IDLE_SECONDS = 20 * 60
+
+
+def socket_path():
+    me = Path(__file__).resolve()
+    key = hashlib.sha256(
+        f"{me}:{me.stat().st_mtime_ns}:{args.model}:{args.device}:{sys.executable}".encode()
+    ).hexdigest()[:16]
+    return args.cache / f"resident-{key}.sock"
+
+
+def relay():
+    import socket
+    import subprocess
+    import time
+
+    path = socket_path()
+    status = path.with_suffix(".status")
+
+    def connect():
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(path))
+        return client
+
+    try:
+        client = connect()
+    except OSError:
+        # Start the resident worker, detached so it outlives this game.
+        log = open(path.with_suffix(".log"), "ab")
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--cache", str(args.cache),
+             "--model", args.model, "--device", args.device, "--serve", str(path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+            start_new_session=True,
+        )
+        client = None
+        last = None
+        for _ in range(600):
+            try:
+                client = connect()
+                break
+            except OSError:
+                try:
+                    progress = status.read_text()
+                except OSError:
+                    progress = None
+                if progress and progress != last:
+                    print(progress.strip(), flush=True)
+                    last = progress
+                time.sleep(0.2)
+        if client is None:
+            print(json.dumps({"error": "The resident spatial worker did not start"}), flush=True)
+            sys.exit(1)
+    reader = client.makefile("r", encoding="utf-8")
+    writer = client.makefile("w", encoding="utf-8")
+    for line in sys.stdin:
+        writer.write(line if line.endswith("\n") else line + "\n")
+        writer.flush()
+        reply = reader.readline()
+        if not reply:
+            print(json.dumps({"error": "The resident spatial worker stopped"}), flush=True)
+            sys.exit(1)
+        sys.stdout.write(reply)
+        sys.stdout.flush()
+    sys.exit(0)
+
+
+if args.serve is None and not args.direct:
+    relay()
 os.environ.setdefault("HF_HOME", str(args.cache / "weights"))
 if Path("/etc/ssl/certs/ca-certificates.crt").exists():
     os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
@@ -30,8 +108,12 @@ if Path("/etc/ssl/certs/ca-certificates.crt").exists():
 def startup(completed, message):
     # Keep protocol events on the original stdout even while libraries redirect
     # their own startup output to stderr. Stages report work, not estimated time.
-    print(json.dumps({"startup": {"completed": completed, "total": 6, "message": message}}),
-          file=sys.__stdout__, flush=True)
+    event = json.dumps({"startup": {"completed": completed, "total": 6, "message": message}})
+    if args.serve is not None:
+        # Relays waiting for the resident worker show its progress.
+        args.serve.with_suffix(".status").write_text(event)
+        return
+    print(event, file=sys.__stdout__, flush=True)
 
 
 startup(0, "Loading the graphics runtime…")
@@ -116,18 +198,68 @@ def register(query, reference, dimension, atlas=False):
     return verify(p, q, dimension, atlas=atlas)
 
 
-for line in sys.stdin:
+def answer(line):
     try:
         request = json.loads(line)
         with contextlib.redirect_stdout(sys.stderr):
             if request["op"] == "info":
-                answer = {"model": identity, "device": device}
+                result = {"model": identity, "device": device}
             elif request["op"] == "extract":
-                answer = extract(request["path"])
+                result = extract(request["path"])
             elif request["op"] == "register":
-                answer = register(request["query"], request["reference"], request["dimension"], request.get("atlas", False))
+                result = register(request["query"], request["reference"], request["dimension"], request.get("atlas", False))
             else:
                 raise ValueError("Unknown spatial operation")
-        print(json.dumps({"result": answer}, allow_nan=False), flush=True)
+        return json.dumps({"result": result}, allow_nan=False)
     except Exception as error:
-        print(json.dumps({"error": str(error)}), flush=True)
+        return json.dumps({"error": str(error)})
+
+
+if args.serve is not None:
+    import socket
+    import threading
+    import time
+
+    gpu = threading.Lock()
+    active = [0]
+    last_used = [time.monotonic()]
+    counter = threading.Lock()
+
+    def serve_client(connection):
+        with counter:
+            active[0] += 1
+        try:
+            reader = connection.makefile("r", encoding="utf-8")
+            writer = connection.makefile("w", encoding="utf-8")
+            for line in reader:
+                with gpu:
+                    reply = answer(line)
+                writer.write(reply + "\n")
+                writer.flush()
+                last_used[0] = time.monotonic()
+        finally:
+            connection.close()
+            with counter:
+                active[0] -= 1
+                last_used[0] = time.monotonic()
+
+    with contextlib.suppress(FileNotFoundError):
+        args.serve.unlink()
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(args.serve))
+    server.listen(16)
+    server.settimeout(30)
+    while True:
+        try:
+            connection, _ = server.accept()
+            threading.Thread(target=serve_client, args=(connection,), daemon=True).start()
+        except socket.timeout:
+            with counter:
+                idle = active[0] == 0 and time.monotonic() - last_used[0] > IDLE_SECONDS
+            if idle:
+                with contextlib.suppress(FileNotFoundError):
+                    args.serve.unlink()
+                sys.exit(0)
+else:
+    for line in sys.stdin:
+        print(answer(line), flush=True)
