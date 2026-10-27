@@ -447,7 +447,16 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     let since = snapshot.captured_at_ms.saturating_sub(job.last_at);
-    if job.running || since < 3_000 {
+    // On one local GPU every brain update delays the player's next spoken
+    // answer, so it looks at most every 12 s there.
+    let gap = if settings.reasoning.kind == crate::ProviderKind::Ollama
+        && settings.brain.provider.is_none()
+    {
+        12_000
+    } else {
+        3_000
+    };
+    if job.running || since < gap {
         return;
     }
     // Something happened on screen since the last update (new text, a big

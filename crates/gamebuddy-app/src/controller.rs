@@ -945,13 +945,18 @@ impl ffi::Buddy {
                     );
                     if let Some(guide) = &guide {
                         services::brain::schedule(&store, guide, &snapshot);
+                        let settings = store.get::<Settings>("settings").ok().flatten();
+                        let on_device = settings
+                            .as_ref()
+                            .is_some_and(|s| s.reasoning.kind == services::ProviderKind::Ollama);
                         // Local voice: keep "what now?" answered ahead of time,
-                        // as the live voices do.
-                        if store
-                            .get::<Settings>("settings")
-                            .ok()
-                            .flatten()
-                            .is_some_and(|s| s.speech == services::SpeechBackend::Local)
+                        // as the live voices do. Not on one local GPU: there a
+                        // spoken answer takes seconds, and this 12-second job
+                        // made every question wait behind it.
+                        if !on_device
+                            && settings
+                                .as_ref()
+                                .is_some_and(|s| s.speech == services::SpeechBackend::Local)
                         {
                             services::voice::prefetch::schedule(store.root.clone(), guide.clone());
                         }
@@ -1079,6 +1084,11 @@ impl ffi::Buddy {
             return;
         };
         let config = settings.unwrap_or_default().vision;
+        // On one local GPU the brain already reads every screen moment; a
+        // second describer only made spoken questions wait in line.
+        if config.kind == services::ProviderKind::Ollama {
+            return;
+        }
         let guide = self.rust().guide.clone();
         let epoch = self.rust().sync.progress.epoch;
         let location_context = guide
