@@ -170,7 +170,7 @@ fn inspect_shaded(snapshot: &screen::Snapshot) -> Option<Reading> {
         return RECENT.lock().unwrap().clone();
     }
     LAST.store(now, Ordering::Relaxed);
-    let body = json!({"model":"glm-ocr","stream":false,"keep_alive":"10m",
+    let body = json!({"model":"glm-ocr","stream":false,"keep_alive":"5m",
         "messages":[{"role":"user","content":"Text Recognition:","images":[snapshot.jpeg]}],
         "options":{"temperature":0,"num_predict":96}});
     let reply = reqwest::blocking::Client::builder()

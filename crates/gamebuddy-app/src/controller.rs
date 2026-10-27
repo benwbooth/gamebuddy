@@ -1392,6 +1392,7 @@ impl ffi::Buddy {
                 if let Ok(store) = Store::open(&self.rust().root) {
                     services::liquid::ensure(&store);
                 }
+                services::providers::unload_unused(&settings);
             }
             Err(e) => self.set_message(q(format!("Setup: {e:#}"))),
         }

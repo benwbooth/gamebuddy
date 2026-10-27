@@ -521,7 +521,7 @@ impl HttpProvider {
         let (url, body) = if self.config.kind == ProviderKind::Ollama {
             (
                 format!("{base}/api/chat"),
-                json!({"model":self.config.model,"stream":true,"think":false,"keep_alive":-1,
+                json!({"model":self.config.model,"stream":true,"think":false,"keep_alive":OLLAMA_KEEP_ALIVE,
                     "messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],
                     "options":{"temperature":0.4,"num_ctx":OLLAMA_CONTEXT,"num_predict":400}}),
             )
@@ -709,7 +709,7 @@ impl HttpProvider {
                 // Stay loaded (no reload mid-game) with one fixed context per
                 // model: a different num_ctx would make Ollama reload it. The
                 // largest prompts (route compilation) are about 80k tokens.
-                let mut body = json!({"model":self.config.model,"stream":false,"think":think,"keep_alive":-1,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":OLLAMA_CONTEXT,"num_predict":4096}});
+                let mut body = json!({"model":self.config.model,"stream":false,"think":think,"keep_alive":OLLAMA_KEEP_ALIVE,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":OLLAMA_CONTEXT,"num_predict":4096}});
                 if r.json {
                     body["format"] = schema.unwrap_or(json!("json"));
                 }
@@ -965,6 +965,53 @@ pub fn on_this_computer(config: &ProviderConfig) -> bool {
                 || config.endpoint.contains("://localhost")))
 }
 
+/// How long Ollama keeps a GameBuddy model loaded after its last use. Play
+/// uses it every few seconds, so it never reloads mid-game, and it frees the
+/// GPU on its own a while after the game (or a crash) instead of holding
+/// video memory until Ollama restarts.
+pub const OLLAMA_KEEP_ALIVE: &str = "15m";
+
+/// Unload the Ollama models GameBuddy loaded that the given settings no
+/// longer use (after switching setups), to make room on the GPU.
+pub fn unload_unused(settings: &Settings) {
+    let mut used: Vec<String> = vec![
+        settings.reasoning.model.clone(),
+        settings.vision.model.clone(),
+    ];
+    used.extend(settings.planning.as_ref().map(|p| p.model.clone()));
+    used.extend(settings.brain.provider.as_ref().map(|p| p.model.clone()));
+    let on_ollama = [&settings.reasoning, &settings.vision]
+        .iter()
+        .any(|c| c.kind == ProviderKind::Ollama);
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return,
+        };
+        let Ok(loaded) = client
+            .get("http://127.0.0.1:11434/api/ps")
+            .send()
+            .and_then(|r| r.json::<Value>())
+        else {
+            return;
+        };
+        // Only GameBuddy's own models; others the player loaded stay.
+        let ours = [LOCAL_MODEL, "qwen3.5:4b", "glm-ocr:latest", "glm-ocr"];
+        for model in loaded["models"].as_array().into_iter().flatten() {
+            let name = model["name"].as_str().unwrap_or_default();
+            if ours.contains(&name) && !(on_ollama && used.iter().any(|u| u == name)) {
+                let _ = client
+                    .post("http://127.0.0.1:11434/api/generate")
+                    .json(&json!({"model": name, "keep_alive": 0}))
+                    .send();
+            }
+        }
+    });
+}
+
 /// Context window for every Ollama model GameBuddy loads.
 pub const OLLAMA_CONTEXT: u32 = 131_072;
 
@@ -991,7 +1038,7 @@ pub fn prewarm_local(settings: &Settings) {
         }
         std::thread::spawn(move || {
             let url = format!("{}/api/chat", config.endpoint.trim_end_matches('/'));
-            let body = json!({"model":config.model,"keep_alive":-1,"messages":[],"options":{"num_ctx":OLLAMA_CONTEXT}});
+            let body = json!({"model":config.model,"keep_alive":OLLAMA_KEEP_ALIVE,"messages":[],"options":{"num_ctx":OLLAMA_CONTEXT}});
             let result = reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(300))
                 .build()
