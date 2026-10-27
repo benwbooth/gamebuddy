@@ -245,6 +245,13 @@ impl Settings {
             settings.brain.enabled = true;
             settings.brain.provider = None;
         }
+        // Local voice speaks with Kokoro when it is installed
+        // (scripts/setup-kokoro-speech): it sounds far more natural than Piper.
+        if matches!(preset, "local" | "device")
+            && let Some(kokoro) = kokoro_voice()
+        {
+            settings.prepared_speech = Some(kokoro);
+        }
         settings.single_provider = true;
         settings.reasoning = reasoning;
         settings.speech = speech;
@@ -872,6 +879,24 @@ pub fn accepts_images(config: &ProviderConfig) -> bool {
         .get_or_insert_with(HashMap::new)
         .insert(key, sees);
     sees
+}
+
+/// The installed Kokoro voice, if any: `<data>/models/<voice>.kokoro` with
+/// its runtime beside it.
+pub fn kokoro_voice() -> Option<crate::voice::speech::Config> {
+    let models = crate::store::data_dir().ok()?.join("models");
+    let python = models.join("kokoro-runtime").join("bin").join("python");
+    let voice = std::fs::read_dir(&models)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "kokoro"))
+        .min()?;
+    python.is_file().then(|| crate::voice::speech::Config {
+        enabled: true,
+        python: python.to_string_lossy().into_owned(),
+        model: voice,
+    })
 }
 
 /// Context window for every Ollama model GameBuddy loads.

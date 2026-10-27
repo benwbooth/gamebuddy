@@ -10,7 +10,11 @@
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ qtwayland ];
         qtEnv = pkgs.qt6.env "gamebuddy-qt" qtModules;
       in {
-        packages = { prepared-speech-runtime = pkgs.python3.withPackages (ps: [ (ps.toPythonModule pkgs.piper-tts) ]); };
+        packages = {
+          prepared-speech-runtime = pkgs.python3.withPackages (ps: [ (ps.toPythonModule pkgs.piper-tts) ]);
+          # Kokoro: a more natural local voice than Piper, on the CPU.
+          kokoro-speech-runtime = pkgs.python3.withPackages (ps: [ ps.kokoro ps.soundfile ps.numpy ps.spacy-models.en_core_web_sm ]);
+        };
         devShells.default = pkgs.mkShell {
           packages = (with pkgs; [ cargo rustc rustfmt clippy pkg-config clang cmake ninja ffmpeg yt-dlp whisper-cpp watchexec tesseract ])
             ++ qtModules ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.alsa-lib pkgs.libxcb-cursor pkgs.mold pkgs.pipewire pkgs.pulseaudio pkgs.xwayland pkgs.wayland pkgs.libxkbcommon pkgs.libGL pkgs.libgbm pkgs.libdrm pkgs.libinput pkgs.udev pkgs.seatd ];

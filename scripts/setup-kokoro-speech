@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Install the Kokoro voice (more natural than Piper, CPU) for local voice mode
+# and make it GameBuddy's spoken voice. Keeps the user's other settings.
+# Usage: setup-kokoro-speech [voice]   (default am_michael; af_heart is a
+# well-rated female voice)
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+models="${XDG_DATA_HOME:-$HOME/.local/share}/GameBuddy/models"
+voice="${1:-am_michael}"
+mkdir -p -- "$models"
+nix build "$project_dir#kokoro-speech-runtime" --out-link "$models/kokoro-runtime"
+printf '%s\n' "$voice" > "$models/$voice.kokoro"
+# Download the model and voice once, now, rather than during the first reply.
+printf '%s\n' '{"text":"Ready."}' | "$models/kokoro-runtime/bin/python" -u \
+  "$project_dir/scripts/speech-worker.py" "$models/$voice.kokoro" 2>/dev/null | head -2 >/dev/null
+echo "Kokoro voice $voice installed. Choose a local setup in GameBuddy's Models page to use it."
