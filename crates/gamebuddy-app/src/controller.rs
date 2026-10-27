@@ -1370,9 +1370,9 @@ impl ffi::Buddy {
         }
     }
     pub fn save_settings(mut self: Pin<&mut Self>, json: QString) {
-        if *self.busy() {
-            return;
-        }
+        // Saving never waits for background work: every model call reads the
+        // settings when it starts, and a click that silently did nothing
+        // while GameBuddy was preparing a guide looked broken.
         let result = (|| -> Result<Settings> {
             let mut s: Settings = serde_json::from_str(&json.to_string())?;
             s.apply_provider_scope();

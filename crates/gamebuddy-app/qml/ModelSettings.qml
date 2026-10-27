@@ -63,14 +63,14 @@ ScrollView {
         RowLayout {
             Layout.leftMargin:24; Layout.rightMargin:24; spacing:8
             Text { text:"Quick setup"; color:"#a3b4c7"; font.pixelSize:12 }
-            GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("openai") }
-            GbButton { objectName:"presetGemini"; text:"Gemini Live"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("gemini") }
-            GbButton { objectName:"presetLocal"; text:"Local (Claude + Ryan)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("local") }
-            GbButton { objectName:"presetDevice"; text:"On this computer (Ollama)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("device") }
+            GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; onClicked:page.backend.apply_preset("openai") }
+            GbButton { objectName:"presetGemini"; text:"Gemini Live"; onClicked:page.backend.apply_preset("gemini") }
+            GbButton { objectName:"presetLocal"; text:"Local (Claude + Ryan)"; onClicked:page.backend.apply_preset("local") }
+            GbButton { objectName:"presetDevice"; text:"On this computer (Ollama)"; onClicked:page.backend.apply_preset("device") }
         }
         RowLayout {
             Layout.leftMargin:24
-            GbButton { objectName:"saveModels"; text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty && !page.backend.busy; onClicked:page.save() }
+            GbButton { objectName:"saveModels"; text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty; onClicked:page.save() }
             GbButton { text:"Discard changes"; enabled:page.dirty; onClicked:page.reload() }
         }
         CheckBox {
@@ -151,7 +151,7 @@ ScrollView {
         Text { text:page.audioStatus; color:"#a3b4c7"; font.pixelSize:12; Layout.leftMargin:24; Layout.rightMargin:24; Layout.fillWidth:true; wrapMode:Text.WordWrap }
         RowLayout {
             Layout.leftMargin:24
-            GbButton { text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty && !page.backend.busy; onClicked:page.save() }
+            GbButton { text:page.dirty ? "Save changes" : "Settings saved"; accent:true; enabled:page.dirty; onClicked:page.save() }
             GbButton { text:"Discard changes"; enabled:page.dirty; onClicked:page.reload() }
         }
         Text { text:"Cloud providers receive the text and screenshots sent to them. API keys stay in environment variables; only their variable names are saved."; color:"#a3b4c7"; font.pixelSize:12; wrapMode:Text.WordWrap; Layout.fillWidth:true; Layout.margins:24; Layout.topMargin:0 }
