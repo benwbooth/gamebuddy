@@ -516,6 +516,7 @@ impl ffi::Buddy {
             services::spatial::prewarm(&store, &guide);
             if let Ok(Some(settings)) = store.get::<services::Settings>("settings") {
                 services::providers::prewarm_local(&settings);
+                services::liquid::ensure(&store);
             }
         }
         self.as_mut().poll_startup();
@@ -948,7 +949,7 @@ impl ffi::Buddy {
                         let settings = store.get::<Settings>("settings").ok().flatten();
                         let on_device = settings
                             .as_ref()
-                            .is_some_and(|s| s.reasoning.kind == services::ProviderKind::Ollama);
+                            .is_some_and(|s| services::providers::on_this_computer(&s.reasoning));
                         // Local voice: keep "what now?" answered ahead of time,
                         // as the live voices do. Not on one local GPU: there a
                         // spoken answer takes seconds, and this 12-second job
@@ -1086,7 +1087,7 @@ impl ffi::Buddy {
         let config = settings.unwrap_or_default().vision;
         // On one local GPU the brain already reads every screen moment; a
         // second describer only made spoken questions wait in line.
-        if config.kind == services::ProviderKind::Ollama {
+        if services::providers::on_this_computer(&config) {
             return;
         }
         let guide = self.rust().guide.clone();
@@ -1197,7 +1198,7 @@ impl ffi::Buddy {
         };
         // Automatic frame interpretation stays local by default. Remote visual
         // providers remain available through the explicit Compare control.
-        if settings.vision.kind != services::ProviderKind::Ollama {
+        if !services::providers::on_this_computer(&settings.vision) {
             return;
         }
         let initial = self.rust().sync.progress.clone();
@@ -1379,12 +1380,18 @@ impl ffi::Buddy {
     pub fn reset_progress(self: Pin<&mut Self>) {
         self.change_progress("reload");
     }
-    pub fn apply_preset(self: Pin<&mut Self>, preset: QString) {
+    pub fn apply_preset(mut self: Pin<&mut Self>, preset: QString) {
         let result = serde_json::from_str::<Settings>(&self.settings_json().to_string())
             .map_err(anyhow::Error::from)
             .and_then(|s| s.with_preset(&preset.to_string()));
         match result {
-            Ok(settings) => self.save_settings(q(serde_json::to_string(&settings).unwrap())),
+            Ok(settings) => {
+                self.as_mut()
+                    .save_settings(q(serde_json::to_string(&settings).unwrap()));
+                if let Ok(store) = Store::open(&self.rust().root) {
+                    services::liquid::ensure(&store);
+                }
+            }
             Err(e) => self.set_message(q(format!("Setup: {e:#}"))),
         }
     }

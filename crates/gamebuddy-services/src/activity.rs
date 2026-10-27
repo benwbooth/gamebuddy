@@ -490,7 +490,7 @@ fn interval_ms(store: &Store) -> u64 {
         .get::<Settings>("settings")
         .ok()
         .flatten()
-        .is_some_and(|s| s.reasoning.kind == crate::ProviderKind::Ollama);
+        .is_some_and(|s| crate::providers::on_this_computer(&s.reasoning));
     if local { 30_000 } else { 10_000 }
 }
 

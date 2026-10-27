@@ -228,6 +228,16 @@ impl Settings {
             ),
             "gemini" => (claude, SpeechBackend::GeminiLive),
             "local" => (claude, SpeechBackend::Local),
+            "liquid" => (
+                ProviderConfig {
+                    kind: ProviderKind::OpenAiCompatible,
+                    endpoint: LIQUID_ENDPOINT.into(),
+                    model: LIQUID_MODEL.into(),
+                    api_key_env: String::new(),
+                    reasoning_effort: String::new(),
+                },
+                SpeechBackend::Local,
+            ),
             "device" => (
                 ProviderConfig {
                     kind: ProviderKind::Ollama,
@@ -240,14 +250,14 @@ impl Settings {
             ),
             other => anyhow::bail!("Unknown setup: {other}"),
         };
-        if preset == "device" {
+        if matches!(preset, "device" | "liquid") {
             // The brain reads the screen with the same local model.
             settings.brain.enabled = true;
             settings.brain.provider = None;
         }
         // Local voice speaks with Kokoro when it is installed
         // (scripts/setup-kokoro-speech): it sounds far more natural than Piper.
-        if matches!(preset, "local" | "device")
+        if matches!(preset, "local" | "device" | "liquid")
             && let Some(kokoro) = kokoro_voice()
         {
             settings.prepared_speech = Some(kokoro);
@@ -706,10 +716,18 @@ impl HttpProvider {
             ProviderKind::OpenAiCompatible => {
                 let mut content = vec![json!({"type":"text","text":r.prompt})];
                 content.extend(r.images.iter().map(|data|json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}})));
-                (
-                    format!("{base}/chat/completions"),
-                    json!({"model":self.config.model,"messages":[{"role":"system","content":r.system},{"role":"user","content":content}]}),
-                )
+                let mut body = json!({"model":self.config.model,"messages":[{"role":"system","content":r.system},{"role":"user","content":content}]});
+                // llama-server and most compatible servers honour a JSON
+                // schema, which keeps a small model's replies well formed.
+                if r.json {
+                    body["response_format"] = match schema {
+                        Some(schema) => {
+                            json!({"type":"json_schema","json_schema":{"name":"reply","schema":schema}})
+                        }
+                        None => json!({"type":"json_object"}),
+                    };
+                }
+                (format!("{base}/chat/completions"), body)
             }
             ProviderKind::OpenAiResponses => {
                 let mut content = vec![json!({"type":"input_text","text":r.prompt})];
@@ -900,11 +918,26 @@ pub fn kokoro_voice() -> Option<crate::voice::speech::Config> {
     })
 }
 
+/// A model running on this computer (Ollama, or a local llama-server): small
+/// models that read the screen better in a short first pass, and that share
+/// one GPU with everything else.
+pub fn on_this_computer(config: &ProviderConfig) -> bool {
+    config.kind == ProviderKind::Ollama
+        || (config.kind == ProviderKind::OpenAiCompatible
+            && (config.endpoint.contains("://127.0.0.1")
+                || config.endpoint.contains("://localhost")))
+}
+
 /// Context window for every Ollama model GameBuddy loads.
 pub const OLLAMA_CONTEXT: u32 = 131_072;
 
 /// The on-device models GameBuddy uses with the "device" setup.
 pub const LOCAL_MODEL: &str = "qwen3.5:9b";
+
+/// Where GameBuddy's own llama-server for Liquid's LFM3 models listens
+/// (the "liquid" setup), and the model it serves.
+pub const LIQUID_ENDPOINT: &str = "http://127.0.0.1:11440/v1";
+pub const LIQUID_MODEL: &str = "lfm3-vl-2b";
 
 /// Load every Ollama model the settings use, in the background, and keep it
 /// loaded, so the first question of a session does not wait for a load.

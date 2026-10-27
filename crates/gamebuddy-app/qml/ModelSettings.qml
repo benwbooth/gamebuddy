@@ -65,6 +65,7 @@ ScrollView {
         Flow {
             Layout.fillWidth:true; Layout.leftMargin:24; Layout.rightMargin:24; spacing:8
             GbButton { objectName:"presetDevice"; text:"All local · this computer (Qwen + Kokoro)"; accent:true; onClicked:page.backend.apply_preset("device") }
+            GbButton { objectName:"presetLiquid"; text:"All local · Liquid LFM3 (fast, small)"; onClicked:page.backend.apply_preset("liquid") }
             GbButton { objectName:"presetLocal"; text:"Claude Sonnet + local voice"; onClicked:page.backend.apply_preset("local") }
             GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; onClicked:page.backend.apply_preset("openai") }
             GbButton { objectName:"presetGemini"; text:"Gemini Live"; onClicked:page.backend.apply_preset("gemini") }

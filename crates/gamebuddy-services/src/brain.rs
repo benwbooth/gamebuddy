@@ -321,7 +321,7 @@ pub fn think_with(
     if !sees {
         request.images.clear();
     }
-    if (provider.config.kind == crate::ProviderKind::Ollama || !sees)
+    if (crate::providers::on_this_computer(&provider.config) || !sees)
         && let Some(snapshot) = &snapshot
     {
         let mut images = vec![snapshot.jpeg.clone()];
@@ -449,7 +449,7 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     let since = snapshot.captured_at_ms.saturating_sub(job.last_at);
     // On one local GPU every brain update delays the player's next spoken
     // answer, so it looks at most every 12 s there.
-    let gap = if settings.reasoning.kind == crate::ProviderKind::Ollama
+    let gap = if crate::providers::on_this_computer(&settings.reasoning)
         && settings.brain.provider.is_none()
     {
         12_000

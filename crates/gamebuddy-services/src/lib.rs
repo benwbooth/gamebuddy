@@ -24,6 +24,7 @@ pub mod guide_browser;
 pub mod harness;
 pub mod journal;
 pub mod level_maps;
+pub mod liquid;
 pub mod navigation;
 pub mod plan;
 pub mod preparation;
