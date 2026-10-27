@@ -100,6 +100,16 @@ fn grouped(tsv: &str) -> BTreeMap<(u32, u32, u32), Vec<(String, f32)>> {
     lines
 }
 
+#[cfg(test)]
+#[test]
+fn glm_ocr_output_stops_at_its_repetition() {
+    let raw = "E:08056 T:00\nG:0006800\nI shall give you\na\n```\nM: 08056 T:00\n```";
+    assert_eq!(
+        ocr_lines(raw),
+        vec!["E:08056 T:00", "G:0006800", "I shall give you"]
+    );
+}
+
 pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
     let lines = grouped(tsv);
     for words in lines.values() {
@@ -141,7 +151,73 @@ pub fn event_from_tsv(tsv: &str) -> Option<(String, String, String)> {
     None
 }
 
+/// Read a shaded window capture (CRT scanlines, curvature) with the local
+/// GLM-OCR model, which reads such frames where Tesseract finds nothing.
+/// At most once a second, and only when the model is installed in Ollama.
+/// Clean RetroArch frames keep using Tesseract, which is fast and exact on them.
+fn inspect_shaded(snapshot: &screen::Snapshot) -> Option<Reading> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    static MISSING_UNTIL: AtomicU64 = AtomicU64::new(0);
+    // Between readings the last one stands, so text does not seem to vanish
+    // and reappear on every capture in between.
+    static RECENT: Mutex<Option<Reading>> = Mutex::new(None);
+    let now = screen::now_ms();
+    if now < MISSING_UNTIL.load(Ordering::Relaxed) {
+        return None;
+    }
+    if now.saturating_sub(LAST.load(Ordering::Relaxed)) < 1_000 {
+        return RECENT.lock().unwrap().clone();
+    }
+    LAST.store(now, Ordering::Relaxed);
+    let body = json!({"model":"glm-ocr","stream":false,"keep_alive":"10m",
+        "messages":[{"role":"user","content":"Text Recognition:","images":[snapshot.jpeg]}],
+        "options":{"temperature":0,"num_predict":96}});
+    let reply = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .ok()?
+        .post("http://127.0.0.1:11434/api/chat")
+        .json(&body)
+        .send()
+        .ok()?;
+    if !reply.status().is_success() {
+        // Not installed (or Ollama is not running): look again in a minute.
+        MISSING_UNTIL.store(now + 60_000, Ordering::Relaxed);
+        return None;
+    }
+    let text = reply.json::<Value>().ok()?["message"]["content"]
+        .as_str()?
+        .to_owned();
+    let reading = Reading {
+        event: None,
+        lines: ocr_lines(&text),
+    };
+    *RECENT.lock().unwrap() = Some(reading.clone());
+    Some(reading)
+}
+
+/// GLM-OCR's lines, up to the first code fence (it repeats itself after it).
+fn ocr_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = vec![];
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("```") {
+            break;
+        }
+        if line.len() >= 3 && !lines.iter().any(|l| l == line) {
+            lines.push(line.to_owned());
+        }
+    }
+    lines
+}
+
 pub fn inspect(snapshot: &screen::Snapshot) -> Result<Reading> {
+    if snapshot.metadata["source"] != "retroarch_raw"
+        && let Some(reading) = inspect_shaded(snapshot)
+    {
+        return Ok(reading);
+    }
     let image = image::load_from_memory(&STANDARD.decode(&snapshot.jpeg)?)?;
     // Text events are generally central overlays. Preserve enough resolution
     // for bitmap fonts; no model or full-frame text generation is required.
