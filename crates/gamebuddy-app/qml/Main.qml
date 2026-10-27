@@ -217,7 +217,12 @@ ApplicationWindow {
             const path = voice.poll(buddy.voice_directory(), buddy.busy || root.voiceTurnRunning || root.queuedVoice.length > 0,
                 speech.busy,
                 companion.recording || companion.pendingRecording, root.liveVoiceEnabled)
-            if (path.length) root.queuedVoice = path
+            if (path.length) {
+                // A new question while the last is still being answered
+                // replaces it: drop the rest of that answer.
+                if (root.voiceTurnRunning || speech.speaking) { root.bargedTurn = true; acknowledge.stop(); speech.silence() }
+                root.queuedVoice = path
+            }
             if (root.queuedVoice.length && !buddy.busy) {
                 const ready = root.queuedVoice
                 root.queuedVoice = ""; root.voiceTurnRunning = true; root.bargedTurn = false

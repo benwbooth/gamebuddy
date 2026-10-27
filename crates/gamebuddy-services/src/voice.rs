@@ -107,21 +107,33 @@ pub struct BargeIn {
     pending: VecDeque<i16>,
     recent: VecDeque<i16>,
     echo: f64,
-    run: usize,
+    /// Whether each of the last BARGE_WINDOW frames sounded like the player.
+    window: VecDeque<bool>,
+    /// Frames heard since GameBuddy started speaking; the first few only
+    /// teach the echo level.
+    heard: usize,
 }
 
-const BARGE_FRAMES: usize = 15;
-const BARGE_FLOOR: f64 = 1_200.0;
+/// About a quarter second of GameBuddy speaking before an interruption can
+/// count, so its own voice from speakers is learned first.
+const BARGE_WARMUP: usize = 12;
+/// Speech dips between syllables, so the player counts as talking when most
+/// of the last 0.4 s, not every frame of it, is loud voice.
+const BARGE_WINDOW: usize = 20;
+const BARGE_FRAMES: usize = 13;
+// Quiet microphones (a dynamic mic at modest gain) speak at a few hundred.
+const BARGE_FLOOR: f64 = 250.0;
 const BARGE_RATIO: f64 = 2.5;
 
 impl Default for BargeIn {
     fn default() -> Self {
         Self {
-            vad: Vad::new_with_rate_and_mode(SampleRate::Rate16kHz, VadMode::VeryAggressive),
+            vad: Vad::new_with_rate_and_mode(SampleRate::Rate16kHz, VadMode::Aggressive),
             pending: VecDeque::new(),
             recent: VecDeque::new(),
             echo: 0.0,
-            run: 0,
+            window: VecDeque::new(),
+            heard: 0,
         }
     }
 }
@@ -144,15 +156,19 @@ impl BargeIn {
             let level = Self::rms(&frame);
             let speech = self.vad.is_voice_segment(&frame).unwrap_or(false);
             let loud = level > BARGE_FLOOR.max(self.echo * BARGE_RATIO);
-            if speech && loud {
-                self.run += 1;
-            } else {
-                self.run = 0;
-                // The echo level rises quickly and falls slowly.
-                let rate = if level > self.echo { 0.3 } else { 0.02 };
-                self.echo += (level - self.echo) * rate;
+            self.heard += 1;
+            if self.heard <= BARGE_WARMUP {
+                self.echo = self.echo.max(level);
+                continue;
             }
-            if self.run >= BARGE_FRAMES {
+            // The echo level is learned only in the warm-up: learning it
+            // later would learn the player's own quieter syllables as echo.
+            let player = speech && loud;
+            self.window.push_back(player);
+            while self.window.len() > BARGE_WINDOW {
+                self.window.pop_front();
+            }
+            if self.window.iter().filter(|&&p| p).count() >= BARGE_FRAMES {
                 return true;
             }
         }
@@ -161,13 +177,15 @@ impl BargeIn {
     /// The last second of audio, to start the player's turn with.
     pub fn take_audio(&mut self) -> Vec<i16> {
         self.pending.clear();
-        self.run = 0;
+        self.window.clear();
         std::mem::take(&mut self.recent).into()
     }
     pub fn reset(&mut self) {
         self.pending.clear();
         self.recent.clear();
-        self.run = 0;
+        self.window.clear();
+        self.heard = 0;
+        self.echo = 0.0;
     }
 }
 
@@ -463,15 +481,19 @@ mod tests {
 mod barge_tests {
     use super::*;
 
+    /// Speech-like test audio: syllables four times a second with a gliding
+    /// pitch and harmonics. (A steady tone stops counting as speech.)
     fn tone(amplitude: f64, frames: usize) -> Vec<i16> {
+        let mut phase = 0.0_f64;
         (0..frames * FRAME)
             .map(|i| {
                 let t = i as f64 / 16_000.0;
-                // A voiced, speech-like mix of a 150 Hz fundamental and harmonics.
+                let pitch = 120.0 + 80.0 * (2.0 * std::f64::consts::PI * 1.3 * t).sin().abs();
+                phase += 2.0 * std::f64::consts::PI * pitch / 16_000.0;
+                let syllable = 0.35 + 0.65 * (std::f64::consts::PI * 4.0 * t).sin().powi(2);
                 (amplitude
-                    * ((2.0 * std::f64::consts::PI * 150.0 * t).sin()
-                        + 0.5 * (2.0 * std::f64::consts::PI * 300.0 * t).sin()
-                        + 0.3 * (2.0 * std::f64::consts::PI * 450.0 * t).sin())
+                    * syllable
+                    * (phase.sin() + 0.5 * (2.0 * phase).sin() + 0.3 * (3.0 * phase).sin())
                     / 1.8) as i16
             })
             .collect()
@@ -480,14 +502,22 @@ mod barge_tests {
     #[test]
     fn quiet_echo_never_interrupts_and_a_loud_voice_does() {
         let mut barge = BargeIn::default();
-        // Two seconds of GameBuddy's own voice echoing back quietly.
-        assert!(!barge.feed(&tone(900.0, 100)));
+        // Two seconds of GameBuddy's own voice echoing back from speakers.
+        assert!(!barge.feed(&tone(2_500.0, 100)));
         // A short loud blip is not enough.
         assert!(!barge.feed(&tone(9_000.0, 5)));
-        assert!(!barge.feed(&tone(900.0, 20)));
+        assert!(!barge.feed(&tone(2_500.0, 20)));
         // The player talking over it for half a second is.
-        let interrupted = barge.feed(&tone(9_000.0, 25));
+        let interrupted = barge.feed(&tone(12_000.0, 25));
         assert!(interrupted);
         assert!(!barge.take_audio().is_empty());
+    }
+
+    #[test]
+    fn with_headphones_a_quiet_microphone_still_interrupts() {
+        let mut barge = BargeIn::default();
+        // No echo at all, then ordinary speech from a low-gain microphone.
+        assert!(!barge.feed(&vec![0; 50 * FRAME]));
+        assert!(barge.feed(&tone(1_500.0, 25)));
     }
 }

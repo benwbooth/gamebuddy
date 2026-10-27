@@ -71,6 +71,7 @@ pub struct VoiceInputRust {
     monitor: Option<Monitor>,
     native: cxx::UniquePtr<ffi::Microphone>,
     resume_after: Instant,
+    echo_until: Instant,
     pcm: Vec<u8>,
 }
 impl Default for VoiceInputRust {
@@ -89,6 +90,7 @@ impl Default for VoiceInputRust {
             monitor: None,
             native: cxx::UniquePtr::null(),
             resume_after: Instant::now(),
+            echo_until: Instant::now(),
             pcm: Vec::new(),
         }
     }
@@ -166,7 +168,10 @@ impl ffi::VoiceInput {
         }
         // While GameBuddy speaks, keep listening for the player talking over
         // it; otherwise capture pauses while a turn is being answered.
-        let blocked = (busy && !speaking) || push_to_talk;
+        // Also listen while an answer is being worked out: speaking again
+        // then replaces the question instead of being talked over.
+        let _ = busy;
+        let blocked = push_to_talk;
         if blocked {
             self.as_mut().rust_mut().resume_after = Instant::now() + Duration::from_millis(800);
         }
@@ -203,16 +208,21 @@ impl ffi::VoiceInput {
                 self.as_mut().rust_mut().pcm = remainder;
                 if speaking {
                     // A short tail after GameBuddy stops is still its echo.
-                    self.as_mut().rust_mut().resume_after =
+                    // Not resume_after: that switches capture off, so no interrupting.
+                    self.as_mut().rust_mut().echo_until =
                         Instant::now() + Duration::from_millis(400);
                     // GameBuddy's own voice must not become a turn: only an
                     // interruption starts one, with the audio that caused it.
                     if self.as_mut().rust_mut().barge.feed(&samples) {
                         let audio = self.as_mut().rust_mut().barge.take_audio();
                         let _ = self.as_mut().rust_mut().segmenter.feed(&audio);
+                        gamebuddy_services::flight::event(
+                            "voice",
+                            serde_json::json!({"kind": "barge_in"}),
+                        );
                         self.as_mut().barged_in();
                     }
-                } else if Instant::now() < self.rust().resume_after
+                } else if Instant::now() < self.rust().echo_until
                     && !self.rust().segmenter.speaking()
                 {
                     self.as_mut().rust_mut().barge.reset();
