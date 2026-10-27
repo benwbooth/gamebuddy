@@ -18,6 +18,7 @@ pub mod ffi {
         #[qproperty(QString, answer)]
         #[qproperty(QString, chat_error)]
         #[qproperty(bool, busy)]
+        #[qproperty(bool, answer_spoken)]
         #[qproperty(bool, preparing)]
         #[qproperty(bool, matching)]
         #[qproperty(QString, transcript)]
@@ -85,6 +86,9 @@ pub mod ffi {
         );
         #[qsignal]
         fn provider_result(self: Pin<&mut Buddy>, id: QString, result: QString);
+        /// One sentence of a spoken answer, as soon as it is written.
+        #[qsignal]
+        fn say_part(self: Pin<&mut Buddy>, text: QString);
         #[qinvokable]
         fn capture_path(self: &Buddy) -> QString;
         #[qinvokable]
@@ -147,6 +151,7 @@ pub struct BuddyRust {
     answer: QString,
     chat_error: QString,
     busy: bool,
+    answer_spoken: bool,
     preparing: bool,
     matching: bool,
     vision_inflight: bool,
@@ -183,6 +188,7 @@ impl Default for BuddyRust {
             answer: QString::default(),
             chat_error: QString::default(),
             busy: false,
+            answer_spoken: false,
             preparing: false,
             matching: false,
             vision_inflight: false,
@@ -234,6 +240,8 @@ enum Outcome {
     Answer(Result<String>),
     Vision(String, services::screen::Ticket),
     Voice(String, String),
+    /// A voice answer whose sentences were already spoken as they streamed.
+    VoiceSpoken(String, String),
     VoiceCommand(String, i32),
 }
 // Own only plain Rust data: database reads, navigation construction and JSON
@@ -599,6 +607,7 @@ impl ffi::Buddy {
                     }else{object.as_mut().set_message(q("Screen settings changed; discarded the earlier comparison."));}
                 },
                 Ok(Outcome::Voice(transcript,answer))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().set_answer(q(answer));object.as_mut().set_message(q("Ready to listen"));},
+                Ok(Outcome::VoiceSpoken(transcript,answer))=>{object.as_mut().set_answer_spoken(true);object.as_mut().set_transcript(q(transcript));object.as_mut().set_answer(q(answer));object.as_mut().set_answer_spoken(false);object.as_mut().set_message(q("Ready to listen"));},
                 Ok(Outcome::VoiceCommand(transcript,action))=>{object.as_mut().set_transcript(q(transcript));object.as_mut().voice_command(action);object.as_mut().set_message(q("Voice command applied"));},
                 Err(e)=>object.as_mut().set_message(q(format!("{e:#}"))),
             }
@@ -1490,6 +1499,7 @@ impl ffi::Buddy {
         }
         self.as_mut().set_chat_error(q(""));
         let game = self.rust().game.clone();
+        let thread = self.qt_thread();
         self.background(
             "Listening to your recording… (first use downloads the local speech model)",
             move |root| {
@@ -1529,10 +1539,20 @@ impl ffi::Buddy {
                     .and_then(|id| store.guide(&id).ok())
                     .filter(|g| g.game.eq_ignore_ascii_case(&game))
                 {
-                    match services::voice::talk::answer(&store, &guide, &transcript) {
+                    let mut speak = |sentence: String| {
+                        let _ = thread.queue(move |mut object| {
+                            object.as_mut().say_part(q(sentence));
+                        });
+                    };
+                    match services::voice::talk::answer_streaming(
+                        &store,
+                        &guide,
+                        &transcript,
+                        &mut speak,
+                    ) {
                         Ok(answer) => {
                             services::voice::prefetch::schedule(store.root.clone(), guide);
-                            return Ok(Outcome::Voice(transcript, answer));
+                            return Ok(Outcome::VoiceSpoken(transcript, answer));
                         }
                         Err(error) => eprintln!("Voice answer: {error:#}"),
                     }

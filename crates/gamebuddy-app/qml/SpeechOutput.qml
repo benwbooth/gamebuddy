@@ -21,7 +21,24 @@ Item {
 
     onDirectoryChanged: if (directory.length) neural.configure(directory)
 
-    function say(value) {
+    // Sentences waiting for the one being spoken to finish.
+    property var queued: []
+    // Speak after whatever is being said now; a streamed answer arrives one
+    // sentence at a time. A filler ("One sec.") is cut off, not waited for.
+    function append(value) {
+        if (!speaking || filler) { filler = false; say(value, true); return }
+        queued = queued.concat([value])
+    }
+    property bool filler: false
+    function sayNext() {
+        if (speaking || !queued.length) return
+        const next = queued[0]
+        queued = queued.slice(1)
+        say(next, true)
+    }
+    onSpeakingChanged: if (!speaking) Qt.callLater(sayNext)
+    function say(value, keepQueue) {
+        if (!keepQueue) queued = []
         stop()
         text = value
         if (directory.length && neural.configure(directory) && neural.speak(value)) {
@@ -29,6 +46,11 @@ Item {
             return
         }
         system.say(value)
+    }
+    // Stop and forget anything queued (the player interrupted or asked to stop).
+    function silence() {
+        queued = []; filler = false
+        stop()
     }
     function stop() {
         neural.stop()

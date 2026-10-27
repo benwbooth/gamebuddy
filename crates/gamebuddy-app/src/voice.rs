@@ -30,6 +30,9 @@ pub mod ffi {
         #[qproperty(QString, error)]
         #[qproperty(QString, device_name)]
         type VoiceInput = super::VoiceInputRust;
+        /// The player started talking over GameBuddy's spoken reply.
+        #[qsignal]
+        fn barged_in(self: Pin<&mut VoiceInput>);
         #[qinvokable]
         fn toggle_listening(self: Pin<&mut VoiceInput>);
         #[qinvokable]
@@ -47,7 +50,7 @@ pub mod ffi {
 }
 use cxx_qt::CxxQtType;
 use cxx_qt_lib::QString;
-use gamebuddy_services::voice::{MicGate, Segmenter, mute::Monitor, save_turn};
+use gamebuddy_services::voice::{BargeIn, MicGate, Segmenter, mute::Monitor, save_turn};
 use std::{
     path::Path,
     pin::Pin,
@@ -64,6 +67,7 @@ pub struct VoiceInputRust {
     device_name: QString,
     gate: MicGate,
     segmenter: Segmenter,
+    barge: BargeIn,
     monitor: Option<Monitor>,
     native: cxx::UniquePtr<ffi::Microphone>,
     resume_after: Instant,
@@ -81,6 +85,7 @@ impl Default for VoiceInputRust {
             device_name: QString::default(),
             gate: MicGate::default(),
             segmenter: Segmenter::default(),
+            barge: BargeIn::default(),
             monitor: None,
             native: cxx::UniquePtr::null(),
             resume_after: Instant::now(),
@@ -159,7 +164,9 @@ impl ffi::VoiceInput {
             }));
             return QString::default();
         }
-        let blocked = busy || speaking || push_to_talk;
+        // While GameBuddy speaks, keep listening for the player talking over
+        // it; otherwise capture pauses while a turn is being answered.
+        let blocked = (busy && !speaking) || push_to_talk;
         if blocked {
             self.as_mut().rust_mut().resume_after = Instant::now() + Duration::from_millis(800);
         }
@@ -194,8 +201,26 @@ impl ffi::VoiceInput {
                 let samples: Vec<i16> = chunks.iter().map(|s| i16::from_ne_bytes(*s)).collect();
                 let remainder = remainder.to_vec();
                 self.as_mut().rust_mut().pcm = remainder;
-                if let Some(turn) = self.as_mut().rust_mut().segmenter.feed(&samples) {
-                    finished = Some(turn);
+                if speaking {
+                    // A short tail after GameBuddy stops is still its echo.
+                    self.as_mut().rust_mut().resume_after =
+                        Instant::now() + Duration::from_millis(400);
+                    // GameBuddy's own voice must not become a turn: only an
+                    // interruption starts one, with the audio that caused it.
+                    if self.as_mut().rust_mut().barge.feed(&samples) {
+                        let audio = self.as_mut().rust_mut().barge.take_audio();
+                        let _ = self.as_mut().rust_mut().segmenter.feed(&audio);
+                        self.as_mut().barged_in();
+                    }
+                } else if Instant::now() < self.rust().resume_after
+                    && !self.rust().segmenter.speaking()
+                {
+                    self.as_mut().rust_mut().barge.reset();
+                } else {
+                    self.as_mut().rust_mut().barge.reset();
+                    if let Some(turn) = self.as_mut().rust_mut().segmenter.feed(&samples) {
+                        finished = Some(turn);
+                    }
                 }
                 let speaking = self.rust().segmenter.speaking();
                 self.as_mut().set_speaking(speaking);

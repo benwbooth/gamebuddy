@@ -96,6 +96,81 @@ impl Default for Segmenter {
         }
     }
 }
+/// Hears the player talking over GameBuddy's own voice. Without echo
+/// cancellation the microphone also picks up GameBuddy from the speakers, so
+/// a frame only counts when the voice detector hears speech and it is much
+/// louder than the level the speakers' echo has been reaching. About a third
+/// of a second of that interrupts. Keeps the last second of audio so the
+/// interrupting words are not lost.
+pub struct BargeIn {
+    vad: Vad,
+    pending: VecDeque<i16>,
+    recent: VecDeque<i16>,
+    echo: f64,
+    run: usize,
+}
+
+const BARGE_FRAMES: usize = 15;
+const BARGE_FLOOR: f64 = 1_200.0;
+const BARGE_RATIO: f64 = 2.5;
+
+impl Default for BargeIn {
+    fn default() -> Self {
+        Self {
+            vad: Vad::new_with_rate_and_mode(SampleRate::Rate16kHz, VadMode::VeryAggressive),
+            pending: VecDeque::new(),
+            recent: VecDeque::new(),
+            echo: 0.0,
+            run: 0,
+        }
+    }
+}
+
+impl BargeIn {
+    fn rms(frame: &[i16]) -> f64 {
+        (frame.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / frame.len().max(1) as f64)
+            .sqrt()
+    }
+    /// Feed microphone audio captured while GameBuddy speaks; true once the
+    /// player has clearly started talking over it.
+    pub fn feed(&mut self, samples: &[i16]) -> bool {
+        self.pending.extend(samples);
+        self.recent.extend(samples);
+        while self.recent.len() > 50 * FRAME {
+            self.recent.pop_front();
+        }
+        while self.pending.len() >= FRAME {
+            let frame: Vec<_> = self.pending.drain(..FRAME).collect();
+            let level = Self::rms(&frame);
+            let speech = self.vad.is_voice_segment(&frame).unwrap_or(false);
+            let loud = level > BARGE_FLOOR.max(self.echo * BARGE_RATIO);
+            if speech && loud {
+                self.run += 1;
+            } else {
+                self.run = 0;
+                // The echo level rises quickly and falls slowly.
+                let rate = if level > self.echo { 0.3 } else { 0.02 };
+                self.echo += (level - self.echo) * rate;
+            }
+            if self.run >= BARGE_FRAMES {
+                return true;
+            }
+        }
+        false
+    }
+    /// The last second of audio, to start the player's turn with.
+    pub fn take_audio(&mut self) -> Vec<i16> {
+        self.pending.clear();
+        self.run = 0;
+        std::mem::take(&mut self.recent).into()
+    }
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.recent.clear();
+        self.run = 0;
+    }
+}
+
 impl Segmenter {
     pub fn speaking(&self) -> bool {
         self.voiced >= 3 && self.silence < END_SILENCE
@@ -381,5 +456,38 @@ mod tests {
         );
         assert_eq!(quick_reply("Hello. Where should I go?"), None);
         assert_eq!(quick_reply("Thanks, now open the guide."), None);
+    }
+}
+
+#[cfg(test)]
+mod barge_tests {
+    use super::*;
+
+    fn tone(amplitude: f64, frames: usize) -> Vec<i16> {
+        (0..frames * FRAME)
+            .map(|i| {
+                let t = i as f64 / 16_000.0;
+                // A voiced, speech-like mix of a 150 Hz fundamental and harmonics.
+                (amplitude
+                    * ((2.0 * std::f64::consts::PI * 150.0 * t).sin()
+                        + 0.5 * (2.0 * std::f64::consts::PI * 300.0 * t).sin()
+                        + 0.3 * (2.0 * std::f64::consts::PI * 450.0 * t).sin())
+                    / 1.8) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn quiet_echo_never_interrupts_and_a_loud_voice_does() {
+        let mut barge = BargeIn::default();
+        // Two seconds of GameBuddy's own voice echoing back quietly.
+        assert!(!barge.feed(&tone(900.0, 100)));
+        // A short loud blip is not enough.
+        assert!(!barge.feed(&tone(9_000.0, 5)));
+        assert!(!barge.feed(&tone(900.0, 20)));
+        // The player talking over it for half a second is.
+        let interrupted = barge.feed(&tone(9_000.0, 25));
+        assert!(interrupted);
+        assert!(!barge.take_audio().is_empty());
     }
 }

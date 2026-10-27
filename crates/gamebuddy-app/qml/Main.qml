@@ -28,6 +28,8 @@ ApplicationWindow {
     property bool overlayHidden: false
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
+    // The player talked over the current answer: drop the rest of it.
+    property bool bargedTurn: false
     // Local voice: a short spoken "mm, let me look" when the answer is not
     // back quickly, so a pause never sounds like GameBuddy did not hear.
     property int acknowledgements: 0
@@ -37,7 +39,7 @@ ApplicationWindow {
         onTriggered: {
             if (!root.voiceTurnRunning || speech.speaking) return
             const lines = ["Mm, let me look.", "One sec.", "Hang on, checking.", "Okay, looking."]
-            speech.say(lines[root.acknowledgements++ % lines.length])
+            speech.say(lines[root.acknowledgements++ % lines.length]); speech.filler = true
         }
     }
     property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
@@ -149,7 +151,9 @@ ApplicationWindow {
         Component.onCompleted: initialize()
         onChat_errorChanged: root.noteOutOfTokens(chat_error)
         onMessageChanged: root.noteOutOfTokens(message)
-        onAnswerChanged: { if (!root.liveVoiceEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
+        onAnswerChanged: { if (!root.liveVoiceEnabled && companion.spokenReplies && answer.length > 0 && !answer_spoken) speech.say(answer) }
+        // Local voice: speak each sentence as soon as it is written.
+        onSay_part: text => { acknowledge.stop(); if (!root.liveVoiceEnabled && companion.spokenReplies && !root.bargedTurn) speech.append(text) }
         onVoice_command: action => root.overlayAction(action)
         onBusyChanged: if (!busy) { root.voiceTurnRunning = false; acknowledge.stop() }
     }
@@ -200,6 +204,8 @@ ApplicationWindow {
         }
     }
     VoiceInput {
+        // Talking over GameBuddy stops it; the words become the next turn.
+        onBarged_in: { root.bargedTurn = true; acknowledge.stop(); speech.silence() }
         id: voice
         armed: compositor.active && root.appArguments.indexOf("--no-listen") < 0
         onActiveChanged: if (active) root.overlayHidden = false
@@ -214,7 +220,7 @@ ApplicationWindow {
             if (path.length) root.queuedVoice = path
             if (root.queuedVoice.length && !buddy.busy) {
                 const ready = root.queuedVoice
-                root.queuedVoice = ""; root.voiceTurnRunning = true
+                root.queuedVoice = ""; root.voiceTurnRunning = true; root.bargedTurn = false
                 if (!root.liveVoiceEnabled && companion.spokenReplies) acknowledge.restart()
                 buddy.voice_turn(ready)
             }
@@ -268,7 +274,7 @@ ApplicationWindow {
         onCaptureRequested: { replay.stop(); replay.source = ""; root.captureError = ""; if (compositor.active) root.autoSync = !root.autoSync; else { capture.active = !capture.active; root.autoSync = capture.active } }
         onCropRequested: root.openCrop()
         onWorkbenchRequested: { if (compositor.active) root.overlayOptions = true; else { root.visible = true; root.raise(); root.requestActivate() } }
-        onStopSpeaking: { speech.stop(); realtimeVoice.stopSpeaking(); liveVoice.stopSpeaking() }
+        onStopSpeaking: { speech.silence(); realtimeVoice.stopSpeaking(); liveVoice.stopSpeaking() }
         onWidgetsToggled: shown => root.widgetsEnabled = shown
         onArrangementChanged: active => { root.editOverlay = active; root.widgetsEnabled = true }
     }

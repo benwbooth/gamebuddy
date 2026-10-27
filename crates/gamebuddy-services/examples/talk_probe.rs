@@ -34,10 +34,13 @@ fn main() -> Result<()> {
     for question in &args[5..] {
         screen::publish_at(&store, &ticket, frame, "window", screen::now_ms())?;
         let started = std::time::Instant::now();
-        let answer = talk::answer(&store, &guide, question);
+        let mut first = None;
+        let answer = talk::answer_streaming(&store, &guide, question, &mut |_| {
+            first.get_or_insert(started.elapsed().as_secs_f64());
+        });
         println!(
             "{}",
-            serde_json::json!({"question": question, "seconds": started.elapsed().as_secs_f64(),
+            serde_json::json!({"question": question, "first_sentence_seconds": first, "seconds": started.elapsed().as_secs_f64(),
                 "answer": answer.as_ref().map_err(|e| format!("{e:#}"))})
         );
     }

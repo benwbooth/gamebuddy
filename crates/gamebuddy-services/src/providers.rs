@@ -479,6 +479,93 @@ impl HttpProvider {
         )?))
     }
 }
+impl HttpProvider {
+    /// Like `complete`, but hands the text over as it is generated, so speech
+    /// can start on the first sentence. Ollama and OpenAI-compatible servers
+    /// stream; other providers deliver the whole answer as one piece.
+    pub fn complete_streaming(
+        &self,
+        r: ModelRequest,
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<String> {
+        use std::io::BufRead;
+        if !matches!(
+            self.config.kind,
+            ProviderKind::Ollama | ProviderKind::OpenAiCompatible
+        ) {
+            let text = self.complete(r)?;
+            on_text(&text);
+            return Ok(text);
+        }
+        let permit = crate::scheduler::acquire(&self.config.kind, crate::scheduler::Priority::Live);
+        let started = std::time::Instant::now();
+        let base = self.config.endpoint.trim_end_matches('/');
+        let (url, body) = if self.config.kind == ProviderKind::Ollama {
+            (
+                format!("{base}/api/chat"),
+                json!({"model":self.config.model,"stream":true,"think":false,"keep_alive":-1,
+                    "messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],
+                    "options":{"temperature":0.4,"num_ctx":OLLAMA_CONTEXT,"num_predict":400}}),
+            )
+        } else {
+            let mut content = vec![json!({"type":"text","text":r.prompt})];
+            content.extend(r.images.iter().map(|data| json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}})));
+            (
+                format!("{base}/chat/completions"),
+                json!({"model":self.config.model,"stream":true,"max_tokens":400,
+                    "messages":[{"role":"system","content":r.system},{"role":"user","content":content}]}),
+            )
+        };
+        let mut request = self.client.post(url).json(&body);
+        if let Some(key) = self.key()? {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .context("Could not reach the model provider")?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().unwrap_or_default();
+            anyhow::bail!(
+                "Model provider returned HTTP {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
+        }
+        let mut answer = String::new();
+        for line in std::io::BufReader::new(response).lines() {
+            let line = line?;
+            let line = line.trim();
+            let data = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            let piece = event["message"]["content"]
+                .as_str()
+                .or_else(|| event["choices"][0]["delta"]["content"].as_str())
+                .unwrap_or_default();
+            if !piece.is_empty() {
+                answer.push_str(piece);
+                on_text(piece);
+            }
+            if event["done"] == true {
+                break;
+            }
+        }
+        drop(permit);
+        crate::flight::event(
+            "model",
+            json!({"provider": format!("{:?}", self.config.kind), "model": self.config.model,
+                "purpose": r.system.chars().take(80).collect::<String>(), "ms": started.elapsed().as_millis() as u64,
+                "prompt_bytes": r.prompt.len(), "images": r.images.len(), "streamed": true}),
+        );
+        ensure!(!answer.trim().is_empty(), "The model returned no answer");
+        Ok(answer)
+    }
+}
+
 impl ReasoningProvider for HttpProvider {
     fn complete(&self, r: ModelRequest) -> Result<String> {
         self.complete_patiently(r, None)
