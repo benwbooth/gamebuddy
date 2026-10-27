@@ -38,7 +38,8 @@ ApplicationWindow {
         interval: 1800
         onTriggered: {
             if (!root.voiceTurnRunning || speech.speaking) return
-            const lines = ["Mm, let me look.", "One sec.", "Hang on, checking.", "Okay, looking."]
+            // Plain words only: speech engines spell out sounds like "Mm" as letters.
+            const lines = ["Let me look.", "One sec.", "Hang on, checking.", "Okay, looking."]
             speech.say(lines[root.acknowledgements++ % lines.length]); speech.filler = true
         }
     }
