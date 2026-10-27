@@ -1,5 +1,5 @@
 //! Run the brain once on recorded frames, in a copy of the data directory:
-//! brain_probe <data dir copy> <guide id> <provider: ollama:MODEL | current> <frame.jpg>...
+//! brain_probe <data dir copy> <guide id> <provider: ollama:MODEL | openai:ENDPOINT|MODEL | current> <frame.jpg>...
 //! The first frame is "now"; any others are earlier moments, oldest first.
 //! Set GAMEBUDDY_QUESTION to ask a spoken question.
 //! Writes the situation and timing as JSON. Never use the live data directory:
@@ -12,6 +12,20 @@ fn main() -> Result<()> {
     let store = Store::open(args.get(1).context("Data directory copy")?)?;
     let guide = store.guide(args.get(2).context("Guide id")?)?;
     let mut settings: Settings = store.get("settings")?.unwrap_or_default();
+    // openai:<endpoint>|<model> for a llama.cpp or other OpenAI-compatible server.
+    if let Some((endpoint, model)) = args
+        .get(3)
+        .and_then(|p| p.strip_prefix("openai:"))
+        .and_then(|p| p.split_once('|'))
+    {
+        settings.brain.provider = Some(ProviderConfig {
+            kind: ProviderKind::OpenAiCompatible,
+            endpoint: endpoint.into(),
+            model: model.into(),
+            api_key_env: String::new(),
+            reasoning_effort: String::new(),
+        });
+    }
     if let Some(model) = args.get(3).and_then(|p| p.strip_prefix("ollama:")) {
         settings.brain.provider = Some(ProviderConfig {
             kind: ProviderKind::Ollama,
