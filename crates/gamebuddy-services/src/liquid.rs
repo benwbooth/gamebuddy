@@ -200,8 +200,13 @@ fn serve(server: &Server) -> Result<()> {
     {
         use std::os::unix::process::CommandExt;
         unsafe {
-            command.pre_exec(|| {
+            let parent = libc::getpid();
+            command.pre_exec(move || {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                // GameBuddy already gone before the signal was armed.
+                if libc::getppid() != parent {
+                    libc::_exit(0);
+                }
                 Ok(())
             });
         }
