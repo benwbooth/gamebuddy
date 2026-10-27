@@ -38,7 +38,7 @@ Rectangle {
     color: "#ed101f2a"
     border.color: "#86decb"
     Accessible.role: Accessible.StaticText
-    Accessible.name: visible ? "Next movement: " + heading[1] + ". " + cue.label : ""
+    Accessible.name: !visible ? "" : headingOnly ? "Heading to " + travel.goal : "Next movement: " + heading[1] + ". " + cue.label
     function record() {
         if (!trace) return
         const state = JSON.stringify({visible:visible,direction:cue?.direction||null,step_id:cue?.step_id||null})

@@ -301,7 +301,11 @@ impl ffi::Buddy {
                 .map(Ok)
                 .unwrap_or_else(services::data_dir)?;
             let store = Store::open(&root)?;
-            let settings = store.get::<Settings>("settings")?.unwrap_or_default();
+            let mut settings = store.get::<Settings>("settings")?.unwrap_or_default();
+            // Settings saved by an older version are brought up to date once.
+            if settings.upgrade() {
+                store.put("settings", &settings)?;
+            }
             let game = argument("--game").unwrap_or_else(|| "Faxanadu".into());
             let active = store.get::<String>("active_guide")?;
             let guides = store.guides()?;

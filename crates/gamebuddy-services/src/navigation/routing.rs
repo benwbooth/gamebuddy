@@ -47,8 +47,11 @@ fn words(text: &str) -> Vec<String> {
 /// the walkthrough sells them there).
 pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
     let said = words(text);
+    // Words that start many labels but name no particular place.
     let common = [
-        "the", "of", "and", "room", "chamber", "interior", "exterior", "shop", "door",
+        "the", "of", "and", "room", "chamber", "interior", "exterior", "shop", "door", "town",
+        "area", "outdoor", "upper", "lower", "raised", "elevated", "large", "small", "left",
+        "right", "next",
     ];
     atlas
         .places
@@ -75,6 +78,24 @@ pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
 /// someone is.
 pub fn wants_to_travel(text: &str) -> bool {
     let lower = text.to_lowercase();
+    travel_target(&lower).is_some()
+        && ![
+            "not in",
+            "not at",
+            "n't in",
+            "n't at",
+            "not going",
+            "not go ",
+            "don't want to go",
+        ]
+        .iter()
+        .any(|n| lower.contains(n))
+}
+
+/// The words after the first travel phrase ("…head back to Forepaw and buy
+/// boots" gives "forepaw and buy boots"): the destination is named there,
+/// not anywhere else in the sentence ("…so you can leave town").
+fn travel_target(lower: &str) -> Option<&str> {
     const TRAVEL: [&str; 14] = [
         "get to",
         "go to",
@@ -91,18 +112,16 @@ pub fn wants_to_travel(text: &str) -> bool {
         "back to",
         "walk to",
     ];
-    TRAVEL.iter().any(|phrase| lower.contains(phrase))
-        && ![
-            "not in",
-            "not at",
-            "n't in",
-            "n't at",
-            "not going",
-            "not go ",
-            "don't want to go",
-        ]
+    TRAVEL
         .iter()
-        .any(|n| lower.contains(n))
+        .filter_map(|phrase| lower.find(phrase).map(|at| at + phrase.len()))
+        .min()
+        .map(|start| {
+            let rest = &lower[start..];
+            // Up to the end of that clause.
+            let end = rest.find(['.', ',', ';', '!', '?']).unwrap_or(rest.len());
+            rest[..end].trim()
+        })
 }
 
 /// Remember where the player is heading. Returns the goal when it changed.
@@ -118,7 +137,8 @@ pub fn set_from_text(
     if !wants_to_travel(text) {
         return Ok(None);
     }
-    let Some(place_id) = named_place(atlas, text) else {
+    let lower = text.to_lowercase();
+    let Some(place_id) = travel_target(&lower).and_then(|target| named_place(atlas, target)) else {
         return Ok(None);
     };
     if current == Some(place_id.as_str()) {
@@ -377,6 +397,16 @@ mod tests {
         ] {
             assert!(super::wants_to_travel(yes), "{yes}");
         }
+        assert_eq!(
+            super::travel_target(
+                &"Let's head to the key shop so you can leave town.".to_lowercase()
+            ),
+            Some("the key shop so you can leave town")
+        );
+        assert_eq!(
+            super::travel_target("head back to forepaw, then buy boots"),
+            Some("forepaw")
+        );
         for no in [
             "I'm not in the town.",
             "I just told you I'm not in town.",

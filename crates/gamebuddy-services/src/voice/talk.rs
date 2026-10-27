@@ -239,10 +239,18 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
             passages.join("\n")
         ));
     }
-    // Only the last two exchanges: a small model repeats whatever is in its
-    // history, including its own earlier mistakes.
-    let turns: Vec<String> = recent_turns(store, &guide.game)
+    // A small model repeats whatever is in its history, including its own
+    // earlier mistakes: keep the player's last three lines and only its own
+    // last reply.
+    let history = recent_turns(store, &guide.game);
+    let last_reply = history.iter().rposition(|t| t["role"] != "user");
+    let turns: Vec<String> = history
         .iter()
+        .enumerate()
+        .filter(|(i, t)| t["role"] == "user" || Some(*i) == last_reply)
+        .map(|(_, t)| t)
+        .collect::<Vec<_>>()
+        .into_iter()
         .rev()
         .take(4)
         .rev()

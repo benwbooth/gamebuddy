@@ -199,6 +199,27 @@ impl Settings {
         }
     }
 
+    /// Bring settings saved by an older GameBuddy up to date. Returns whether
+    /// anything changed. The first Liquid setup thought with LFM3-VL, which
+    /// Liquid says is not for conversation; that setup now thinks with
+    /// LFM3-1.7B and keeps LFM3-VL for reading the screen.
+    pub fn upgrade(&mut self) -> bool {
+        if self.reasoning.endpoint == LIQUID_ENDPOINT {
+            let vision = self.reasoning.clone();
+            self.reasoning = ProviderConfig {
+                kind: ProviderKind::OpenAiCompatible,
+                endpoint: LIQUID_TEXT_ENDPOINT.into(),
+                model: LIQUID_TEXT_MODEL.into(),
+                api_key_env: String::new(),
+                reasoning_effort: String::new(),
+            };
+            self.single_provider = false;
+            self.vision = vision;
+            return true;
+        }
+        false
+    }
+
     /// One-click setups. Keeps voice, audio and key preferences; replaces the
     /// assistant and voice backend:
     /// - "openai": Codex live voice with Codex reasoning (the original setup)
