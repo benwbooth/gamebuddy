@@ -206,6 +206,24 @@ pub(super) fn update(store: &Store, inputs: &Inputs<'_>) -> Result<LocationEstim
         current.x = 0.5 * (last.x + current.x);
         current.y = 0.5 * (last.y + current.y);
     }
+    // Crossing from one area map to another: where the player left the old
+    // map is that map's exit toward the new one. Learned from real play, it
+    // lets the arrow point at the way out when routing back.
+    if let (Some(last), Some(now_map)) = (previous.as_ref(), estimate.map_id.as_ref())
+        && let (Some(left_at), Some(old_map)) = (last.position.as_ref(), last.map_id.as_ref())
+        && old_map != now_map
+        && last.is_known()
+        && estimate.is_known()
+        && inputs.now.saturating_sub(last.located_at_ms) < 20_000
+    {
+        super::routing::learn_exit(
+            store,
+            inputs.guide,
+            old_map,
+            now_map,
+            [left_at.x, left_at.y],
+        )?;
+    }
     let changed = previous.as_ref().is_none_or(|p| {
         p.status != estimate.status
             || p.place_id != estimate.place_id

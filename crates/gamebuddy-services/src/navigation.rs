@@ -965,8 +965,18 @@ pub fn context(
                 .as_ref()
                 .and_then(|r| r["areas_to_cross"].get(1).cloned());
             travel = json!({"goal": goal.label, "next_area": next, "route": route});
+            // Room-to-room headings when the walkthrough states them, else
+            // toward the next area map's exit.
+            let by_area = || {
+                let map = location_estimate.map_id.as_deref()?;
+                let next = next.as_ref()?.as_str()?.to_owned();
+                let position = location_estimate.position.as_ref().map(|p| [p.x, p.y]);
+                routing::area_heading(store, guide, &atlas, map, position, &next)
+                    .map(|heading| (heading, next))
+            };
             if direction.is_none()
-                && let Some((heading, next)) = routing::first_direction(guide, &atlas, here, &goal)
+                && let Some((heading, next)) =
+                    routing::first_direction(guide, &atlas, here, &goal).or_else(by_area)
             {
                 direction = Some(gamebuddy_core::navigation::direction::DirectionCue {
                     direction: heading,

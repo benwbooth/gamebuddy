@@ -227,7 +227,9 @@ pub fn first_direction(
     goal: &Goal,
 ) -> Option<(ScreenDirection, String)> {
     let hops = routing::route(guide, atlas, current, &goal.place_id)?;
-    hops.iter().find_map(|h| {
+    // Only the hop the player is on now: a heading further down the route
+    // says nothing about which way to go from here.
+    hops.first().and_then(|h| {
         h.direction.map(|d| {
             let label = atlas
                 .places
@@ -238,4 +240,89 @@ pub fn first_direction(
             (d, label)
         })
     })
+}
+
+/// Where each area map's exits are, learned from the player's own crossings:
+/// map id -> neighbouring map id -> point on the map, in fractions.
+type Exits = std::collections::BTreeMap<String, std::collections::BTreeMap<String, [f32; 2]>>;
+
+fn exits_key(guide: &Guide) -> String {
+    format!("map-exits:{}", guide.id)
+}
+
+pub fn learn_exit(
+    store: &Store,
+    guide: &Guide,
+    from_map: &str,
+    to_map: &str,
+    at: [f32; 2],
+) -> Result<()> {
+    let mut exits: Exits = store.get(&exits_key(guide))?.unwrap_or_default();
+    let known = exits.entry(from_map.into()).or_default();
+    if known.get(to_map) != Some(&at) {
+        known.insert(to_map.into(), at);
+        store.put(&exits_key(guide), &exits)?;
+        crate::flight::event(
+            "map_exit",
+            json!({"from": from_map, "to": to_map, "at": at}),
+        );
+    }
+    Ok(())
+}
+
+/// Which way to head on the current area map to reach the next one: toward
+/// the exit the player has used before, else by how the maps are drawn
+/// ("A To B" passages run left to right, from A to B).
+pub fn area_heading(
+    store: &Store,
+    guide: &Guide,
+    atlas: &Atlas,
+    map_id: &str,
+    position: Option<[f32; 2]>,
+    next_title: &str,
+) -> Option<ScreenDirection> {
+    let next = atlas.maps.iter().find(|m| m.title.trim() == next_title)?;
+    let here = atlas.maps.iter().find(|m| m.id == map_id)?;
+    let exits: Exits = store
+        .get(&exits_key(guide))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let aspect = image::image_dimensions(super::cached_map_path(store, here))
+        .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
+    if let (Some(position), Some(exit)) =
+        (position, exits.get(map_id).and_then(|e| e.get(&next.id)))
+    {
+        if let Some(direction) =
+            gamebuddy_core::navigation::direction::bearing(position, *exit, aspect)
+        {
+            return Some(direction);
+        }
+    }
+    // The drawing convention only holds for maps laid out sideways.
+    if aspect < 1.3 {
+        return None;
+    }
+    let ends = |t: &str| {
+        t.split_once(" To ")
+            .map(|(a, b)| (a.trim().to_owned(), b.trim().to_owned()))
+    };
+    let here_title = here.title.trim();
+    if let Some((a, b)) = ends(here_title) {
+        if next_title == a {
+            return Some(ScreenDirection::Left);
+        }
+        if next_title == b {
+            return Some(ScreenDirection::Right);
+        }
+    }
+    if let Some((a, b)) = ends(next_title) {
+        if here_title == a {
+            return Some(ScreenDirection::Right);
+        }
+        if here_title == b {
+            return Some(ScreenDirection::Left);
+        }
+    }
+    None
 }

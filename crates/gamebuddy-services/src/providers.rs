@@ -882,7 +882,8 @@ pub fn accepts_images(config: &ProviderConfig) -> bool {
 }
 
 /// The installed Kokoro voice, if any: `<data>/models/<voice>.kokoro` with
-/// its runtime beside it.
+/// its runtime beside it. With several installed, the first by name wins
+/// (af_heart, the most natural-sounding, before am_michael).
 pub fn kokoro_voice() -> Option<crate::voice::speech::Config> {
     let models = crate::store::data_dir().ok()?.join("models");
     let python = models.join("kokoro-runtime").join("bin").join("python");
