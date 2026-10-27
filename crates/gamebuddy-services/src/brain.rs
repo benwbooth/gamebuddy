@@ -315,12 +315,25 @@ pub fn think_with(
     }
     let started = std::time::Instant::now();
     let provider = provider(&settings)?;
-    if provider.config.kind == crate::ProviderKind::Ollama
+    // A text-only thinker (Flint, for one) gets the screen as the vision
+    // model's reading instead of the images.
+    let sees = crate::providers::accepts_images(&provider.config);
+    if !sees {
+        request.images.clear();
+    }
+    if (provider.config.kind == crate::ProviderKind::Ollama || !sees)
         && let Some(snapshot) = &snapshot
     {
         let mut images = vec![snapshot.jpeg.clone()];
         images.extend(moments.iter().map(|m| m.jpeg.clone()));
-        match read_screen(&provider, &images) {
+        let separate;
+        let reader = if sees {
+            &provider
+        } else {
+            separate = HttpProvider::new(settings.vision.clone())?;
+            &separate
+        };
+        match read_screen(reader, &images) {
             Ok(reading) => request.prompt.push_str(&format!(
                 "\n\nA first pass read the screen exactly: {}. Use these HUD numbers and this text as read; do not re-read them from the image.",
                 serde_json::to_string(&reading)?

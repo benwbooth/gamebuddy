@@ -748,6 +748,45 @@ pub fn image_base64(path: impl AsRef<Path>) -> Result<String> {
     Ok(STANDARD.encode(bytes))
 }
 
+/// Whether this provider's model reads images. Only Ollama models are asked
+/// (once per model, cached); every hosted provider GameBuddy offers does.
+pub fn accepts_images(config: &ProviderConfig) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static KNOWN: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    if config.kind != ProviderKind::Ollama {
+        return true;
+    }
+    let key = format!("{}|{}", config.endpoint, config.model);
+    if let Some(&known) = KNOWN
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .get(&key)
+    {
+        return known;
+    }
+    let url = format!("{}/api/show", config.endpoint.trim_end_matches('/'));
+    let answer = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .and_then(|c| c.post(&url).json(&json!({"model": config.model})).send())
+        .and_then(|r| r.json::<Value>());
+    let Ok(body) = answer else {
+        // Unknown: assume it sees, as before, and ask again next time.
+        return true;
+    };
+    let sees = body["capabilities"]
+        .as_array()
+        .is_none_or(|c| c.iter().any(|v| v == "vision"));
+    KNOWN
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(key, sees);
+    sees
+}
+
 /// Context window for every Ollama model GameBuddy loads.
 pub const OLLAMA_CONTEXT: u32 = 131_072;
 
