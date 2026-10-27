@@ -514,6 +514,7 @@ impl HttpProvider {
             on_text(&text);
             return Ok(text);
         }
+        crate::liquid::ready_for(&self.config);
         let permit = crate::scheduler::acquire(&self.config.kind, crate::scheduler::Priority::Live);
         let started = std::time::Instant::now();
         let base = self.config.endpoint.trim_end_matches('/');
@@ -650,6 +651,7 @@ impl HttpProvider {
         result
     }
     fn complete_unrecorded(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
+        crate::liquid::ready_for(&self.config);
         match self.config.kind {
             ProviderKind::Codex => {
                 let mut client = self

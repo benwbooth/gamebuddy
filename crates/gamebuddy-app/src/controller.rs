@@ -1576,7 +1576,13 @@ impl ffi::Buddy {
                     }
                 }
                 let provider = HttpProvider::for_conversation(settings.reasoning, &store, &game)?;
-                let answer = services::harness::chat(&provider, &store, &game, &transcript)?;
+                // Never answer with silence: if the model cannot be reached,
+                // say so, so the player knows it heard them.
+                let answer = services::harness::chat(&provider, &store, &game, &transcript)
+                    .unwrap_or_else(|error| {
+                        eprintln!("Voice fallback answer: {error:#}");
+                        "Sorry, I couldn't reach my thinking model just now. Give me a moment and ask again.".into()
+                    });
                 Ok(Outcome::Voice(transcript, answer))
             },
         );

@@ -71,16 +71,33 @@ pub fn voice_installed() -> bool {
     })
 }
 
+static VL_STARTED: AtomicBool = AtomicBool::new(false);
+
 /// Start the reasoning server in the background when its setup is selected.
 pub fn ensure(store: &Store) {
-    static STARTED: AtomicBool = AtomicBool::new(false);
     if store
         .get::<Settings>("settings")
         .ok()
         .flatten()
         .is_some_and(|s| selected(&s))
     {
-        run(&VL, &STARTED);
+        run(&VL, &VL_STARTED);
+    }
+}
+
+/// Before a request to GameBuddy's own LFM3 server: start it if it is not
+/// running (switching setups mid-game, a crash) and wait for it, so no
+/// request fails just because the server was not up yet.
+pub fn ready_for(config: &crate::ProviderConfig) {
+    if config.endpoint != crate::providers::LIQUID_ENDPOINT || answering(VL_PORT) {
+        return;
+    }
+    run(&VL, &VL_STARTED);
+    for _ in 0..240 {
+        if answering(VL_PORT) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -154,7 +171,12 @@ fn serve(server: &Server) -> Result<()> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Its own log beside the weights: why a server stopped is otherwise lost.
+        .stderr(
+            std::fs::File::create(dir.join(format!("server-{}.log", server.port)))
+                .map(Stdio::from)
+                .unwrap_or_else(|_| Stdio::null()),
+        );
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
@@ -166,8 +188,9 @@ fn serve(server: &Server) -> Result<()> {
         }
     }
     let mut child = command.spawn().context("Starting llama-server")?;
-    child.wait()?;
-    Ok(())
+    eprintln!("LFM3 server on {} started", server.port);
+    let status = child.wait()?;
+    anyhow::bail!("stopped ({status}); see server-{}.log", server.port)
 }
 
 /// Speech recognition with LFM3-Omni: 16 kHz mono WAV in, text out.

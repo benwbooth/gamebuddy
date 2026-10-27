@@ -17,8 +17,21 @@ pub fn is_noise(transcript: &str) -> bool {
     bare.is_empty()
         || (t.starts_with('[') && t.ends_with(']'))
         || (t.starts_with('(') && t.ends_with(')'))
-        || ["you", "thank you", "thanks for watching", "bye"]
-            .contains(&bare.to_lowercase().as_str())
+        || [
+            "you",
+            "thank you",
+            "thanks for watching",
+            "bye",
+            "hmm",
+            "hm",
+            "mm",
+            "mmm",
+            "um",
+            "uh",
+            "uhm",
+            "erm",
+        ]
+        .contains(&bare.to_lowercase().as_str())
 }
 
 fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
@@ -197,16 +210,35 @@ pub fn answer_streaming(
     let started = std::time::Instant::now();
     let mut sentences = Sentences::new();
     let mut first_ms = None;
+    // Small models sometimes open by addressing themselves ("GameBuddy, you
+    // need..."); that is never what a friend says.
+    let tidy = |sentence: String, first: bool| -> String {
+        if !first {
+            return sentence;
+        }
+        let trimmed = sentence
+            .strip_prefix("GameBuddy, ")
+            .or_else(|| sentence.strip_prefix("GameBuddy here, "))
+            .unwrap_or(&sentence);
+        let mut chars = trimmed.chars();
+        chars
+            .next()
+            .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default()
+    };
     let reply = provider.complete_streaming(request, &mut |piece| {
         for sentence in sentences.push(piece) {
+            let first = first_ms.is_none();
             first_ms.get_or_insert(started.elapsed().as_millis() as u64);
-            on_sentence(sentence);
+            on_sentence(tidy(sentence, first));
         }
     })?;
     if let Some(rest) = sentences.finish() {
+        let first = first_ms.is_none();
         first_ms.get_or_insert(started.elapsed().as_millis() as u64);
-        on_sentence(rest);
+        on_sentence(tidy(rest, first));
     }
+    let reply = tidy(reply, true);
     let reply = reply.trim().trim_matches('"').trim().to_owned();
     anyhow::ensure!(!reply.is_empty(), "No answer");
     crate::flight::event(

@@ -3,7 +3,10 @@
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).unwrap_or_default();
     let started = std::time::Instant::now();
-    anyhow::ensure!(gamebuddy_services::liquid::wait_for_voice(60), "Voice server did not start");
+    anyhow::ensure!(
+        gamebuddy_services::liquid::wait_for_voice(60),
+        "Voice server did not start"
+    );
     println!("server ready in {:.1} s", started.elapsed().as_secs_f64());
     let wav = std::fs::read(path)?;
     for _ in 0..2 {
