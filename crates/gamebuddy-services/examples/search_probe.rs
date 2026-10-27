@@ -7,7 +7,6 @@ fn main() -> anyhow::Result<()> {
         "search_guide",
         serde_json::json!({"query": args[2]}),
     )?;
-    let text = serde_json::to_string(&value)?;
     println!(
         "keys {:?}",
         value.as_object().map(|o| o.keys().collect::<Vec<_>>())
