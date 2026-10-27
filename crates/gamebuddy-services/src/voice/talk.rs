@@ -65,6 +65,18 @@ fn player_statements(store: &Store, game: &str) -> Vec<String> {
         .collect()
 }
 
+/// Where the fused location estimate puts the player, when it is sure enough.
+fn current_place(store: &Store, guide: &Guide) -> Option<String> {
+    let saved: Value = store
+        .get(&crate::navigation::estimate::key(guide))
+        .ok()
+        .flatten()?;
+    let estimate = &saved["estimate"];
+    matches!(estimate["status"].as_str(), Some("confident" | "likely"))
+        .then(|| estimate["place_id"].as_str().map(str::to_owned))
+        .flatten()
+}
+
 /// The brain's latest situation when it is about this session and recent.
 fn fresh_situation(store: &Store, guide: &Guide) -> Value {
     let saved: Option<Value> = store
@@ -95,8 +107,9 @@ pub fn request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequ
     Ok(ModelRequest {
         system: SYSTEM.into(),
         prompt: format!(
-            "GameBuddy's live context: {}\n\nWhat the player has told you about their items and progress (newest first; this overrides the plan): {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
+            "GameBuddy's live context: {}\n\nWhere the player is heading and the way there (from the walkthrough's own path; follow it for any directions): {}\n\nWhat the player has told you about their items and progress (newest first; this overrides the plan): {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
             serde_json::to_string(&context)?,
+            serde_json::to_string(&full.value["navigation"]["travel"])?,
             serde_json::to_string(&player_statements(store, &guide.game))?,
             serde_json::to_string(&fresh_situation(store, guide))?,
             serde_json::to_string(&matches)?,
@@ -174,6 +187,12 @@ pub fn answer_streaming(
 ) -> Result<String> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let provider = HttpProvider::new(settings.reasoning)?;
+    // "How do I get to Forepaw?" sets where the player is heading, so the
+    // route (and the arrow) are ready for this very answer.
+    let atlas = crate::navigation::atlas(store, guide)?;
+    let here = current_place(store, guide);
+    let asked =
+        crate::navigation::routing::set_from_text(store, guide, &atlas, question, here.as_deref())?;
     let request = request(store, guide, question)?;
     let started = std::time::Instant::now();
     let mut sentences = Sentences::new();
@@ -194,6 +213,10 @@ pub fn answer_streaming(
         "talk",
         json!({"ms": started.elapsed().as_millis() as u64, "first_sentence_ms": first_ms, "chars": reply.len()}),
     );
+    // "Head back to Forepaw" in GameBuddy's own answer sets the goal too.
+    if asked.is_none() {
+        crate::navigation::routing::set_from_text(store, guide, &atlas, &reply, here.as_deref())?;
+    }
     let turn = uuid::Uuid::new_v4().to_string();
     store
         .append_conversation(&guide.game, &turn, "user", "user", question)

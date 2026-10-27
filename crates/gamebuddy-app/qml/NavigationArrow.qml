@@ -3,6 +3,10 @@ import QtQuick
 Rectangle {
     id: navigation
     property var cue: null
+    // Where the player is heading when no left/right is known: shown as a
+    // card naming the destination and the next area, without an arrow.
+    property var travel: null
+    readonly property bool headingOnly: !heading && !!travel && !!travel.goal
     property double now: Date.now()
     property bool trace: false
     property string lastTrace: ""
@@ -26,7 +30,7 @@ Rectangle {
         down_left: [225, "Down and left"], left: [270, "Left"], up_left: [315, "Up and left"]
     })
     readonly property var heading: cue ? directions[cue.direction] : null
-    visible: enabled && !!heading && Number(cue?.valid_until_ms || 0) > now
+    visible: enabled && ((!!heading && Number(cue?.valid_until_ms || 0) > now) || headingOnly)
     x: placement.x; y: placement.y
     width: placement.width
     height: Math.max(88, actionLabel.implicitHeight + 42)
@@ -47,6 +51,7 @@ Rectangle {
         objectName: "navigationArrowIcon"
         width: 64; height: 64
         anchors { left: parent.left; leftMargin: 12; verticalCenter: parent.verticalCenter }
+        visible: !navigation.headingOnly
         rotation: navigation.heading ? navigation.heading[0] : 0
         onPaint: {
             const c = getContext("2d")
@@ -59,8 +64,9 @@ Rectangle {
     Text {
         id: directionLabel
         objectName: "navigationArrowDirection"
-        anchors { left: parent.left; leftMargin: 88; top: parent.top; topMargin: 12; right: parent.right; rightMargin: 14 }
-        text: navigation.heading ? (navigation.width < 360 ? "" : (navigation.cue?.source === "geometry" ? "On the map · " : "Next movement · ")) + navigation.heading[1] + (navigation.cue?.source === "geometry" && navigation.cue?.target && navigation.width >= 360 ? " toward " + navigation.cue.target : "") : ""
+        anchors { left: parent.left; leftMargin: navigation.headingOnly ? 16 : 88; top: parent.top; topMargin: 12; right: parent.right; rightMargin: 14 }
+        text: navigation.headingOnly ? "Heading to " + navigation.travel.goal
+            : navigation.heading ? (navigation.width < 360 ? "" : (navigation.cue?.source === "geometry" ? "On the map · " : navigation.cue?.source === "route" ? "Route · " : "Next movement · ")) + navigation.heading[1] + ((navigation.cue?.source === "geometry" || navigation.cue?.source === "route") && navigation.cue?.target && navigation.width >= 360 ? " toward " + navigation.cue.target : "") : ""
         textFormat: Text.PlainText
         color: "#86decb"; font.pixelSize: 15; font.weight: Font.DemiBold
         elide: Text.ElideRight
@@ -69,7 +75,7 @@ Rectangle {
         id: actionLabel
         objectName: "navigationArrowAction"
         anchors { left: directionLabel.left; right: directionLabel.right; top: directionLabel.bottom; topMargin: 3 }
-        text: navigation.cue?.label || ""
+        text: navigation.headingOnly ? (navigation.travel.next_area ? "Next: " + navigation.travel.next_area : "") : navigation.cue?.label || ""
         textFormat: Text.PlainText
         color: "#f1f7fa"; font.pixelSize: 20; font.weight: Font.Medium
         wrapMode: Text.WordWrap; maximumLineCount: 2; elide: Text.ElideRight

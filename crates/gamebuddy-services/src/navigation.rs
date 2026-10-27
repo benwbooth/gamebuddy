@@ -24,6 +24,7 @@ pub mod follow;
 pub mod hazards;
 pub mod placement;
 pub mod planning;
+pub mod routing;
 pub mod tracking;
 pub use tracking::{LocationReport, report_location};
 
@@ -923,7 +924,7 @@ pub fn context(
         .and_then(|m| atlas.maps.iter().find(|a| a.id == m.map_id))
         .and_then(|a| image::image_dimensions(cached_map_path(store, a)).ok())
         .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
-    let direction = direction::cue(
+    let mut direction = direction::cue(
         store,
         guide,
         progress,
@@ -945,6 +946,42 @@ pub fn context(
             map_aspect,
         },
     )?;
+    // A place the player is heading to (named by them or by GameBuddy): the
+    // walkthrough's own path there drives the arrow and the spoken route.
+    let here = location_estimate
+        .place_id
+        .clone()
+        .filter(|_| location_estimate.is_known())
+        .or_else(|| tracker.place_id.clone());
+    let mut travel = Value::Null;
+    if let Some(goal) = routing::goal(store, guide)? {
+        if here.as_deref() == Some(goal.place_id.as_str()) {
+            routing::clear(store, guide)?;
+        } else if let Some(here) = here.as_deref() {
+            let route = routing::route_view(guide, &atlas, here, &goal);
+            // The next area to reach, for the on-screen card when no
+            // left/right is known for this stretch.
+            let next = route
+                .as_ref()
+                .and_then(|r| r["areas_to_cross"].get(1).cloned());
+            travel = json!({"goal": goal.label, "next_area": next, "route": route});
+            if direction.is_none()
+                && let Some((heading, next)) = routing::first_direction(guide, &atlas, here, &goal)
+            {
+                direction = Some(gamebuddy_core::navigation::direction::DirectionCue {
+                    direction: heading,
+                    step_id: goal.place_id.clone(),
+                    label: format!("Toward {}", goal.label),
+                    instruction: format!("Head {} toward {next}", routing::direction_word(heading)),
+                    valid_until_ms: now.saturating_add(15_000),
+                    source: "route",
+                    target: Some(goal.label.clone()),
+                });
+            }
+        } else {
+            travel = json!({"goal": goal.label, "route": Value::Null, "instruction": "Where the player is now is not known, so no route can be worked out yet."});
+        }
+    }
     // A fused estimate that is sure of its map outranks guesses from the plan.
     let selected_map = location_estimate
         .map_id
@@ -1004,7 +1041,7 @@ pub fn context(
         json!({"next_step_id":now.id,"steps":trace.step_ids.iter().filter_map(|id| guide.step(id)).map(|s| json!({"id":s.id,"title":s.title,"anchors":s.anchors})).collect::<Vec<_>>(),"stop":trace.stop,"choices":trace.choices,
             "instruction":"Follow these authored steps in order. Later steps are previews, not eligible immediate actions. Preserve required pickups and return-visit identity. Only confirmed progress, explicit current task reports, or supported optional/conditional bypasses change this sequence. This is objective order, not a verified physical path."})
     });
-    let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"location_estimate":location_estimate,"cursor":cursor,"guidance":advice,"direction":direction,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"position":location_estimate.position,"estimate_status":location_estimate.status,"estimate_confidence":location_estimate.confidence,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"location_estimate":location_estimate,"cursor":cursor,"guidance":advice,"direction":direction,"travel":travel,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"map":{"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"position":location_estimate.position,"estimate_status":location_estimate.status,"estimate_confidence":location_estimate.confidence,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
     // Away from the route (a death, a detour): guide the player back along
     // the walkthrough's own path from where the screen shows them.
     if let Some(off) = follow::off_route(store, guide)?

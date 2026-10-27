@@ -70,7 +70,7 @@ pub(super) fn navigation(value: &Value) -> Value {
         recommendation["evidence_kind"] = json!("previous_advice_not_current_location");
     }
     json!({
-        "location":value["location"], "location_estimate":value["location_estimate"], "cursor":value["cursor"],
+        "location":value["location"], "location_estimate":value["location_estimate"], "travel":value["travel"], "cursor":value["cursor"],
         "guidance":value["guidance"], "direction":value["direction"], "recommendation":recommendation,
         "authored_route":value["authored_route"],
         "map":{

@@ -35,7 +35,7 @@ ApplicationWindow {
     property int acknowledgements: 0
     Timer {
         id: acknowledge
-        interval: 1800
+        interval: 3500
         onTriggered: {
             if (!root.voiceTurnRunning || speech.speaking) return
             // Plain words only: speech engines spell out sounds like "Mm" as letters.
@@ -397,6 +397,7 @@ ApplicationWindow {
             z: 24
             enabled: root.widgetsEnabled && !root.cropOpen && !root.overlayOptions && (root.session.widget_visibility?.["navigation-arrow"] ?? true)
             cue: root.session.navigation?.direction || null
+            travel: root.session.navigation?.travel || null
             trace: root.appArguments.indexOf("--navigation-trace") >= 0
             occupiedRects: {
                 let boxes=widgetView.visible ? JSON.parse(root.widgetRegions) : []
