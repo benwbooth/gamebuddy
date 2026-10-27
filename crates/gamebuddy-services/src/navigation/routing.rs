@@ -292,12 +292,10 @@ pub fn area_heading(
         .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
     if let (Some(position), Some(exit)) =
         (position, exits.get(map_id).and_then(|e| e.get(&next.id)))
-    {
-        if let Some(direction) =
+        && let Some(direction) =
             gamebuddy_core::navigation::direction::bearing(position, *exit, aspect)
-        {
-            return Some(direction);
-        }
+    {
+        return Some(direction);
     }
     // The drawing convention only holds for maps laid out sideways.
     if aspect < 1.3 {
