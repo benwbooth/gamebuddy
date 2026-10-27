@@ -53,14 +53,16 @@ const VL: Server = Server {
     model: "LFM3-VL-2B-Q8_0.gguf",
     projector: "mmproj-LFM3-VL-2B-F16.gguf",
     alias: crate::providers::LIQUID_MODEL,
-    context: 65_536,
+    // Screen reads are short; a big context only reserved video memory the
+    // game needed.
+    context: 16_384,
 };
 const TEXT: Server = Server {
     port: 11442,
     model: "LFM3-1.7B-Q8_0.gguf",
     projector: "",
     alias: crate::providers::LIQUID_TEXT_MODEL,
-    context: 65_536,
+    context: 32_768,
 };
 const VOICE: Server = Server {
     port: VOICE_PORT,
@@ -183,7 +185,7 @@ fn serve(server: &Server) -> Result<()> {
             "-c",
             &server.context.to_string(),
             "-np",
-            "2",
+            "1",
             "--jinja",
             "--reasoning",
             "off",

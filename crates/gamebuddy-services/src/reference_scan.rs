@@ -252,7 +252,27 @@ pub fn scan(store: &Store, guide: &Guide, progress: &dyn Fn(String)) -> Result<u
     let settings = store
         .get::<crate::Settings>("settings")?
         .unwrap_or_default();
-    let provider = crate::HttpProvider::new(settings.reasoning)?.patient();
+    // Charts are read from pictures: a text-only thinker hands this to the
+    // setup's screen reader.
+    let config = if crate::providers::accepts_images(&settings.reasoning) {
+        settings.reasoning
+    } else {
+        settings.vision
+    };
+    // On this computer's GPU, reading a few hundred walkthrough frames during
+    // play stalled the game (frame drops, audio underruns): wait until no
+    // game is running.
+    if crate::providers::on_this_computer(&config) {
+        let mut told = false;
+        while crate::screen::status(store).is_ok_and(|s| s["status"] == "live") {
+            if !told {
+                progress("Reading the walkthrough's charts after you stop playing, to keep the GPU free for the game.".into());
+                told = true;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+    }
+    let provider = crate::HttpProvider::new(config)?.patient();
     scan_with(store, guide, &provider, progress)
 }
 

@@ -1574,7 +1574,11 @@ impl ffi::Buddy {
                         &mut speak,
                     ) {
                         Ok(answer) => {
-                            services::voice::prefetch::schedule(store.root.clone(), guide);
+                            // Not on this computer's GPU: a 12-second background
+                            // job right after each answer cost game frames.
+                            if !services::providers::on_this_computer(&settings.reasoning) {
+                                services::voice::prefetch::schedule(store.root.clone(), guide);
+                            }
                             return Ok(Outcome::VoiceSpoken(transcript, answer));
                         }
                         Err(error) => eprintln!("Voice answer: {error:#}"),
