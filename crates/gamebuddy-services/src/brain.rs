@@ -64,6 +64,44 @@ pub struct Situation {
     pub direction_reason: String,
 }
 
+/// What a short, image-only pass reads off the screen. Small local models
+/// read the HUD correctly from a short prompt but misread it under tens of
+/// thousands of tokens of plan and walkthrough, so they read first and
+/// reason second, with the reading given as text.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct ScreenReading {
+    /// Every number on the HUD with its label, exactly as shown (E 08172, G 0007050).
+    pub hud: Vec<String>,
+    /// Dialogue, menu or message text on screen, verbatim; empty when none.
+    pub text: String,
+    /// Equipment and items visible.
+    pub gear: Vec<String>,
+    /// One sentence: where the player is and what is happening.
+    pub scene: String,
+}
+
+fn read_screen(provider: &HttpProvider, images: &[String]) -> Result<ScreenReading> {
+    let schema = json!(schemars::schema_for!(ScreenReading));
+    let reply = provider.complete_structured(
+        ModelRequest {
+            system: "You read game screenshots exactly. Return JSON only.".into(),
+            prompt: format!(
+                "Read the attached game screenshot{}. Copy every HUD number with its label exactly, any dialogue or message text verbatim, visible equipment, and describe the scene in one sentence. Return JSON matching: {schema}",
+                if images.len() > 1 {
+                    "s (the first is now; the others are earlier moments, oldest first: include their text too)"
+                } else {
+                    ""
+                }
+            ),
+            images: images.to_vec(),
+            json: true,
+        },
+        schema,
+    )?;
+    serde_json::from_value(crate::parse_json(&reply)?).context("Screen reading did not match")
+}
+
 /// The walkthrough video at the screen's matched moment and a few seconds
 /// later, where its player had moved on to, while the player is on route.
 fn walkthrough_frames(store: &Store, guide: &Guide) -> Option<(String, String, u64)> {
@@ -276,8 +314,21 @@ pub fn think_with(
         ));
     }
     let started = std::time::Instant::now();
-    let reply: Value =
-        crate::parse_json(&provider(&settings)?.complete_structured(request, schema)?)?;
+    let provider = provider(&settings)?;
+    if provider.config.kind == crate::ProviderKind::Ollama
+        && let Some(snapshot) = &snapshot
+    {
+        let mut images = vec![snapshot.jpeg.clone()];
+        images.extend(moments.iter().map(|m| m.jpeg.clone()));
+        match read_screen(&provider, &images) {
+            Ok(reading) => request.prompt.push_str(&format!(
+                "\n\nA first pass read the screen exactly: {}. Use these HUD numbers and this text as read; do not re-read them from the image.",
+                serde_json::to_string(&reading)?
+            )),
+            Err(error) => eprintln!("Brain screen reading: {error:#}"),
+        }
+    }
+    let reply: Value = crate::parse_json(&provider.complete_structured(request, schema)?)?;
     let answer = reply["answer"].as_str().map(str::to_owned);
     let situation: Situation =
         serde_json::from_value(reply).context("Brain reply did not match the situation schema")?;
