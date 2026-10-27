@@ -33,6 +33,38 @@ fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
     turns
 }
 
+/// What the player has said about their own items, rank and progress, from
+/// further back than the recent turns: "I don't have the Wing Boots" must
+/// outlive eight turns of chat, even when the plan does not track that item.
+fn player_statements(store: &Store, game: &str) -> Vec<String> {
+    const MARKERS: [&str; 12] = [
+        "i have",
+        "i don't have",
+        "i dont have",
+        "i got",
+        "i already",
+        "i bought",
+        "i sold",
+        "i lost",
+        "i used",
+        "i'm at",
+        "i am at",
+        "i haven't",
+    ];
+    crate::conversation::recent(store, game)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text)
+        .filter(|t| {
+            let lower = t.to_lowercase();
+            MARKERS.iter().any(|k| lower.contains(k))
+        })
+        .rev()
+        .take(6)
+        .collect()
+}
+
 /// The brain's latest situation when it is about this session and recent.
 fn fresh_situation(store: &Store, guide: &Guide) -> Value {
     let saved: Option<Value> = store
@@ -63,8 +95,9 @@ pub fn request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequ
     Ok(ModelRequest {
         system: SYSTEM.into(),
         prompt: format!(
-            "GameBuddy's live context: {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
+            "GameBuddy's live context: {}\n\nWhat the player has told you about their items and progress (newest first; this overrides the plan): {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
             serde_json::to_string(&context)?,
+            serde_json::to_string(&player_statements(store, &guide.game))?,
             serde_json::to_string(&fresh_situation(store, guide))?,
             serde_json::to_string(&matches)?,
             serde_json::to_string(&recent_turns(store, &guide.game))?,

@@ -28,6 +28,18 @@ ApplicationWindow {
     property bool overlayHidden: false
     property string queuedVoice: ""
     property bool voiceTurnRunning: false
+    // Local voice: a short spoken "mm, let me look" when the answer is not
+    // back quickly, so a pause never sounds like GameBuddy did not hear.
+    property int acknowledgements: 0
+    Timer {
+        id: acknowledge
+        interval: 1800
+        onTriggered: {
+            if (!root.voiceTurnRunning || speech.speaking) return
+            const lines = ["Mm, let me look.", "One sec.", "Hang on, checking.", "Okay, looking."]
+            speech.say(lines[root.acknowledgements++ % lines.length])
+        }
+    }
     property bool realtimeEnabled: JSON.parse(buddy.settings_json).speech === "codex_realtime"
     property bool geminiChosen: JSON.parse(buddy.settings_json).speech === "gemini_live"
     // When Google's service fails, keep answering with the local voice and
@@ -139,7 +151,7 @@ ApplicationWindow {
         onMessageChanged: root.noteOutOfTokens(message)
         onAnswerChanged: { if (!root.liveVoiceEnabled && companion.spokenReplies && answer.length > 0) speech.say(answer) }
         onVoice_command: action => root.overlayAction(action)
-        onBusyChanged: if (!busy) root.voiceTurnRunning = false
+        onBusyChanged: if (!busy) { root.voiceTurnRunning = false; acknowledge.stop() }
     }
     Compositor {
         id: compositor
@@ -203,6 +215,7 @@ ApplicationWindow {
             if (root.queuedVoice.length && !buddy.busy) {
                 const ready = root.queuedVoice
                 root.queuedVoice = ""; root.voiceTurnRunning = true
+                if (!root.liveVoiceEnabled && companion.spokenReplies) acknowledge.restart()
                 buddy.voice_turn(ready)
             }
         }
