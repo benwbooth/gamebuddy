@@ -1501,6 +1501,10 @@ impl ffi::Buddy {
                     let _ = std::fs::remove_file(&path);
                 }
                 let transcript = transcript?;
+                // Noise and silence come back as "[BLANK_AUDIO]" and the like.
+                if services::voice::talk::is_noise(&transcript) {
+                    return Ok(Outcome::Message("Ready to listen".into()));
+                }
                 if let Some(action) = services::voice::overlay_command(&transcript) {
                     return Ok(Outcome::VoiceCommand(transcript, action));
                 }
@@ -1518,21 +1522,19 @@ impl ffi::Buddy {
                 {
                     return Ok(Outcome::Voice(transcript, answer.text));
                 }
-                // On this computer, one brain call (screen read, then plan)
+                // One call with the live context and recent conversation
                 // answers in seconds; the tool loop can take many rounds.
-                if settings.reasoning.kind == services::ProviderKind::Ollama
-                    && let Some(guide) = store
-                        .get::<String>("active_guide")?
-                        .and_then(|id| store.guide(&id).ok())
-                        .filter(|g| g.game.eq_ignore_ascii_case(&game))
+                if let Some(guide) = store
+                    .get::<String>("active_guide")?
+                    .and_then(|id| store.guide(&id).ok())
+                    .filter(|g| g.game.eq_ignore_ascii_case(&game))
                 {
-                    match services::brain::think(&store, &guide, Some(&transcript)) {
-                        Ok((_, Some(answer))) if !answer.trim().is_empty() => {
+                    match services::voice::talk::answer(&store, &guide, &transcript) {
+                        Ok(answer) => {
                             services::voice::prefetch::schedule(store.root.clone(), guide);
                             return Ok(Outcome::Voice(transcript, answer));
                         }
-                        Ok(_) => {}
-                        Err(error) => eprintln!("Local brain answer: {error:#}"),
+                        Err(error) => eprintln!("Voice answer: {error:#}"),
                     }
                 }
                 let provider = HttpProvider::for_conversation(settings.reasoning, &store, &game)?;
