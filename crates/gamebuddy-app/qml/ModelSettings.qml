@@ -66,6 +66,7 @@ ScrollView {
             GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("openai") }
             GbButton { objectName:"presetGemini"; text:"Gemini Live"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("gemini") }
             GbButton { objectName:"presetLocal"; text:"Local (Claude + Ryan)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("local") }
+            GbButton { objectName:"presetDevice"; text:"On this computer (Ollama)"; enabled:!page.backend.busy; onClicked:page.backend.apply_preset("device") }
         }
         RowLayout {
             Layout.leftMargin:24

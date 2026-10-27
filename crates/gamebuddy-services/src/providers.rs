@@ -204,6 +204,8 @@ impl Settings {
     /// - "openai": Codex live voice with Codex reasoning (the original setup)
     /// - "gemini": Gemini Live voice and reasoning; Claude Code prepares guides
     /// - "local": Claude Code reasoning with local speech
+    /// - "device": everything on this computer: Ollama models for reasoning,
+    ///   vision, planning and the brain, with local speech
     pub fn with_preset(&self, preset: &str) -> Result<Settings> {
         let claude = ProviderConfig {
             kind: ProviderKind::ClaudeCode,
@@ -226,8 +228,23 @@ impl Settings {
             ),
             "gemini" => (claude, SpeechBackend::GeminiLive),
             "local" => (claude, SpeechBackend::Local),
+            "device" => (
+                ProviderConfig {
+                    kind: ProviderKind::Ollama,
+                    endpoint: "http://127.0.0.1:11434".into(),
+                    model: LOCAL_MODEL.into(),
+                    api_key_env: String::new(),
+                    reasoning_effort: String::new(),
+                },
+                SpeechBackend::Local,
+            ),
             other => anyhow::bail!("Unknown setup: {other}"),
         };
+        if preset == "device" {
+            // The brain reads the screen with the same local model.
+            settings.brain.enabled = true;
+            settings.brain.provider = None;
+        }
         settings.single_provider = true;
         settings.reasoning = reasoning;
         settings.speech = speech;
@@ -583,7 +600,10 @@ impl HttpProvider {
                     "auto" => Value::Null,
                     level => json!(level),
                 };
-                let mut body = json!({"model":self.config.model,"stream":false,"think":think,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":16384,"num_predict":4096}});
+                // Stay loaded (no reload mid-game) with one fixed context per
+                // model: a different num_ctx would make Ollama reload it. The
+                // largest prompts (route compilation) are about 80k tokens.
+                let mut body = json!({"model":self.config.model,"stream":false,"think":think,"keep_alive":-1,"messages":[{"role":"system","content":r.system},{"role":"user","content":r.prompt,"images":r.images}],"options":{"temperature":0.15,"num_ctx":OLLAMA_CONTEXT,"num_predict":4096}});
                 if r.json {
                     body["format"] = schema.unwrap_or(json!("json"));
                 }
@@ -726,6 +746,39 @@ pub fn image_base64(path: impl AsRef<Path>) -> Result<String> {
     let mut bytes = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85).encode_image(&image)?;
     Ok(STANDARD.encode(bytes))
+}
+
+/// Context window for every Ollama model GameBuddy loads.
+pub const OLLAMA_CONTEXT: u32 = 131_072;
+
+/// The on-device models GameBuddy uses with the "device" setup.
+pub const LOCAL_MODEL: &str = "qwen3.5:9b";
+
+/// Load every Ollama model the settings use, in the background, and keep it
+/// loaded, so the first question of a session does not wait for a load.
+pub fn prewarm_local(settings: &Settings) {
+    let mut configs = vec![settings.reasoning.clone(), settings.vision.clone()];
+    configs.extend(settings.planning.clone());
+    configs.extend(settings.brain.provider.clone());
+    let mut seen = std::collections::HashSet::new();
+    for config in configs {
+        if config.kind != ProviderKind::Ollama
+            || !seen.insert((config.endpoint.clone(), config.model.clone()))
+        {
+            continue;
+        }
+        std::thread::spawn(move || {
+            let url = format!("{}/api/chat", config.endpoint.trim_end_matches('/'));
+            let body = json!({"model":config.model,"keep_alive":-1,"messages":[],"options":{"num_ctx":OLLAMA_CONTEXT}});
+            let result = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(300))
+                .build()
+                .and_then(|c| c.post(&url).json(&body).send());
+            if let Err(error) = result {
+                eprintln!("Preloading {}: {error}", config.model);
+            }
+        });
+    }
 }
 
 /// Errors meaning the account is out of tokens, quota or credit start with

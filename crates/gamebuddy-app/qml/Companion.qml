@@ -514,6 +514,7 @@ Item {
                     {label: "Brain · Claude Sonnet", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "sonnet", api_key_env: "", reasoning_effort: "low"}},
                     {label: "Brain · Claude Opus", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "opus", api_key_env: "", reasoning_effort: "low"}},
                     {label: "Brain · GPT (Codex)", enabled: true, provider: {kind: "codex", endpoint: "", model: "", api_key_env: "", reasoning_effort: ""}},
+                    {label: "Brain · Local Qwen 3.5 9B", enabled: true, provider: {kind: "ollama", endpoint: "http://127.0.0.1:11434", model: "qwen3.5:9b", api_key_env: "", reasoning_effort: ""}},
                     {label: "Brain · Gemini Flash", enabled: true, provider: {kind: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.8-flash", api_key_env: "GEMINI_API_KEY", reasoning_effort: ""}},
                     {label: "Brain · off", enabled: false, provider: null}
                 ]

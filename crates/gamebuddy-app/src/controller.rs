@@ -506,6 +506,9 @@ impl ffi::Buddy {
                     .ok()
                     .flatten();
             services::spatial::prewarm(&store, &guide);
+            if let Ok(Some(settings)) = store.get::<services::Settings>("settings") {
+                services::providers::prewarm_local(&settings);
+            }
         }
         self.as_mut().poll_startup();
         if self.rust().game != guide.game {
