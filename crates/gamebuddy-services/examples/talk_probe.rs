@@ -1,6 +1,6 @@
 //! Time one spoken turn the way local voice answers it, on a recorded frame,
 //! in a copy of the data directory (answers are written to its conversation):
-//! talk_probe <data dir copy> <guide id> <ollama:MODEL | claude:MODEL | current> <frame.jpg> <question>...
+//! talk_probe <data dir copy> <guide id> <ollama:MODEL | claude:MODEL | openai:ENDPOINT|MODEL | current> <frame.jpg> <question>...
 use anyhow::{Context, Result};
 use gamebuddy_services::{ProviderConfig, ProviderKind, Settings, Store, screen, voice::talk};
 
@@ -14,6 +14,17 @@ fn main() -> Result<()> {
         settings.reasoning = ProviderConfig {
             kind: ProviderKind::Ollama,
             endpoint: "http://127.0.0.1:11434".into(),
+            model: model.into(),
+            api_key_env: String::new(),
+            reasoning_effort: String::new(),
+        };
+    } else if let Some((endpoint, model)) = choice
+        .strip_prefix("openai:")
+        .and_then(|p| p.split_once('|'))
+    {
+        settings.reasoning = ProviderConfig {
+            kind: ProviderKind::OpenAiCompatible,
+            endpoint: endpoint.into(),
             model: model.into(),
             api_key_env: String::new(),
             reasoning_effort: String::new(),
