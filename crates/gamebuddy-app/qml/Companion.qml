@@ -548,10 +548,10 @@ Item {
                     objectName: "companionSetup"
                     Layout.fillWidth: true
                     readonly property var values: ["device", "liquid", "local", "openai", "gemini"]
-                    model: ["All local · Qwen + Kokoro voice", "All local · Qwen + LFM3 screen reading", "Claude Sonnet + local voice", "OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Custom (Options)"]
+                    model: ["All local · Qwen + Kokoro voice", "All local · Liquid LFM3 (fastest)", "Claude Sonnet + local voice", "OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Custom (Options)"]
                     currentIndex: {
                         const s = JSON.parse(buddy.settings_json)
-                        if (s.speech === "local" && s.reasoning?.kind === "ollama" && s.vision?.endpoint === "http://127.0.0.1:11440/v1") return 1
+                        if (s.speech === "local" && s.reasoning?.endpoint === "http://127.0.0.1:11442/v1") return 1
                         if (s.speech === "local" && s.reasoning?.kind === "ollama") return 0
                         if (s.speech === "local" && s.reasoning?.kind === "claude_code") return 2
                         if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 3

@@ -228,13 +228,13 @@ impl Settings {
             ),
             "gemini" => (claude, SpeechBackend::GeminiLive),
             "local" => (claude, SpeechBackend::Local),
-            // Qwen thinks; LFM3-VL reads the screen (fast and exact). On its
-            // own LFM3 ignored corrections ("I'm not in town") in testing.
+            // All Liquid: LFM3-1.7B thinks and talks (with the short plain
+            // context), LFM3-VL reads the screen, Omni listens and speaks.
             "liquid" => (
                 ProviderConfig {
-                    kind: ProviderKind::Ollama,
-                    endpoint: "http://127.0.0.1:11434".into(),
-                    model: LOCAL_MODEL.into(),
+                    kind: ProviderKind::OpenAiCompatible,
+                    endpoint: LIQUID_TEXT_ENDPOINT.into(),
+                    model: LIQUID_TEXT_MODEL.into(),
                     api_key_env: String::new(),
                     reasoning_effort: String::new(),
                 },
@@ -540,11 +540,12 @@ impl HttpProvider {
         } else {
             let mut content = vec![json!({"type":"text","text":r.prompt})];
             content.extend(r.images.iter().map(|data| json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}})));
-            (
-                format!("{base}/chat/completions"),
-                json!({"model":self.config.model,"stream":true,"max_tokens":400,
-                    "messages":[{"role":"system","content":r.system},{"role":"user","content":content}]}),
-            )
+            (format!("{base}/chat/completions"), {
+                let mut body = json!({"model":self.config.model,"stream":true,"max_tokens":400,
+                        "messages":[{"role":"system","content":r.system},{"role":"user","content":content}]});
+                liquid_sampling(&self.config, &mut body);
+                body
+            })
         };
         let mut request = self.client.post(url).json(&body);
         if let Some(key) = self.key()? {
@@ -623,6 +624,15 @@ impl HttpProvider {
     }
     /// Every model call, timed, into the flight recorder.
     fn complete_with_schema(&self, r: ModelRequest, schema: Option<Value>) -> Result<String> {
+        // A text-only local model (LFM3-1.7B) rejects images outright; it
+        // answers from the text instead of failing the whole request.
+        let mut r = r;
+        if !r.images.is_empty() && !accepts_images(&self.config) {
+            r.images.clear();
+            r.prompt.push_str(
+                "\n\n(Screenshots were attached for a model that can see; this one cannot. Answer from the text above and say so if the screen matters.)",
+            );
+        }
         let permit = crate::scheduler::acquire(&self.config.kind, self.priority);
         let started = std::time::Instant::now();
         let purpose: String = r.system.chars().take(80).collect();
@@ -731,6 +741,7 @@ impl HttpProvider {
                 let mut content = vec![json!({"type":"text","text":r.prompt})];
                 content.extend(r.images.iter().map(|data|json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}})));
                 let mut body = json!({"model":self.config.model,"messages":[{"role":"system","content":r.system},{"role":"user","content":content}]});
+                liquid_sampling(&self.config, &mut body);
                 // llama-server and most compatible servers honour a JSON
                 // schema, which keeps a small model's replies well formed.
                 if r.json {
@@ -880,7 +891,8 @@ pub fn accepts_images(config: &ProviderConfig) -> bool {
     use std::collections::HashMap;
     use std::sync::Mutex;
     static KNOWN: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
-    if config.kind != ProviderKind::Ollama {
+    let local_server = config.kind == ProviderKind::OpenAiCompatible && on_this_computer(config);
+    if config.kind != ProviderKind::Ollama && !local_server {
         return true;
     }
     let key = format!("{}|{}", config.endpoint, config.model);
@@ -892,19 +904,36 @@ pub fn accepts_images(config: &ProviderConfig) -> bool {
     {
         return known;
     }
-    let url = format!("{}/api/show", config.endpoint.trim_end_matches('/'));
-    let answer = reqwest::blocking::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
-        .build()
-        .and_then(|c| c.post(&url).json(&json!({"model": config.model})).send())
-        .and_then(|r| r.json::<Value>());
+        .build();
+    let answer = if local_server {
+        // llama-server reports what it takes in on /props.
+        crate::liquid::ready_for(config);
+        let base = config
+            .endpoint
+            .trim_end_matches('/')
+            .trim_end_matches("/v1");
+        client
+            .and_then(|c| c.get(format!("{base}/props")).send())
+            .and_then(|r| r.json::<Value>())
+    } else {
+        let url = format!("{}/api/show", config.endpoint.trim_end_matches('/'));
+        client
+            .and_then(|c| c.post(&url).json(&json!({"model": config.model})).send())
+            .and_then(|r| r.json::<Value>())
+    };
     let Ok(body) = answer else {
         // Unknown: assume it sees, as before, and ask again next time.
         return true;
     };
-    let sees = body["capabilities"]
-        .as_array()
-        .is_none_or(|c| c.iter().any(|v| v == "vision"));
+    let sees = if local_server {
+        body["modalities"]["vision"] == true
+    } else {
+        body["capabilities"]
+            .as_array()
+            .is_none_or(|c| c.iter().any(|v| v == "vision"))
+    };
     KNOWN
         .lock()
         .unwrap()
@@ -965,6 +994,17 @@ pub fn kokoro_voice() -> Option<crate::voice::speech::Config> {
         python: python.to_string_lossy().into_owned(),
         model: voice,
     })
+}
+
+/// Liquid's recommended sampling for LFM3 (temperature 0.1, top-k 50,
+/// repetition penalty 1.1), for GameBuddy's own LFM3 servers. The server's
+/// defaults (temperature 0.8, no penalty) made the small models wander.
+fn liquid_sampling(config: &ProviderConfig, body: &mut Value) {
+    if config.endpoint.starts_with("http://127.0.0.1:1144") {
+        body["temperature"] = json!(0.1);
+        body["top_k"] = json!(50);
+        body["repeat_penalty"] = json!(1.1);
+    }
 }
 
 /// A model running on this computer (Ollama, or a local llama-server): small
@@ -1034,6 +1074,9 @@ pub const LOCAL_MODEL: &str = "qwen3.5:9b";
 /// (the "liquid" setup), and the model it serves.
 pub const LIQUID_ENDPOINT: &str = "http://127.0.0.1:11440/v1";
 pub const LIQUID_MODEL: &str = "lfm3-vl-2b";
+/// LFM3-1.7B, Liquid's text model for conversation and agents (port 11442).
+pub const LIQUID_TEXT_ENDPOINT: &str = "http://127.0.0.1:11442/v1";
+pub const LIQUID_TEXT_MODEL: &str = "lfm3-1.7b";
 
 /// Load every Ollama model the settings use, in the background, and keep it
 /// loaded, so the first question of a session does not wait for a load.

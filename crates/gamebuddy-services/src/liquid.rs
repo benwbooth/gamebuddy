@@ -26,9 +26,10 @@ fn models() -> Result<PathBuf> {
 
 /// True when the LFM3 reasoning setup is in use.
 pub fn selected(settings: &Settings) -> bool {
-    [&settings.reasoning, &settings.vision]
-        .iter()
-        .any(|c| c.endpoint == crate::providers::LIQUID_ENDPOINT)
+    [&settings.reasoning, &settings.vision].iter().any(|c| {
+        c.endpoint == crate::providers::LIQUID_ENDPOINT
+            || c.endpoint == crate::providers::LIQUID_TEXT_ENDPOINT
+    })
 }
 
 pub fn answering(port: u16) -> bool {
@@ -54,6 +55,13 @@ const VL: Server = Server {
     alias: crate::providers::LIQUID_MODEL,
     context: 65_536,
 };
+const TEXT: Server = Server {
+    port: 11442,
+    model: "LFM3-1.7B-Q8_0.gguf",
+    projector: "",
+    alias: crate::providers::LIQUID_TEXT_MODEL,
+    context: 65_536,
+};
 const VOICE: Server = Server {
     port: VOICE_PORT,
     model: "LFM3-Omni-2B-Q8_0.gguf",
@@ -72,6 +80,7 @@ pub fn voice_installed() -> bool {
 }
 
 static VL_STARTED: AtomicBool = AtomicBool::new(false);
+static TEXT_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Start the reasoning server in the background when its setup is selected.
 pub fn ensure(store: &Store) {
@@ -82,6 +91,7 @@ pub fn ensure(store: &Store) {
         .is_some_and(|s| selected(&s))
     {
         run(&VL, &VL_STARTED);
+        run(&TEXT, &TEXT_STARTED);
     }
 }
 
@@ -89,12 +99,19 @@ pub fn ensure(store: &Store) {
 /// running (switching setups mid-game, a crash) and wait for it, so no
 /// request fails just because the server was not up yet.
 pub fn ready_for(config: &crate::ProviderConfig) {
-    if config.endpoint != crate::providers::LIQUID_ENDPOINT || answering(VL_PORT) {
+    let (server, started) = if config.endpoint == crate::providers::LIQUID_ENDPOINT {
+        (&VL, &VL_STARTED)
+    } else if config.endpoint == crate::providers::LIQUID_TEXT_ENDPOINT {
+        (&TEXT, &TEXT_STARTED)
+    } else {
+        return;
+    };
+    if answering(server.port) {
         return;
     }
-    run(&VL, &VL_STARTED);
+    run(server, started);
     for _ in 0..240 {
-        if answering(VL_PORT) {
+        if answering(server.port) {
             return;
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -142,16 +159,18 @@ fn serve(server: &Server) -> Result<()> {
     let dir = models()?;
     let binary = dir.join("runtime").join("bin").join("llama-server");
     let model = dir.join(server.model);
-    let projector = dir.join(server.projector);
-    for path in [&binary, &model, &projector] {
+    for path in [&binary, &model] {
         anyhow::ensure!(path.is_file(), "Missing {}", path.display());
     }
     let mut command = Command::new(binary);
+    command.arg("-m").arg(model);
+    // Text-only models (LFM3-1.7B) have no vision/audio projector.
+    if !server.projector.is_empty() {
+        let projector = dir.join(server.projector);
+        anyhow::ensure!(projector.is_file(), "Missing {}", projector.display());
+        command.arg("--mmproj").arg(projector);
+    }
     command
-        .arg("-m")
-        .arg(model)
-        .arg("--mmproj")
-        .arg(projector)
         .args([
             "--host",
             "127.0.0.1",

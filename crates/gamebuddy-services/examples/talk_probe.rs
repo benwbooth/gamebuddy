@@ -57,5 +57,11 @@ fn main() -> Result<()> {
     }
     let request = talk::request(&store, &guide, "what now")?;
     eprintln!("prompt bytes: {}", request.prompt.len());
+    if std::env::var_os("GAMEBUDDY_SHOW_COMPACT").is_some() {
+        eprintln!(
+            "{}",
+            talk::compact_request(&store, &guide, "what now")?.prompt
+        );
+    }
     Ok(())
 }

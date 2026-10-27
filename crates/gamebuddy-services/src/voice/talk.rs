@@ -135,6 +135,143 @@ fn fresh_situation(store: &Store, guide: &Guide) -> Value {
         .unwrap_or(Value::Null)
 }
 
+fn clip(text: &str, limit: usize) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= limit {
+        return text;
+    }
+    let cut: String = text.chars().take(limit).collect();
+    format!(
+        "{}…",
+        cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head)
+    )
+}
+
+/// The same knowledge as `request`, written as a few short plain-English
+/// lines. Small models (LFM3, about 2B) follow this; under the full JSON
+/// context they repeated the walkthrough's next step whatever the player
+/// said. One request costs a fraction of the tokens, so it is faster too.
+pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequest> {
+    let full = crate::harness::call_tool_with_images(store, "get_game_context", json!({}))?;
+    let nav = &full.value["navigation"];
+    let mut lines = vec![];
+    let here = here_now(store, guide);
+    lines.push(match here["place"].as_str() {
+        Some(place) => format!("Where the player is (seen on screen): {place}."),
+        None => {
+            "Where the player is: not known. Do not say where they are; ask if it matters.".into()
+        }
+    });
+    let said = player_statements(store, &guide.game);
+    if !said.is_empty() {
+        lines.push(format!(
+            "What the player has told you (believe this over the plan): {}",
+            said.iter()
+                .map(|s| format!("\"{}\"", clip(s, 120)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let seen = fresh_situation(store, guide);
+    if seen.is_object() {
+        let mut parts = vec![];
+        if let Some(gold) = seen["gold"].as_u64() {
+            parts.push(format!("gold {gold}"));
+        }
+        if let Some(experience) = seen["experience"].as_u64() {
+            parts.push(format!("experience {experience}"));
+        }
+        if let Some(text) = seen["screen_text"].as_str().filter(|t| !t.is_empty()) {
+            parts.push(format!("on-screen text \"{}\"", clip(text, 120)));
+        }
+        if let Some(activity) = seen["activity"].as_str().filter(|t| !t.is_empty()) {
+            parts.push(clip(activity, 140));
+        }
+        if !parts.is_empty() {
+            lines.push(format!("The screen shows: {}.", parts.join("; ")));
+        }
+    }
+    let now = &nav["guidance"]["now"];
+    if let Some(title) = now["title"].as_str() {
+        let place = nav["map"]["target_place"]["label"]
+            .as_str()
+            .map(|p| format!(" It happens at {p}, which is not necessarily where the player is."))
+            .unwrap_or_default();
+        lines.push(format!(
+            "The walkthrough's next task: {title}: {}{place}",
+            clip(now["instructions"].as_str().unwrap_or_default(), 260)
+        ));
+    }
+    if let Some(goal) = nav["travel"]["goal"].as_str() {
+        let areas: Vec<&str> = nav["travel"]["route"]["areas_to_cross"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        lines.push(if areas.len() > 1 {
+            format!(
+                "The player is heading to {goal}, through: {}.",
+                areas.join(", then ")
+            )
+        } else {
+            format!("The player is heading to {goal}.")
+        });
+    }
+    let passages: Vec<String> =
+        crate::harness::call_tool(store, "search_guide", json!({"query": question}))
+            .ok()
+            .and_then(|m| m["steps"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .take(2)
+            .map(|s| {
+                format!(
+                    "- {}: {}",
+                    s["title"].as_str().unwrap_or_default(),
+                    clip(s["instructions"].as_str().unwrap_or_default(), 220)
+                )
+            })
+            .collect();
+    if !passages.is_empty() {
+        lines.push(format!(
+            "From the walkthrough, about what they said:\n{}",
+            passages.join("\n")
+        ));
+    }
+    // Only the last two exchanges: a small model repeats whatever is in its
+    // history, including its own earlier mistakes.
+    let turns: Vec<String> = recent_turns(store, &guide.game)
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|t| {
+            let who = if t["role"] == "user" {
+                "Player"
+            } else {
+                "GameBuddy"
+            };
+            format!(
+                "{who}: {}",
+                clip(t["text"].as_str().unwrap_or_default(), 160)
+            )
+        })
+        .collect();
+    if !turns.is_empty() {
+        lines.push(format!("Recent conversation:\n{}", turns.join("\n")));
+    }
+    Ok(ModelRequest {
+        system: SYSTEM.into(),
+        prompt: format!(
+            "{}\n\nThe player just said: \"{question}\"\nReply with only what GameBuddy says out loud.",
+            lines.join("\n")
+        ),
+        images: vec![],
+        json: false,
+    })
+}
+
 /// The request for this turn: compact context, the screenshot, the history.
 pub fn request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequest> {
     let full = crate::harness::call_tool_with_images(store, "get_game_context", json!({}))?;
@@ -238,7 +375,21 @@ pub fn answer_streaming(
     let here = current_place(store, guide);
     let asked =
         crate::navigation::routing::set_from_text(store, guide, &atlas, question, here.as_deref())?;
-    let request = request(store, guide, question)?;
+    // Small models on GameBuddy's own llama-server get the short version.
+    let small = provider.config.kind == crate::ProviderKind::OpenAiCompatible
+        && crate::providers::on_this_computer(&provider.config);
+    let mut request = if small {
+        compact_request(store, guide, question)?
+    } else {
+        request(store, guide, question)?
+    };
+    // A text-only model answers from the brain's reading of the screen.
+    if !crate::providers::accepts_images(&provider.config) {
+        request.images.clear();
+        request.prompt = request
+            .prompt
+            .replace("The image is the player's screen right now.\n\n", "");
+    }
     let started = std::time::Instant::now();
     let mut sentences = Sentences::new();
     let mut first_ms = None;

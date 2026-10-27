@@ -457,7 +457,14 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
             }
             let settings: Settings = store.get("settings")?.unwrap_or_default();
             reviewed = true;
-            let review = assess(&HttpProvider::new(settings.reasoning)?, &observation)?;
+            // The verifier compares screenshots: a text-only thinker hands
+            // it to the setup's screen reader instead.
+            let config = if crate::providers::accepts_images(&settings.reasoning) {
+                settings.reasoning
+            } else {
+                settings.vision
+            };
+            let review = assess(&HttpProvider::new(config)?, &observation)?;
             save_review(&store, &observation, &review)
         })();
         if let Ok(store) = Store::open(&root) {
