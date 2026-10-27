@@ -228,11 +228,13 @@ impl Settings {
             ),
             "gemini" => (claude, SpeechBackend::GeminiLive),
             "local" => (claude, SpeechBackend::Local),
+            // Qwen thinks; LFM3-VL reads the screen (fast and exact). On its
+            // own LFM3 ignored corrections ("I'm not in town") in testing.
             "liquid" => (
                 ProviderConfig {
-                    kind: ProviderKind::OpenAiCompatible,
-                    endpoint: LIQUID_ENDPOINT.into(),
-                    model: LIQUID_MODEL.into(),
+                    kind: ProviderKind::Ollama,
+                    endpoint: "http://127.0.0.1:11434".into(),
+                    model: LOCAL_MODEL.into(),
                     api_key_env: String::new(),
                     reasoning_effort: String::new(),
                 },
@@ -270,6 +272,16 @@ impl Settings {
             settings.fast_voice = true;
         }
         settings.apply_provider_scope();
+        if preset == "liquid" {
+            settings.single_provider = false;
+            settings.vision = ProviderConfig {
+                kind: ProviderKind::OpenAiCompatible,
+                endpoint: LIQUID_ENDPOINT.into(),
+                model: LIQUID_MODEL.into(),
+                api_key_env: String::new(),
+                reasoning_effort: String::new(),
+            };
+        }
         Ok(settings)
     }
 

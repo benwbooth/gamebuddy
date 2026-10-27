@@ -70,6 +70,41 @@ pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
         .map(|(_, _, id)| id)
 }
 
+/// The sentence is about travelling somewhere ("how do I get to Forepaw",
+/// "head back to Forepaw", "take me to the shop"), not a remark about where
+/// someone is.
+pub fn wants_to_travel(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const TRAVEL: [&str; 14] = [
+        "get to",
+        "go to",
+        "go back to",
+        "head to",
+        "head back to",
+        "return to",
+        "travel to",
+        "take me to",
+        "way to",
+        "where is",
+        "where's",
+        "find the",
+        "back to",
+        "walk to",
+    ];
+    TRAVEL.iter().any(|phrase| lower.contains(phrase))
+        && ![
+            "not in",
+            "not at",
+            "n't in",
+            "n't at",
+            "not going",
+            "not go ",
+            "don't want to go",
+        ]
+        .iter()
+        .any(|n| lower.contains(n))
+}
+
 /// Remember where the player is heading. Returns the goal when it changed.
 pub fn set_from_text(
     store: &Store,
@@ -78,6 +113,11 @@ pub fn set_from_text(
     text: &str,
     current: Option<&str>,
 ) -> Result<Option<Goal>> {
+    // Only a sentence about going somewhere sets a destination: "I'm not in
+    // town" or "you're at Victim" name a place without asking to go there.
+    if !wants_to_travel(text) {
+        return Ok(None);
+    }
     let Some(place_id) = named_place(atlas, text) else {
         return Ok(None);
     };
@@ -323,4 +363,28 @@ pub fn area_heading(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_travel_sentences_set_a_destination() {
+        for yes in [
+            "How do I get to Forepaw?",
+            "Head back to Forepaw and buy boots.",
+            "where is the key shop",
+            "take me to Eolis",
+        ] {
+            assert!(super::wants_to_travel(yes), "{yes}");
+        }
+        for no in [
+            "I'm not in the town.",
+            "I just told you I'm not in town.",
+            "You're at Victim and need two keys.",
+            "Step then.",
+            "I'm not going back to town",
+        ] {
+            assert!(!super::wants_to_travel(no), "{no}");
+        }
+    }
 }

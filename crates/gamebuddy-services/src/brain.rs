@@ -327,7 +327,11 @@ pub fn think_with(
         let mut images = vec![snapshot.jpeg.clone()];
         images.extend(moments.iter().map(|m| m.jpeg.clone()));
         let separate;
-        let reader = if sees {
+        // A separate local screen reader (LFM3-VL in the Liquid setup) reads
+        // faster and more exactly than the thinking model.
+        let own_reader = settings.vision.endpoint != provider.config.endpoint
+            && crate::providers::on_this_computer(&settings.vision);
+        let reader = if sees && !own_reader {
             &provider
         } else {
             separate = HttpProvider::new(settings.vision.clone())?;

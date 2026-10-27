@@ -50,7 +50,15 @@ fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
 /// further back than the recent turns: "I don't have the Wing Boots" must
 /// outlive eight turns of chat, even when the plan does not track that item.
 fn player_statements(store: &Store, game: &str) -> Vec<String> {
-    const MARKERS: [&str; 12] = [
+    const MARKERS: [&str; 20] = [
+        "not in",
+        "not at",
+        "i'm in",
+        "i am in",
+        "i'm on",
+        "n't in",
+        "n't at",
+        "i'm outside",
         "i have",
         "i don't have",
         "i dont have",
@@ -76,6 +84,29 @@ fn player_statements(store: &Store, game: &str) -> Vec<String> {
         .rev()
         .take(6)
         .collect()
+}
+
+/// What GameBuddy actually knows about where the player is, spelled out so
+/// a model never mistakes the walkthrough's next location for the player's.
+fn here_now(store: &Store, guide: &Guide) -> Value {
+    let atlas = crate::navigation::atlas(store, guide).ok();
+    let label = |id: &str| {
+        atlas
+            .as_ref()
+            .and_then(|a| {
+                a.places
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| p.label.clone())
+            })
+            .unwrap_or_else(|| id.to_owned())
+    };
+    match current_place(store, guide) {
+        Some(place) => json!({"place": label(&place), "how_sure": "seen on screen",
+            "instruction": "This is where the player is. Unless the player says otherwise; then believe the player."}),
+        None => json!({"place": null,
+            "instruction": "Not known yet. Do not say where the player is. The walkthrough step's location is where the next task happens, not where the player is. If the player tells you where they are or are not, believe them."}),
+    }
 }
 
 /// Where the fused location estimate puts the player, when it is sure enough.
@@ -120,7 +151,8 @@ pub fn request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequ
     Ok(ModelRequest {
         system: SYSTEM.into(),
         prompt: format!(
-            "GameBuddy's live context: {}\n\nWhere the player is heading and the way there (from the walkthrough's own path; follow it for any directions): {}\n\nWhat the player has told you about their items and progress (newest first; this overrides the plan): {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
+            "Where the player is right now: {}\n\nGameBuddy's live context: {}\n\nWhere the player is heading and the way there (from the walkthrough's own path; follow it for any directions): {}\n\nWhat the player has told you about their items and progress (newest first; this overrides the plan): {}\n\nThe brain's latest reading of the screen: {}\n\nWalkthrough passages matching what the player said: {}\n\nRecent conversation, oldest first: {}\n\n{}The player just said: \"{question}\"\n\nReply with only what GameBuddy says out loud.",
+            serde_json::to_string(&here_now(store, guide))?,
             serde_json::to_string(&context)?,
             serde_json::to_string(&full.value["navigation"]["travel"])?,
             serde_json::to_string(&player_statements(store, &guide.game))?,
