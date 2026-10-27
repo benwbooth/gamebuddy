@@ -1,6 +1,7 @@
 //! Run the brain once on recorded frames, in a copy of the data directory:
 //! brain_probe <data dir copy> <guide id> <provider: ollama:MODEL | current> <frame.jpg>...
 //! The first frame is "now"; any others are earlier moments, oldest first.
+//! Set GAMEBUDDY_QUESTION to ask a spoken question.
 //! Writes the situation and timing as JSON. Never use the live data directory:
 //! the brain records facts it reads.
 use anyhow::{Context, Result};
@@ -39,10 +40,12 @@ fn main() -> Result<()> {
         now,
     )?;
     let started = std::time::Instant::now();
-    let (situation, _) = brain::think_with(&store, &guide, None, &moments)?;
+    // GAMEBUDDY_QUESTION asks the brain a spoken question, as local voice does.
+    let question = std::env::var("GAMEBUDDY_QUESTION").ok();
+    let (situation, answer) = brain::think_with(&store, &guide, question.as_deref(), &moments)?;
     println!(
         "{}",
-        serde_json::json!({"seconds": started.elapsed().as_secs_f64(), "situation": situation})
+        serde_json::json!({"seconds": started.elapsed().as_secs_f64(), "answer": answer, "situation": situation})
     );
     Ok(())
 }

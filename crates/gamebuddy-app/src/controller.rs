@@ -936,6 +936,16 @@ impl ffi::Buddy {
                     );
                     if let Some(guide) = &guide {
                         services::brain::schedule(&store, guide, &snapshot);
+                        // Local voice: keep "what now?" answered ahead of time,
+                        // as the live voices do.
+                        if store
+                            .get::<Settings>("settings")
+                            .ok()
+                            .flatten()
+                            .is_some_and(|s| s.speech == services::SpeechBackend::Local)
+                        {
+                            services::voice::prefetch::schedule(store.root.clone(), guide.clone());
+                        }
                         services::activity::schedule(&store, guide, snapshot.clone());
                         services::spatial::schedule_notifying(
                             &store,
@@ -1496,6 +1506,35 @@ impl ffi::Buddy {
                 }
                 let store = Store::open(root)?;
                 let settings = store.get::<Settings>("settings")?.unwrap_or_default();
+                // Answers that need no model call first: the prepared "what
+                // now?" and prices from the walkthrough's data cards.
+                if let Ok(Some(answer)) =
+                    services::voice::prefetch::reply(&store, &game, &transcript)
+                {
+                    return Ok(Outcome::Voice(transcript, answer.text));
+                }
+                if let Ok(Some(answer)) =
+                    services::voice::briefing::price_reply(&store, &game, &transcript)
+                {
+                    return Ok(Outcome::Voice(transcript, answer.text));
+                }
+                // On this computer, one brain call (screen read, then plan)
+                // answers in seconds; the tool loop can take many rounds.
+                if settings.reasoning.kind == services::ProviderKind::Ollama
+                    && let Some(guide) = store
+                        .get::<String>("active_guide")?
+                        .and_then(|id| store.guide(&id).ok())
+                        .filter(|g| g.game.eq_ignore_ascii_case(&game))
+                {
+                    match services::brain::think(&store, &guide, Some(&transcript)) {
+                        Ok((_, Some(answer))) if !answer.trim().is_empty() => {
+                            services::voice::prefetch::schedule(store.root.clone(), guide);
+                            return Ok(Outcome::Voice(transcript, answer));
+                        }
+                        Ok(_) => {}
+                        Err(error) => eprintln!("Local brain answer: {error:#}"),
+                    }
+                }
                 let provider = HttpProvider::for_conversation(settings.reasoning, &store, &game)?;
                 let answer = services::harness::chat(&provider, &store, &game, &transcript)?;
                 Ok(Outcome::Voice(transcript, answer))
