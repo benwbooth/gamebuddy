@@ -446,22 +446,19 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     else {
         return;
     };
-    if !settings.brain.enabled {
+    // Thinking on this computer: spoken answers read the screen fresh and
+    // GameBuddy's code decides the next step, so the brain only competed for
+    // the GPU (a 2B model took 31 s on its 9 KB prompt and screenshots).
+    if !settings.brain.enabled
+        || (crate::providers::on_this_computer(&settings.reasoning)
+            && settings.brain.provider.is_none())
+    {
         return;
     }
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     let since = snapshot.captured_at_ms.saturating_sub(job.last_at);
-    // On one local GPU every brain update delays the player's next spoken
-    // answer, so it looks at most every 12 s there.
-    let gap = if crate::providers::on_this_computer(&settings.reasoning)
-        && settings.brain.provider.is_none()
-    {
-        12_000
-    } else {
-        3_000
-    };
-    if job.running || since < gap {
+    if job.running || since < 3_000 {
         return;
     }
     // Something happened on screen since the last update (new text, a big

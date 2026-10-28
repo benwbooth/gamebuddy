@@ -965,18 +965,11 @@ pub fn context(
                 .as_ref()
                 .and_then(|r| r["areas_to_cross"].get(1).cloned());
             travel = json!({"goal": goal.label, "next_area": next, "route": route});
-            // Room-to-room headings when the walkthrough states them, else
-            // toward the next area map's exit.
-            let by_area = || {
-                let map = location_estimate.map_id.as_deref()?;
-                let next = next.as_ref()?.as_str()?.to_owned();
-                let position = location_estimate.position.as_ref().map(|p| [p.x, p.y]);
-                routing::area_heading(store, guide, &atlas, map, position, &next)
-                    .map(|heading| (heading, next))
-            };
+            // Room-to-room headings only where the walkthrough states them:
+            // a straight line toward the next area's side of the map once
+            // pointed into a wall.
             if direction.is_none()
-                && let Some((heading, next)) =
-                    routing::first_direction(guide, &atlas, here, &goal).or_else(by_area)
+                && let Some((heading, next)) = routing::first_direction(guide, &atlas, here, &goal)
             {
                 direction = Some(gamebuddy_core::navigation::direction::DirectionCue {
                     direction: heading,
@@ -1096,6 +1089,10 @@ pub fn context(
         value["guidance"]["now"] = now;
         value["recommendation"] = Value::Null;
         value["guidance"]["plan_detour"] = json!(true);
+    }
+    if let Some(first) = planning::acquire_first(store, guide, &value["guidance"]["now"])? {
+        value["guidance"]["now"] = first;
+        value["recommendation"] = Value::Null;
     }
     if screen["status"] == "live" && (advice.status == "ready" || recommendation.is_some()) {
         value["guidance"]["warning"] = json!(

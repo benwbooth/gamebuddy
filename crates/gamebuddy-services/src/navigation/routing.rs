@@ -326,11 +326,7 @@ pub fn describe(
     let map = estimate["map_id"]
         .as_str()
         .filter(|_| matches!(estimate["status"].as_str(), Some("confident" | "likely")));
-    let position = estimate["position"]["x"]
-        .as_f64()
-        .zip(estimate["position"]["y"].as_f64())
-        .map(|(x, y)| [x as f32, y as f32]);
-    map.and_then(|map| route_from_map(store, guide, atlas, map, position, goal))
+    map.and_then(|map| route_from_map(atlas, map, goal))
         .unwrap_or_else(|| {
             format!(
                 "The way to {} is not known yet because where the player is now is not known; ask them where they are.",
@@ -429,28 +425,20 @@ pub fn place_map(atlas: &Atlas, id: &str) -> Option<String> {
 /// The way to the goal when only the area map the player is on is known
 /// (the map matched, the room did not): the areas to cross and, when known,
 /// which way to head first.
-pub fn route_from_map(
-    store: &Store,
-    guide: &Guide,
-    atlas: &Atlas,
-    map_id: &str,
-    position: Option<[f32; 2]>,
-    goal: &Goal,
-) -> Option<String> {
+pub fn route_from_map(atlas: &Atlas, map_id: &str, goal: &Goal) -> Option<String> {
     let goal_map = place_map(atlas, &goal.place_id)?;
     let areas = area_path(atlas, map_id, &goal_map)?;
     if areas.len() < 2 {
         return Some(format!("{} is in this area.", goal.label));
     }
-    let heading = area_heading(store, guide, atlas, map_id, position, &areas[1]);
+    // Which way to walk inside this area is not known: the rooms between
+    // here and its exit can wind (a straight line or the side of the map the
+    // next area joins once led into a wall), so no left or right is given.
     // The first area is the one the player is in.
     Some(format!(
-        "To {}: cross {}{}",
+        "To {}: cross {}. Which way through this area's rooms leads there is not known yet.",
         goal.label,
         areas[1..].join(", then "),
-        heading
-            .map(|d| format!(". First head {}.", direction_word(d)))
-            .unwrap_or_default()
     ))
 }
 
@@ -537,61 +525,6 @@ pub fn learn_exit(
         );
     }
     Ok(())
-}
-
-/// Which way to head on the current area map to reach the next one: toward
-/// the exit the player has used before, else by how the maps are drawn
-/// ("A To B" passages run left to right, from A to B).
-pub fn area_heading(
-    store: &Store,
-    guide: &Guide,
-    atlas: &Atlas,
-    map_id: &str,
-    position: Option<[f32; 2]>,
-    next_title: &str,
-) -> Option<ScreenDirection> {
-    let next = atlas.maps.iter().find(|m| m.title.trim() == next_title)?;
-    let here = atlas.maps.iter().find(|m| m.id == map_id)?;
-    let exits: Exits = store
-        .get(&exits_key(guide))
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let aspect = image::image_dimensions(super::cached_map_path(store, here))
-        .map_or(1.0, |(w, h)| w as f32 / h.max(1) as f32);
-    if let (Some(position), Some(exit)) =
-        (position, exits.get(map_id).and_then(|e| e.get(&next.id)))
-        && let Some(direction) =
-            gamebuddy_core::navigation::direction::bearing(position, *exit, aspect)
-    {
-        return Some(direction);
-    }
-    // The drawing convention only holds for maps laid out sideways.
-    if aspect < 1.3 {
-        return None;
-    }
-    let ends = |t: &str| {
-        t.split_once(" To ")
-            .map(|(a, b)| (a.trim().to_owned(), b.trim().to_owned()))
-    };
-    let here_title = here.title.trim();
-    if let Some((a, b)) = ends(here_title) {
-        if next_title == a {
-            return Some(ScreenDirection::Left);
-        }
-        if next_title == b {
-            return Some(ScreenDirection::Right);
-        }
-    }
-    if let Some((a, b)) = ends(next_title) {
-        if here_title == a {
-            return Some(ScreenDirection::Right);
-        }
-        if here_title == b {
-            return Some(ScreenDirection::Left);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

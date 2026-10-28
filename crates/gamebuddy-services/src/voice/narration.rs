@@ -207,6 +207,11 @@ impl Narrator {
             // must never cancel a request correcting our location or route.
             return Some(field(warning, "text").to_owned());
         }
+        // Already talking with the player: a greeting now would talk over
+        // (and once replaced) the answer they just asked for.
+        if !self.introduced && self.last_conversation.is_some() {
+            self.introduced = true;
+        }
         if !self.introduced {
             self.introduced = true;
             self.last_spoken = Some(now);

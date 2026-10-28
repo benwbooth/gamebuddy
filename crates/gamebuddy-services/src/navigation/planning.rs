@@ -569,3 +569,65 @@ pub fn area_notes(store: &Store, guide: &Guide) -> Result<Value> {
     }
     Ok(json!(notes))
 }
+
+/// An item the player says they lack that the next task uses ("Activate
+/// Wing Boots" with no boots): getting it comes first. Applied to the Now
+/// step itself, so the card, the narrator and spoken answers all say the
+/// same thing (the narrator once read "use Wing Boots" while answers said
+/// to buy them).
+pub fn acquire_first(store: &Store, guide: &Guide, now: &Value) -> Result<Option<Value>> {
+    let said = crate::voice::talk::player_statements(store, &guide.game);
+    let text = format!(
+        "{} {}",
+        now["title"].as_str().unwrap_or_default(),
+        now["instructions"].as_str().unwrap_or_default()
+    )
+    .to_lowercase();
+    let Some(item) = crate::voice::talk::lacking_items(store, guide, &said)
+        .into_iter()
+        .find(|item| text.contains(item.as_str()) || text.contains(item.trim_end_matches('s')))
+    else {
+        return Ok(None);
+    };
+    let found = crate::game_data::search(store, guide, &item)?;
+    let cards: Vec<Value> = found["cards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| {
+            c["name"]
+                .as_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(&item))
+        })
+        .cloned()
+        .collect();
+    let name = cards
+        .first()
+        .and_then(|c| c["name"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            item.split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    c.next()
+                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    let how = crate::voice::grounded::card_lines(&cards, true)
+        .into_iter()
+        .next()
+        .map(|(_, sentence)| format!(" {sentence}"))
+        .unwrap_or_default();
+    let them = if name.ends_with('s') { "them" } else { "it" };
+    let mut first = now.clone();
+    first["title"] = json!(format!("Get {name}"));
+    first["instructions"] = json!(format!(
+        "You don't have {name} yet, and \"{}\" needs {them}.{how}",
+        now["title"].as_str().unwrap_or("the next step")
+    ));
+    first["acquire_first"] = json!(name);
+    Ok(Some(first))
+}

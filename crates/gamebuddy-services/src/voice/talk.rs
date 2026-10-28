@@ -267,10 +267,13 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
         now["instructions"].as_str().unwrap_or_default()
     )
     .to_lowercase();
-    let missing = lacking.iter().find(|item| {
-        let singular = item.trim_end_matches('s');
-        next_text.contains(item.as_str()) || next_text.contains(singular)
-    });
+    let missing = lacking
+        .iter()
+        .filter(|_| now["acquire_first"].is_null())
+        .find(|item| {
+            let singular = item.trim_end_matches('s');
+            next_text.contains(item.as_str()) || next_text.contains(singular)
+        });
     if let Some(item) = missing {
         lines.push(format!(
             "The player does NOT have {item} yet. The next step uses it, so first tell them where and how to get {item}; do not explain how to use it until they have it."

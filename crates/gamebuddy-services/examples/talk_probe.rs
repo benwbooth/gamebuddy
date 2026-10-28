@@ -1,6 +1,9 @@
 //! Time one spoken turn the way local voice answers it, on a recorded frame,
 //! in a copy of the data directory (answers are written to its conversation):
 //! talk_probe <data dir copy> <guide id> <ollama:MODEL | claude:MODEL | openai:ENDPOINT|MODEL | current> <frame.jpg> <question>...
+//! GAMEBUDDY_PROBE_ESTIMATE=<file> holds a recorded location estimate (a
+//! flight recorder `location-estimate` value) in place for every question,
+//! so a session's turns replay where the player was.
 use anyhow::{Context, Result};
 use gamebuddy_services::{ProviderConfig, ProviderKind, Settings, Store, screen, voice::talk};
 
@@ -44,6 +47,13 @@ fn main() -> Result<()> {
     let frame = std::path::Path::new(args.get(4).context("Frame")?);
     for question in &args[5..] {
         screen::publish_at(&store, &ticket, frame, "window", screen::now_ms())?;
+        if let Some(path) = std::env::var_os("GAMEBUDDY_PROBE_ESTIMATE") {
+            let recorded: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+            store.put(
+                &gamebuddy_services::navigation::estimate::key(&guide),
+                &recorded,
+            )?;
+        }
         let started = std::time::Instant::now();
         let mut first = None;
         let answer = talk::answer_streaming(&store, &guide, question, &mut |_| {

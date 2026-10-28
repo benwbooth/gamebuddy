@@ -432,12 +432,15 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
     if crate::voice::priority::active(&store.root) {
         return;
     }
+    let Some(interval) = interval_ms(store) else {
+        return;
+    };
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     if job.running
         // Each review is a reasoning-model call; the brain covers moment to
         // moment changes, so this verifier runs at most every 10 s.
-        || snapshot.captured_at_ms.saturating_sub(job.last_start) < interval_ms(store)
+        || snapshot.captured_at_ms.saturating_sub(job.last_start) < interval
         || job.last_image == snapshot.jpeg
     {
         return;
@@ -490,15 +493,16 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
     });
 }
 
-/// How often the verifier reviews: every 10 s, or every 30 s on one local
-/// GPU, where each review delays the player's spoken questions.
-fn interval_ms(store: &Store) -> u64 {
+/// How often the verifier reviews: every 10 s, and never when thinking runs
+/// on this computer, where its 30 KB prompt overflows the local model's
+/// context (every review failed) and each try delays spoken answers.
+fn interval_ms(store: &Store) -> Option<u64> {
     let local = store
         .get::<Settings>("settings")
         .ok()
         .flatten()
         .is_some_and(|s| crate::providers::on_this_computer(&s.reasoning));
-    if local { 30_000 } else { 10_000 }
+    (!local).then_some(10_000)
 }
 
 pub fn save(store: &Store, observation: &Observation, completions: &[Completion]) -> Result<usize> {

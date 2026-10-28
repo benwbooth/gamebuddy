@@ -23,6 +23,9 @@ const SPEAK: &str = "You are GameBuddy, the player's upbeat friend on the couch,
 pub enum Kind {
     /// How to get somewhere.
     Travel,
+    /// Which way to go from here, no place named ("which direction?", "I
+    /// can't go that way").
+    Move,
     /// Where to get, or what something costs or does.
     Item,
     /// What to do now.
@@ -76,6 +79,41 @@ fn clip(text: &str, limit: usize) -> String {
         "{}…",
         cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head)
     )
+}
+
+/// Asking which way to go, or saying the way they tried is blocked: these
+/// once fell through to small talk ("Oh, I can't go") or a text search that
+/// answered "go through the tower door" on a screen with no door.
+const MOVING: &[&str] = &[
+    "which way",
+    "what way",
+    "which direction",
+    "what direction",
+    "where do i go",
+    "where should i go",
+    "where to go",
+    "where now",
+    "left or right",
+    "up or down",
+    "cant go",
+    "cannot go",
+    "can not go",
+    "dead end",
+    "im stuck",
+    "i am stuck",
+    "no door",
+    "way out",
+    "get out of here",
+];
+
+fn moving(lower: &str) -> bool {
+    MOVING.iter().any(|w| lower.contains(w))
+}
+
+fn blocked(lower: &str) -> bool {
+    ["cant go", "cannot go", "can not go", "dead end", "stuck"]
+        .iter()
+        .any(|w| lower.contains(w))
 }
 
 fn asks(lower: &str) -> bool {
@@ -146,6 +184,9 @@ pub fn classify(
             item: None,
         };
     }
+    if moving(&lower) {
+        return plain(Kind::Move);
+    }
     let item = named_item(store, guide, text);
     let statement = talk::possession_statement(text);
     if statement && !asks(&lower) {
@@ -211,7 +252,7 @@ fn model_intent(
     let schema = json!({
         "type": "object",
         "properties": {
-            "intent": {"type": "string", "enum": ["travel", "item", "next", "location", "screen", "general", "chat"]},
+            "intent": {"type": "string", "enum": ["travel", "move", "item", "next", "location", "screen", "general", "chat"]},
             "place": {"type": "string"},
             "item": {"type": "string"}
         },
@@ -221,7 +262,7 @@ fn model_intent(
         ModelRequest {
             system: "You sort what a video game player just said to their helper. Reply with JSON only.".into(),
             prompt: format!(
-                "The player said: \"{text}\"\nPick one intent: travel (how to get somewhere; put the place in \"place\"), item (where to get something, its price or what it does; put it in \"item\"), next (what to do now), location (where am I), screen (what is on screen), general (any other question about the game), chat (not about the game). Leave \"place\" and \"item\" empty when not used."
+                "The player said: \"{text}\"\nPick one intent: travel (how to get to a named place; put the place in \"place\"), move (which way to go from here, or the way they tried is blocked), item (where to get something, its price or what it does; put it in \"item\"), next (what to do now), location (where am I), screen (what is on screen), general (any other question about the game), chat (not about the game). Leave \"place\" and \"item\" empty when not used."
             ),
             images: vec![],
             json: true,
@@ -231,6 +272,7 @@ fn model_intent(
     let parsed: Value = serde_json::from_str(reply.trim())?;
     let kind = match parsed["intent"].as_str() {
         Some("travel") => Kind::Travel,
+        Some("move") => Kind::Move,
         Some("item") => Kind::Item,
         Some("next") => Kind::Next,
         Some("location") => Kind::Location,
@@ -253,8 +295,10 @@ fn model_intent(
     Ok(Some(match kind {
         // The model's place or item must be one GameBuddy knows, else the
         // question is treated as a general one.
+        // Going somewhere without a place GameBuddy knows: which way from
+        // here, toward the current goal.
         Kind::Travel if place.is_none() => Intent {
-            kind: Kind::General,
+            kind: Kind::Move,
             place: None,
             item,
         },
@@ -346,7 +390,7 @@ fn table_lines(card: &Value, words: &[String]) -> Vec<String> {
 /// Item facts and the plain sentence for each: where it is sold and for how
 /// much, and (unless `acquiring`, when the player asked where to get it)
 /// what it does.
-fn card_lines(cards: &[Value], acquiring: bool) -> Vec<(String, String)> {
+pub(crate) fn card_lines(cards: &[Value], acquiring: bool) -> Vec<(String, String)> {
     let mut seen = vec![];
     cards
         .iter()
@@ -402,13 +446,15 @@ fn card_lines(cards: &[Value], acquiring: bool) -> Vec<(String, String)> {
 
 /// The facts for this intent, and the plain sentence that can stand in for
 /// the model's words.
+/// `true` last: the plain sentence is the whole answer, said without a
+/// model call.
 pub fn facts(
     store: &Store,
     guide: &Guide,
     atlas: &Atlas,
     intent: &Intent,
     question: &str,
-) -> Result<(Vec<String>, Option<String>)> {
+) -> Result<(Vec<String>, Option<String>, bool)> {
     let here = talk::current_place(store, guide);
     // Where the player just said they are, before the estimate catches up.
     let spoken_area = crate::navigation::tracking::spoken_area(atlas, question);
@@ -425,26 +471,55 @@ pub fn facts(
         .filter(|item| topic.contains(item.as_str()) || topic.contains(item.trim_end_matches('s')))
         .map(|item| format!("The player does not have {item}."))
         .collect();
+    let spoken_map = spoken_area.as_ref().and_then(|area| {
+        atlas
+            .maps
+            .iter()
+            .find(|m| m.title.eq_ignore_ascii_case(area))
+            .map(|m| m.id.clone())
+    });
+    let way_to = |goal: &routing::Goal| match (&here, &spoken_map) {
+        (None, Some(map)) => routing::route_from_map(atlas, map, goal)
+            .unwrap_or_else(|| format!("No known way from there to {}.", goal.label)),
+        _ => routing::describe(store, guide, atlas, here.as_deref(), goal),
+    };
     let mut facts = vec![];
     let mut template = None;
     match intent.kind {
+        Kind::Move => {
+            facts.push(here_line);
+            let lower = question.to_lowercase().replace(['\'', '’'], "");
+            let goal = routing::goal(store, guide).ok().flatten();
+            let way = goal.as_ref().map(&way_to);
+            if let Some(way) = way.clone().filter(|w| w.contains("First head")) {
+                // The walkthrough states which way to head from this room.
+                template = Some(way.replace("The player is", "You are"));
+                facts.push(way);
+                facts.extend(lacking);
+            } else {
+                // No path through these rooms is known: say so in GameBuddy's
+                // own words instead of letting a model guess a direction.
+                let areas = way
+                    .as_deref()
+                    .and_then(|w| w.split_once("cross "))
+                    .and_then(|(_, rest)| rest.split(". ").next())
+                    .map(|areas| areas.trim_end_matches('.').to_owned());
+                let mut line = if blocked(&lower) {
+                    "Okay, that way's a dead end. ".to_owned()
+                } else {
+                    String::new()
+                };
+                if let (Some(goal), Some(areas)) = (&goal, areas) {
+                    line.push_str(&format!("{} is back through {areas}, but ", goal.label));
+                }
+                line.push_str("I don't know the way through these rooms yet. Which exits can you see: a ladder, a door, or an opening?");
+                return Ok((vec![line.clone()], Some(line), true));
+            }
+        }
         Kind::Travel => {
             let goal = routing::goal_for(atlas, intent.place.as_deref().unwrap_or_default());
             facts.push(here_line);
-            let spoken_map = spoken_area.as_ref().and_then(|area| {
-                atlas
-                    .maps
-                    .iter()
-                    .find(|m| m.title.eq_ignore_ascii_case(area))
-                    .map(|m| m.id.clone())
-            });
-            let way = match (&here, spoken_map) {
-                (None, Some(map)) => {
-                    routing::route_from_map(store, guide, atlas, &map, None, &goal)
-                        .unwrap_or_else(|| format!("No known way from there to {}.", goal.label))
-                }
-                _ => routing::describe(store, guide, atlas, here.as_deref(), &goal),
-            };
+            let way = way_to(&goal);
             template = Some(if way.starts_with("The way to") {
                 format!(
                     "I'm not sure where you are yet, so I can't route you to {}. Where are you right now?",
@@ -590,7 +665,7 @@ pub fn facts(
             template = Some("I'm here, go ahead.".into());
         }
     }
-    Ok((facts, template))
+    Ok((facts, template, false))
 }
 
 fn numbers(text: &str) -> Vec<String> {
@@ -685,7 +760,24 @@ pub fn answer(
             first_sentence_ms: Some(0),
         });
     }
-    let (facts, template) = facts(store, guide, &atlas, &intent, question)?;
+    let (facts, template, settled) = facts(store, guide, &atlas, &intent, question)?;
+    if settled && let Some(line) = template {
+        on_sentence(line.clone());
+        crate::flight::event(
+            "talk",
+            json!({"ms": started.elapsed().as_millis() as u64, "first_sentence_ms": 0, "chars": line.len(),
+                "intent": intent.kind, "grounded": true, "templated": true}),
+        );
+        return Ok(Turn {
+            reply: line,
+            intent,
+            facts,
+            grounded: true,
+            templated: true,
+            ms: started.elapsed().as_millis() as u64,
+            first_sentence_ms: Some(0),
+        });
+    }
     let names = known_names(store, guide, &atlas);
     let trace = std::env::var_os("GAMEBUDDY_TALK_TRACE").is_some();
     if trace {
@@ -710,6 +802,14 @@ pub fn answer(
         images: vec![],
         json: false,
     };
+    // "You're at the elevated shop" came from a walkthrough passage while
+    // where the player was stood unknown: a location is said only when the
+    // facts hold one.
+    let knows_place = facts.iter().any(|f| {
+        f.starts_with("The player is at")
+            || f.starts_with("The player says they are in")
+            || (f.starts_with("Where the player is") && !f.contains("not known"))
+    });
     let mut sentences = talk::Sentences::new();
     let mut spoken: Vec<String> = vec![];
     let mut all_grounded = true;
@@ -730,7 +830,7 @@ pub fn answer(
         if sentence.is_empty() {
             return;
         }
-        if grounded(&sentence, &facts, &names) {
+        if grounded(&sentence, &facts, &names) && (knows_place || !claims_place(&sentence)) {
             first_ms.get_or_insert(started.elapsed().as_millis() as u64);
             on_sentence(sentence.clone());
             spoken.push(sentence);
@@ -799,6 +899,20 @@ pub fn answer(
             "intent": turn.intent.kind, "grounded": turn.grounded, "templated": turn.templated}),
     );
     Ok(turn)
+}
+
+fn claims_place(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase().replace('’', "'");
+    [
+        "you're at ",
+        "you are at ",
+        "you're in ",
+        "you are in ",
+        "you're on ",
+        "you are on ",
+    ]
+    .iter()
+    .any(|p| lower.starts_with(p))
 }
 
 /// Strip what a small model adds that a friend never says: its own name as

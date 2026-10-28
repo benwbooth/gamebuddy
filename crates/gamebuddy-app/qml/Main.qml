@@ -183,6 +183,13 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--voice-trace") >= 0
         onTranscript: text => buddy.realtime_transcript(text)
         onAnswer: text => buddy.answer = text
+        // Only an urgent cue may cut off what is being said; a routine one
+        // once replaced the answer the player had just asked for.
+        onNarration: (text, urgent) => {
+            if (urgent) { buddy.answer = text; return }
+            buddy.answer_spoken = true; buddy.answer = text; buddy.answer_spoken = false
+            if (!root.liveVoiceEnabled && companion.spokenReplies) speech.append(text)
+        }
         onOverlayAction: action => root.overlayAction(action)
     }
     LiveVoicePanel {

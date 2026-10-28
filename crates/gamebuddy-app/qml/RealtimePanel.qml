@@ -78,6 +78,8 @@ WebEngineView {
     onStatusChanged: if(trace)console.warn("GAMEBUDDY_REALTIME_STATUS " + status)
     signal transcript(string text)
     signal answer(string text)
+    // A local-voice cue: queued after anything being said unless urgent.
+    signal narration(string text, bool urgent)
     signal overlayAction(int action)
     // Keep the audio document attached to the live overlay window even when
     // the separate workbench is closed.
@@ -153,7 +155,7 @@ WebEngineView {
                 // commentary here can race and cancel its queued speech.
                 // Authorize playback before the cue can produce remote audio.
                 speakApproved(text,cue.urgent,session.screen?.status==="live",cue.urgent?"":(session.navigation?.guidance?.now?.id||""))
-            } else panel.answer(text)
+            } else panel.narration(text,cue.urgent)
         }
     }
     Timer { interval: 250; repeat: true; running: panel.automaticSession; onTriggered: panel.narrate() }
