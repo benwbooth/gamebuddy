@@ -19,12 +19,20 @@ model = sys.argv[1]
 
 if model.endswith(".omni"):
     # LFM3-Omni through GameBuddy's own llama-server (`/tts`): the file
-    # names the voice, male or female.
+    # names the voice: male, female, or ref:<clip.wav> to copy a voice.
     import time
     import urllib.request
 
     with open(model, encoding="utf-8") as voice_file:
         voice_name = voice_file.readline().strip() or "male"
+    # "ref:<file.wav>" (relative to the .omni file) makes Omni speak in the
+    # voice of that short reference clip instead of its built-in voices.
+    speaker_ref = None
+    if voice_name.startswith("ref:"):
+        import base64 as _b64
+        reference = os.path.join(os.path.dirname(os.path.abspath(model)), voice_name[4:].strip())
+        with open(reference, "rb") as clip:
+            speaker_ref = _b64.b64encode(clip.read()).decode("ascii")
     base = "http://127.0.0.1:11441"
     for _ in range(72):
         try:
@@ -38,7 +46,11 @@ if model.endswith(".omni"):
     def synthesize(text, wav):
         request = urllib.request.Request(
             base + "/tts",
-            data=json.dumps({"input": text, "voice": voice_name, "lang": "en", "response_format": "wav"}).encode(),
+            data=json.dumps(
+                {"input": text, "lang": "en", "response_format": "wav", "speaker_ref_b64": speaker_ref}
+                if speaker_ref else
+                {"input": text, "voice": voice_name, "lang": "en", "response_format": "wav"}
+            ).encode(),
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(request, timeout=60) as reply:
