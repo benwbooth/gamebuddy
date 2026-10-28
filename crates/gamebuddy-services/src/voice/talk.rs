@@ -371,7 +371,20 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
             "The player does NOT have {item} yet. The next step uses it, so first tell them where and how to get {item}; do not explain how to use it until they have it."
         ));
     }
-    if let Some(title) = now["title"].as_str().filter(|_| missing.is_none()) {
+    let errand = &nav["guidance"]["errand"];
+    if let Some(title) = errand["title"].as_str().filter(|_| missing.is_none()) {
+        // The errand, not the video's moment ("Deal with enemies along the
+        // exterior" was repeated with no enemy on screen).
+        lines.push(format!(
+            "The walkthrough's next task: {title}: {}",
+            clip(errand["instructions"].as_str().unwrap_or_default(), 260)
+        ));
+        if let Some(moment) = now["title"].as_str() {
+            lines.push(format!(
+                "What the walkthrough video did at this point: {moment}. Mention it only if the screen shows the same situation."
+            ));
+        }
+    } else if let Some(title) = now["title"].as_str().filter(|_| missing.is_none()) {
         let place = nav["map"]["target_place"]["label"]
             .as_str()
             .map(|p| format!(" It happens at {p}, which is not necessarily where the player is."))

@@ -297,7 +297,15 @@ fn brief(text: &str) -> String {
 }
 
 fn cue(context: &Value) -> String {
-    let action = &context["guidance"]["now"];
+    // The errand the step belongs to, when there is one: a step's own words
+    // narrate the video's moment ("use your sword against the enemies"),
+    // which was said with no enemy on the player's screen.
+    let errand = &context["guidance"]["errand"];
+    let action = if errand.is_object() {
+        errand
+    } else {
+        &context["guidance"]["now"]
+    };
     let instructions = field(action, "instructions");
     if !instructions.trim().is_empty() {
         brief(instructions)

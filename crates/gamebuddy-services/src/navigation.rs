@@ -1129,6 +1129,23 @@ pub fn context(
                 .filter(|warning| hazards::at_trigger(warning, guide, &atlas, &tracker, now))
         );
     }
+    // A step deep in the walkthrough tree is a moment of the video (a fight
+    // on the way, a jump); the step above it is the errand the player is on.
+    // Spoken advice gives the errand, so it does not narrate what the video
+    // happened to show.
+    let now_step = value["guidance"]["now"]["id"]
+        .as_str()
+        .and_then(|id| guide.step(id));
+    if let Some(step) = now_step
+        && value["guidance"]["now"]["acquire_first"].is_null()
+        && value["guidance"]["off_route"].is_null()
+        && value["guidance"]["plan_detour"].is_null()
+        && step.id.matches('.').count() >= 3
+        && let Some(parent) = step.parent_id.as_deref().and_then(|id| guide.step(id))
+    {
+        value["guidance"]["errand"] =
+            json!({"id": parent.id, "title": parent.title, "instructions": parent.instructions});
+    }
     value["prepared_speech"] = json!(crate::voice::prepared::frontier(
         store, guide, progress, &value
     )?);
