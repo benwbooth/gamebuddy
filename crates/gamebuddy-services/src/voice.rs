@@ -73,12 +73,19 @@ impl MicGate {
 pub const SAMPLE_RATE: u32 = 16_000;
 const FRAME: usize = 320; // 20 ms, a supported WebRTC VAD frame size.
 const PREROLL: usize = 10;
-const MIN_VOICED: usize = 15;
+const MIN_VOICED: usize = 20;
+/// How much louder than the room a frame must be to count as speech, and
+/// the least level that ever does (Ben's Shure MV7 is a quiet microphone).
+const SPEECH_OVER_NOISE: f64 = 2.5;
+const SPEECH_FLOOR: f64 = 120.0;
 const END_SILENCE: usize = 45;
 const MAX_FRAMES: usize = 1250; // 25 seconds, safely inside Whisper's 45s limit.
 
 pub struct Segmenter {
     vad: Vad,
+    /// The room's level when nobody talks (running average of frames the
+    /// voice detector rejects).
+    noise: f64,
     pending: VecDeque<i16>,
     preroll: VecDeque<i16>,
     utterance: Vec<i16>,
@@ -89,6 +96,7 @@ impl Default for Segmenter {
     fn default() -> Self {
         Self {
             vad: Vad::new_with_rate_and_mode(SampleRate::Rate16kHz, VadMode::Aggressive),
+            noise: 100.0,
             pending: VecDeque::new(),
             preroll: VecDeque::new(),
             utterance: Vec::new(),
@@ -204,7 +212,16 @@ impl Segmenter {
         self.pending.extend(samples);
         while self.pending.len() >= FRAME {
             let frame: Vec<_> = self.pending.drain(..FRAME).collect();
-            let speech = self.vad.is_voice_segment(&frame).unwrap_or(false);
+            // The voice detector alone took controller clicks and room
+            // sounds for speech, and the recognizer then made up a word for
+            // them ("Yeah.", "Oh."): a frame counts only when it is also
+            // clearly louder than the room.
+            let level = BargeIn::rms(&frame);
+            let detected = self.vad.is_voice_segment(&frame).unwrap_or(false);
+            if !detected {
+                self.noise = 0.95 * self.noise + 0.05 * level;
+            }
+            let speech = detected && level >= (self.noise * SPEECH_OVER_NOISE).max(SPEECH_FLOOR);
             if let Some(turn) = self.frame(&frame, speech) {
                 // Never queue speech recorded while a previous turn is being
                 // transcribed. The caller pauses capture before processing it.

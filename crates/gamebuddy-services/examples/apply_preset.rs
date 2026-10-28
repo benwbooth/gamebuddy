@@ -8,7 +8,10 @@ fn main() -> anyhow::Result<()> {
     let store = gamebuddy_services::Store::open(args.get(1).context("Data directory")?)?;
     let settings: gamebuddy_services::Settings = store.get("settings")?.unwrap_or_default();
     let preset = args.get(2).context("Preset")?;
-    let next = match preset.strip_prefix("claude:").and_then(|r| r.split_once(':')) {
+    let next = match preset
+        .strip_prefix("claude:")
+        .and_then(|r| r.split_once(':'))
+    {
         Some((model, effort)) => {
             let mut next = settings.clone();
             next.reasoning = gamebuddy_services::ProviderConfig {
