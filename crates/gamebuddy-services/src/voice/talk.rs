@@ -258,7 +258,44 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
         }
     }
     let now = &nav["guidance"]["now"];
-    if let Some(title) = now["title"].as_str() {
+    // An item the player says they lack, that the next task needs: getting
+    // it comes first ("Activate Wing Boots" is useless without boots).
+    let lacking: Vec<String> = said
+        .iter()
+        .filter_map(|s| {
+            let lower = s.to_lowercase();
+            ["don't have ", "dont have ", "do not have ", "haven't got "]
+                .iter()
+                .find_map(|p| lower.find(p).map(|at| lower[at + p.len()..].to_owned()))
+        })
+        .map(|rest| {
+            rest.split([',', '.', '?', '!', ';'])
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter(|w| !["the", "a", "an", "any", "yet"].contains(w))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|item| !item.is_empty())
+        .collect();
+    let next_text = format!(
+        "{} {}",
+        now["title"].as_str().unwrap_or_default(),
+        now["instructions"].as_str().unwrap_or_default()
+    )
+    .to_lowercase();
+    let missing = lacking.iter().find(|item| {
+        let singular = item.trim_end_matches('s');
+        next_text.contains(item.as_str()) || next_text.contains(singular)
+    });
+    if let Some(item) = missing {
+        lines.push(format!(
+            "The player does NOT have {item} yet. The next step uses it, so first tell them where and how to get {item}; do not explain how to use it until they have it."
+        ));
+    }
+    if let Some(title) = now["title"].as_str().filter(|_| missing.is_none()) {
         let place = nav["map"]["target_place"]["label"]
             .as_str()
             .map(|p| format!(" It happens at {p}, which is not necessarily where the player is."))
@@ -294,10 +331,31 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
     let passages: Vec<String> = if content_words < 2 {
         vec![]
     } else {
-        crate::harness::call_tool(store, "search_guide", json!({"query": question}))
-            .ok()
-            .and_then(|m| m["steps"].as_array().cloned())
-            .unwrap_or_default()
+        let mut steps =
+            crate::harness::call_tool(store, "search_guide", json!({"query": question}))
+                .ok()
+                .and_then(|m| m["steps"].as_array().cloned())
+                .unwrap_or_default();
+        // "Where do I get X?" wants where X is bought or found, not how to
+        // use it.
+        let lower = question.to_lowercase();
+        if ["where", "get ", "buy", "find", "obtain"]
+            .iter()
+            .any(|w| lower.contains(w))
+        {
+            let acquiring = |s: &Value| {
+                let text = format!("{} {}", s["title"], s["instructions"]).to_lowercase();
+                [
+                    "buy", "purchase", "shop", "sold", "price", "gold", "collect", "pick up",
+                    "obtain", "reward",
+                ]
+                .iter()
+                .filter(|w| text.contains(*w))
+                .count()
+            };
+            steps.sort_by_key(|s| std::cmp::Reverse(acquiring(s)));
+        }
+        steps
             .iter()
             .take(2)
             .map(|s| {
@@ -556,9 +614,15 @@ pub fn answer_streaming(
 ) -> Result<String> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let provider = HttpProvider::new(settings.reasoning)?;
-    // What the player says they have or lack becomes a fact the plan uses.
-    if let Err(error) = record_possession(store, guide, question) {
-        eprintln!("Possession report: {error:#}");
+    // What the player says they have or lack becomes a fact the plan uses:
+    // their earlier statements first (oldest to newest, so the latest wins;
+    // some predate this), then this one.
+    let mut said = player_statements(store, &guide.game);
+    said.reverse();
+    for statement in said.iter().map(String::as_str).chain([question]) {
+        if let Err(error) = record_possession(store, guide, statement) {
+            eprintln!("Possession report: {error:#}");
+        }
     }
     // "How do I get to Forepaw?" sets where the player is heading, so the
     // route (and the arrow) are ready for this very answer.
