@@ -967,7 +967,50 @@ pub fn accepts_images(config: &ProviderConfig) -> bool {
 /// female>.omni`; it speaks a sentence in a fraction of a second on the
 /// GPU), else Kokoro, else whatever prepared speech the settings name.
 pub fn local_voice() -> Option<crate::voice::speech::Config> {
-    omni_voice().or_else(kokoro_voice)
+    chosen_voice().or_else(|| omni_voice().or_else(kokoro_voice))
+}
+
+/// The player's own pick, `<data>/models/voice`: `kokoro:<voice>` (for
+/// example `kokoro:am_puck`) or `omni:<male|female|ref:clip.wav>`.
+fn chosen_voice() -> Option<crate::voice::speech::Config> {
+    let models = crate::store::data_dir().ok()?.join("models");
+    let choice = std::fs::read_to_string(models.join("voice")).ok()?;
+    let (engine, name) = choice.trim().split_once(':')?;
+    match engine {
+        "kokoro" => {
+            let python = models.join("kokoro-runtime").join("bin").join("python");
+            let marker = models.join(format!("{name}.kokoro"));
+            if !marker.is_file() {
+                std::fs::write(&marker, format!("{name}\n")).ok()?;
+            }
+            python.is_file().then(|| crate::voice::speech::Config {
+                enabled: true,
+                python: python.to_string_lossy().into_owned(),
+                model: marker,
+            })
+        }
+        "omni" if crate::liquid::voice_installed() => {
+            let marker = models.join("lfm3").join("chosen.omni");
+            if std::fs::read_to_string(&marker)
+                .ok()
+                .as_deref()
+                .map(str::trim)
+                != Some(name)
+            {
+                std::fs::write(&marker, format!("{name}\n")).ok()?;
+            }
+            crate::liquid::ensure_voice();
+            Some(crate::voice::speech::Config {
+                enabled: true,
+                python: models
+                    .join("kokoro-runtime/bin/python")
+                    .to_string_lossy()
+                    .into_owned(),
+                model: marker,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn omni_voice() -> Option<crate::voice::speech::Config> {

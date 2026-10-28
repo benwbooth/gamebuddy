@@ -69,6 +69,11 @@ elif model.endswith(".kokoro"):
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "2")))
     with open(model, encoding="utf-8") as voice_file:
         voice_name = voice_file.readline().strip() or "am_michael"
+        # Optional second line: speaking speed (below 1 is slower and clearer).
+        try:
+            speed = float(voice_file.readline().strip() or "1")
+        except ValueError:
+            speed = 1.0
     pipeline = KPipeline(lang_code=voice_name[0], repo_id="hexgrad/Kokoro-82M")
     # Load the voice and warm the model so the first reply is not slow.
     for _ in pipeline("Ready.", voice=voice_name):
@@ -76,7 +81,7 @@ elif model.endswith(".kokoro"):
 
     def synthesize(text, wav):
         pieces = [audio.numpy() if hasattr(audio, "numpy") else numpy.asarray(audio)
-                  for _, _, audio in pipeline(text, voice=voice_name) if audio is not None]
+                  for _, _, audio in pipeline(text, voice=voice_name, speed=speed) if audio is not None]
         samples = numpy.concatenate(pieces) if pieces else numpy.zeros(1, dtype=numpy.float32)
         pcm = (numpy.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
         wav.setnchannels(1)
