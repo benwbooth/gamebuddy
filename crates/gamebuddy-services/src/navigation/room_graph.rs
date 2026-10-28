@@ -161,13 +161,21 @@ fn next_stretch(
 ) -> Option<(u64, u64)> {
     const STRETCH_MS: u64 = 300_000;
     let done = |ms: u64| covered.iter().any(|(a, b)| *a <= ms && ms < *b);
+    // Where a gap can begin: the start, or the end of a traced stretch (a
+    // fixed five-minute grid skipped the gap between two stretches).
+    let mut gaps: Vec<u64> = std::iter::once(0)
+        .chain(covered.iter().map(|(_, b)| *b))
+        .collect();
+    gaps.sort_unstable();
     let mut wanted: Vec<u64> = vec![];
     if let Some(at) = around_ms {
         // The player's stretch, five minutes back and ten ahead.
         let from = at.saturating_sub(STRETCH_MS);
-        wanted.extend((0..3).map(|i| from + i * STRETCH_MS));
+        let to = from + 3 * STRETCH_MS;
+        wanted.push(from);
+        wanted.extend(gaps.iter().copied().filter(|g| (from..to).contains(g)));
     }
-    wanted.extend((0..duration_ms.div_ceil(STRETCH_MS)).map(|i| i * STRETCH_MS));
+    wanted.extend(gaps);
     let start = wanted
         .into_iter()
         .find(|ms| *ms < duration_ms && !done(*ms))?;
@@ -559,6 +567,27 @@ mod tests {
             Some((minutes(40), minutes(42)))
         );
         assert_eq!(next_stretch(&[(0, minutes(96))], None, minutes(96)), None);
+        // A gap between two traced stretches is found.
+        assert_eq!(
+            next_stretch(
+                &[
+                    (0, minutes(40)),
+                    (minutes(41), minutes(62)),
+                    (minutes(65), minutes(96))
+                ],
+                None,
+                minutes(96)
+            ),
+            Some((minutes(40), minutes(41)))
+        );
+        assert_eq!(
+            next_stretch(
+                &[(minutes(45), minutes(62)), (minutes(65), minutes(96))],
+                Some(minutes(58)),
+                minutes(96)
+            ),
+            Some((minutes(62), minutes(65)))
+        );
     }
 
     #[test]
