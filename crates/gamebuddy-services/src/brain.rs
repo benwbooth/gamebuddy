@@ -81,7 +81,7 @@ pub struct ScreenReading {
     pub scene: String,
 }
 
-fn read_screen(provider: &HttpProvider, images: &[String]) -> Result<ScreenReading> {
+pub(crate) fn read_screen(provider: &HttpProvider, images: &[String]) -> Result<ScreenReading> {
     let schema = json!(schemars::schema_for!(ScreenReading));
     let reply = provider.complete_structured(
         ModelRequest {

@@ -30,6 +30,10 @@ pub fn is_noise(transcript: &str) -> bool {
             "uh",
             "uhm",
             "erm",
+            "shh",
+            "sh",
+            "shush",
+            "psst",
         ]
         .contains(&bare.to_lowercase().as_str())
 }
@@ -104,8 +108,35 @@ fn here_now(store: &Store, guide: &Guide) -> Value {
     match current_place(store, guide) {
         Some(place) => json!({"place": label(&place), "how_sure": "seen on screen",
             "instruction": "This is where the player is. Unless the player says otherwise; then believe the player."}),
-        None => json!({"place": null,
-            "instruction": "Not known yet. Do not say where the player is. The walkthrough step's location is where the next task happens, not where the player is. If the player tells you where they are or are not, believe them."}),
+        None => {
+            // The map is often known before the room is: say so.
+            let saved: Option<Value> = store
+                .get(&crate::navigation::estimate::key(guide))
+                .ok()
+                .flatten();
+            let area = saved.as_ref().and_then(|s| {
+                let estimate = &s["estimate"];
+                matches!(estimate["status"].as_str(), Some("confident" | "likely"))
+                    .then(|| estimate["map_id"].as_str())
+                    .flatten()
+                    .and_then(|map| {
+                        atlas
+                            .as_ref()?
+                            .maps
+                            .iter()
+                            .find(|m| m.id == map)
+                            .map(|m| m.title.clone())
+                    })
+            });
+            match area {
+                Some(area) => {
+                    json!({"place": format!("somewhere in the {area} area (exact room unknown)"), "how_sure": "map matched on screen",
+                    "instruction": "This is the area the player is in. Unless the player says otherwise; then believe the player."})
+                }
+                None => json!({"place": null,
+                    "instruction": "Not known yet. Do not say where the player is. The walkthrough step's location is where the next task happens, not where the player is. If the player tells you where they are or are not, believe them."}),
+            }
+        }
     }
 }
 
@@ -172,7 +203,42 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
                 .join(" ")
         ));
     }
-    let seen = fresh_situation(store, guide);
+    // Read the screen now with the setup's own screen reader (LFM3-VL, about
+    // half a second): exact HUD and on-screen text. The brain's older
+    // summary is a small model's interpretation and was sometimes invented
+    // ("you're at the tool shop talking to the merchant").
+    let settings: Settings = store.get("settings")?.unwrap_or_default();
+    let reading = full
+        .images
+        .first()
+        .filter(|_| {
+            crate::providers::on_this_computer(&settings.vision)
+                && crate::providers::accepts_images(&settings.vision)
+        })
+        .and_then(|image| {
+            let reader = HttpProvider::new(settings.vision.clone()).ok()?;
+            crate::brain::read_screen(&reader, std::slice::from_ref(image)).ok()
+        });
+    let seen = if reading.is_some() {
+        Value::Null
+    } else {
+        fresh_situation(store, guide)
+    };
+    if let Some(reading) = &reading {
+        let mut parts = vec![];
+        if !reading.hud.is_empty() {
+            parts.push(format!("HUD {}", reading.hud.join(", ")));
+        }
+        if !reading.text.trim().is_empty() {
+            parts.push(format!("on-screen text \"{}\"", clip(&reading.text, 120)));
+        }
+        if !reading.scene.is_empty() {
+            parts.push(clip(&reading.scene, 160));
+        }
+        if !parts.is_empty() {
+            lines.push(format!("The screen right now shows: {}.", parts.join("; ")));
+        }
+    }
     if seen.is_object() {
         let mut parts = vec![];
         if let Some(gold) = seen["gold"].as_u64() {
@@ -218,7 +284,16 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
             format!("The player is heading to {goal}.")
         });
     }
-    let passages: Vec<String> =
+    // Small talk ("Hello?") matched shop greetings in the walkthrough and
+    // sent the answer off on a tangent: look things up only for questions
+    // with some content.
+    let content_words = question
+        .split_whitespace()
+        .filter(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).len() > 3)
+        .count();
+    let passages: Vec<String> = if content_words < 2 {
+        vec![]
+    } else {
         crate::harness::call_tool(store, "search_guide", json!({"query": question}))
             .ok()
             .and_then(|m| m["steps"].as_array().cloned())
@@ -232,7 +307,8 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
                     clip(s["instructions"].as_str().unwrap_or_default(), 220)
                 )
             })
-            .collect();
+            .collect()
+    };
     if !passages.is_empty() {
         lines.push(format!(
             "From the walkthrough, about what they said:\n{}",
