@@ -47,7 +47,7 @@ fn words(text: &str) -> Vec<String> {
 /// the walkthrough sells them there).
 /// Words as heard, plus each pair of neighbouring words joined: speech
 /// recognition splits names it does not know ("four paw" for Forepaw).
-fn heard_words(text: &str) -> Vec<String> {
+pub(crate) fn heard_words(text: &str) -> Vec<String> {
     let said = words(text);
     let mut out = said.clone();
     out.extend(said.windows(2).map(|w| format!("{}{}", w[0], w[1])));
@@ -74,7 +74,7 @@ fn distance(a: &str, b: &str) -> usize {
 
 /// The word was said, or something close enough to it for a long name
 /// ("fourpaw" for "forepaw", "maskon" for "mascon").
-fn heard(said: &[String], word: &str) -> bool {
+pub(crate) fn heard(said: &[String], word: &str) -> bool {
     said.iter()
         .any(|w| w == word || (word.len() >= 6 && w.len() >= 5 && distance(w, word) <= 2))
 }
@@ -237,28 +237,106 @@ pub fn set_from_text(
     if !wants_to_travel(text) {
         return Ok(None);
     }
-    let lower = text.to_lowercase();
-    let Some(place_id) = travel_target(&lower).and_then(|target| named_place(atlas, target)) else {
+    let Some(place_id) = destination(guide, atlas, text) else {
         return Ok(None);
     };
-    let place_id = best_place_for(guide, atlas, &place_id, &lower);
     if current == Some(place_id.as_str()) {
         return Ok(None);
     }
-    let label = atlas
+    let goal = goal_for(atlas, &place_id);
+    store.put(&key(guide), &Some(goal.clone()))?;
+    crate::flight::event("travel_goal", json!({"place": goal.label}));
+    Ok(Some(goal))
+}
+
+/// The place a travel sentence asks for ("how do I get to Forepaw" gives the
+/// Forepaw place whose steps match the rest of the sentence), if any.
+pub fn destination(guide: &Guide, atlas: &Atlas, text: &str) -> Option<String> {
+    if !wants_to_travel(text) {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    let place_id = travel_target(&lower).and_then(|target| named_place(atlas, target))?;
+    Some(best_place_for(guide, atlas, &place_id, &lower))
+}
+
+pub fn goal_for(atlas: &Atlas, place_id: &str) -> Goal {
+    Goal {
+        place_id: place_id.to_owned(),
+        label: label(atlas, place_id),
+        set_at_ms: crate::screen::now_ms(),
+    }
+}
+
+pub fn label(atlas: &Atlas, place_id: &str) -> String {
+    atlas
         .places
         .iter()
         .find(|p| p.id == place_id)
         .map(|p| p.label.clone())
-        .unwrap_or_default();
-    let goal = Goal {
-        place_id,
-        label,
-        set_at_ms: crate::screen::now_ms(),
-    };
-    store.put(&key(guide), &Some(goal.clone()))?;
-    crate::flight::event("travel_goal", json!({"place": goal.label}));
-    Ok(Some(goal))
+        .unwrap_or_else(|| place_id.to_owned())
+}
+
+/// The way to the goal in plain words: from the player's room when it is
+/// known, else from the area map they are on, else a line saying the start
+/// is unknown. Never a guess.
+pub fn describe(
+    store: &Store,
+    guide: &Guide,
+    atlas: &Atlas,
+    here: Option<&str>,
+    goal: &Goal,
+) -> String {
+    if here == Some(goal.place_id.as_str()) {
+        return format!("The player is already at {}.", goal.label);
+    }
+    if let Some(here) = here {
+        return match route_view(guide, atlas, here, goal) {
+            Some(route) => {
+                let areas: Vec<&str> = route["areas_to_cross"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let first = route["hops"][0]["head"].as_str();
+                format!(
+                    "From {} to {}: {}{}",
+                    route["from"].as_str().unwrap_or("here"),
+                    goal.label,
+                    if areas.len() > 1 {
+                        format!("go through {}", areas.join(", then "))
+                    } else {
+                        "it is in this same area".into()
+                    },
+                    first
+                        .map(|d| format!(". First head {d}."))
+                        .unwrap_or_default()
+                )
+            }
+            None => format!("No known way from here to {}.", goal.label),
+        };
+    }
+    // The room may be unknown while the area map is known.
+    let saved: Option<Value> = store
+        .get(&crate::navigation::estimate::key(guide))
+        .ok()
+        .flatten();
+    let estimate = saved.map(|s| s["estimate"].clone()).unwrap_or_default();
+    let map = estimate["map_id"]
+        .as_str()
+        .filter(|_| matches!(estimate["status"].as_str(), Some("confident" | "likely")));
+    let position = estimate["position"]["x"]
+        .as_f64()
+        .zip(estimate["position"]["y"].as_f64())
+        .map(|(x, y)| [x as f32, y as f32]);
+    map.and_then(|map| route_from_map(store, guide, atlas, map, position, goal))
+        .unwrap_or_else(|| {
+            format!(
+                "The way to {} is not known yet because where the player is now is not known; ask them where they are.",
+                goal.label
+            )
+        })
 }
 
 pub fn direction_word(direction: ScreenDirection) -> &'static str {

@@ -38,7 +38,7 @@ pub fn is_noise(transcript: &str) -> bool {
         .contains(&bare.to_lowercase().as_str())
 }
 
-fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
+pub(crate) fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
     let mut turns: Vec<Value> = crate::conversation::recent(store, game)
         .unwrap_or_default()
         .into_iter()
@@ -53,7 +53,7 @@ fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
 /// What the player has said about their own items, rank and progress, from
 /// further back than the recent turns: "I don't have the Wing Boots" must
 /// outlive eight turns of chat, even when the plan does not track that item.
-fn player_statements(store: &Store, game: &str) -> Vec<String> {
+pub(crate) fn player_statements(store: &Store, game: &str) -> Vec<String> {
     const MARKERS: [&str; 20] = [
         "not in",
         "not at",
@@ -92,7 +92,7 @@ fn player_statements(store: &Store, game: &str) -> Vec<String> {
 
 /// What GameBuddy actually knows about where the player is, spelled out so
 /// a model never mistakes the walkthrough's next location for the player's.
-fn here_now(store: &Store, guide: &Guide) -> Value {
+pub(crate) fn here_now(store: &Store, guide: &Guide) -> Value {
     let atlas = crate::navigation::atlas(store, guide).ok();
     let label = |id: &str| {
         atlas
@@ -260,26 +260,7 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
     let now = &nav["guidance"]["now"];
     // An item the player says they lack, that the next task needs: getting
     // it comes first ("Activate Wing Boots" is useless without boots).
-    let lacking: Vec<String> = said
-        .iter()
-        .filter_map(|s| {
-            let lower = s.to_lowercase();
-            ["don't have ", "dont have ", "do not have ", "haven't got "]
-                .iter()
-                .find_map(|p| lower.find(p).map(|at| lower[at + p.len()..].to_owned()))
-        })
-        .map(|rest| {
-            rest.split([',', '.', '?', '!', ';'])
-                .next()
-                .unwrap_or_default()
-                .split_whitespace()
-                .filter(|w| !["the", "a", "an", "any", "yet"].contains(w))
-                .take(3)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .filter(|item| !item.is_empty())
-        .collect();
+    let lacking = lacking_items(store, guide, &said);
     let next_text = format!(
         "{} {}",
         now["title"].as_str().unwrap_or_default(),
@@ -399,10 +380,23 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
                     ))
                 })
                 .collect();
-            let notes = clip(card["notes"].as_str().unwrap_or_default(), 140);
+            // How to use an item the player does not have is not for now:
+            // told it anyway, small models said "press DOWN + B" to a
+            // player with no boots.
+            let name = card["name"].as_str().unwrap_or_default();
+            let lacks = lacking.iter().any(|item| {
+                let item = item.to_lowercase();
+                let lower = name.to_lowercase();
+                lower == item || lower == item.trim_end_matches('s')
+            });
+            let notes = if lacks {
+                String::new()
+            } else {
+                clip(card["notes"].as_str().unwrap_or_default(), 140)
+            };
             format!(
                 "- {}: {}{}",
-                card["name"].as_str().unwrap_or_default(),
+                name,
                 if costs.is_empty() {
                     "price not listed".into()
                 } else {
@@ -467,6 +461,48 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
         images: vec![],
         json: false,
     })
+}
+
+/// Items the player does not have: from the save's world facts (what they
+/// reported in any session, kept by GameBuddy's code) and from their recent
+/// statements.
+pub(crate) fn lacking_items(store: &Store, guide: &Guide, said: &[String]) -> Vec<String> {
+    let mut items: Vec<String> = store
+        .progress(guide)
+        .map(|p| {
+            p.world
+                .facts
+                .iter()
+                .filter(|(id, fact)| {
+                    id.starts_with("has_") && !fact.value && fact.source.starts_with("player")
+                })
+                .map(|(id, _)| id.trim_start_matches("has_").replace('_', " "))
+                .collect()
+        })
+        .unwrap_or_default();
+    items.extend(
+        said.iter()
+            .filter_map(|s| {
+                let lower = s.to_lowercase();
+                ["don't have ", "dont have ", "do not have ", "haven't got "]
+                    .iter()
+                    .find_map(|p| lower.find(p).map(|at| lower[at + p.len()..].to_owned()))
+            })
+            .map(|rest| {
+                rest.split([',', '.', '?', '!', ';'])
+                    .next()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .filter(|w| !["the", "a", "an", "any", "yet"].contains(w))
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|item| !item.is_empty()),
+    );
+    items.sort();
+    items.dedup();
+    items
 }
 
 /// Walkthrough passages for a query, as short "title: instructions" lines.
@@ -593,6 +629,36 @@ impl Default for Sentences {
 /// outcome model's exact item names when it has them; otherwise updates the
 /// matching `has_…` fact the save already holds, or adds one. Returns the
 /// fact and value recorded.
+/// The sentence reports what the player has or lacks.
+pub(crate) fn possession_statement(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "i don't have",
+        "i dont have",
+        "i do not have",
+        "i no longer have",
+        "i haven't got",
+        "i never got",
+        "i didn't get",
+        "i did not get",
+        "i still don't have",
+        "i already have",
+        "i have ",
+        "i've got",
+        "i got ",
+        "i bought",
+        "i picked up",
+        "i'm in ",
+        "i am in ",
+        "i'm at ",
+        "i am at ",
+        "not in ",
+        "not at ",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
 pub fn record_possession(
     store: &Store,
     guide: &Guide,
@@ -723,46 +789,17 @@ pub fn answer_streaming(
     let here = current_place(store, guide);
     let asked =
         crate::navigation::routing::set_from_text(store, guide, &atlas, question, here.as_deref())?;
-    // Small models on GameBuddy's own llama-server call GameBuddy's lookups
-    // (prices, routes, next step) instead of answering from memory.
-    let small = provider.config.kind == crate::ProviderKind::OpenAiCompatible
-        && crate::providers::on_this_computer(&provider.config);
-    if small {
-        // Only the player's own recent lines: the small model copied its own
-        // earlier (sometimes wrong) answers word for word when it saw them.
-        let mut history: Vec<Value> = recent_turns(store, &guide.game)
-            .into_iter()
-            .filter(|t| t["role"] == "user")
-            .collect();
-        let keep = history.len().saturating_sub(3);
-        history.drain(..keep);
-        let started = std::time::Instant::now();
-        let reply = super::agent::answer(store, guide, &provider.config, &history, question)?;
-        let reply = reply
-            .strip_prefix("GameBuddy, ")
-            .unwrap_or(&reply)
-            .to_owned();
-        let mut sentences = Sentences::new();
-        for sentence in sentences.push(&reply) {
-            on_sentence(sentence);
-        }
-        if let Some(rest) = sentences.finish() {
-            on_sentence(rest);
-        }
-        crate::flight::event(
-            "talk",
-            json!({"ms": started.elapsed().as_millis() as u64, "chars": reply.len(), "agent": true}),
-        );
-        let turn = uuid::Uuid::new_v4().to_string();
-        store.append_conversation(&guide.game, &turn, "user", "user", question)?;
-        store.append_conversation(&guide.game, &turn, "assistant", "assistant", &reply)?;
-        return Ok(reply);
+    // Models on this computer: GameBuddy's code decides the intent and looks
+    // the facts up; the model only puts them into words, and nothing it says
+    // may carry a number or place that is not in those facts.
+    if crate::providers::on_this_computer(&provider.config) {
+        let turn = super::grounded::answer(store, guide, &provider, question, on_sentence)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        store.append_conversation(&guide.game, &id, "user", "user", question)?;
+        store.append_conversation(&guide.game, &id, "assistant", "assistant", &turn.reply)?;
+        return Ok(turn.reply);
     }
-    let mut request = if small {
-        compact_request(store, guide, question)?
-    } else {
-        request(store, guide, question)?
-    };
+    let mut request = request(store, guide, question)?;
     // A text-only model answers from the brain's reading of the screen.
     if !crate::providers::accepts_images(&provider.config) {
         request.images.clear();
