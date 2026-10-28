@@ -190,6 +190,20 @@ pub(super) fn update(store: &Store, inputs: &Inputs<'_>) -> Result<LocationEstim
         .get::<Remembered>(&key)?
         .filter(|r| r.session == inputs.session)
         .map(|r| r.estimate);
+    // A momentary loss (a screen transition, a frame the matcher could not
+    // place) should not wipe a location seen a few seconds ago: hold it as
+    // "likely" for up to 20 s.
+    if !estimate.is_known()
+        && let Some(last) = previous
+            .as_ref()
+            .filter(|p| p.is_known() && inputs.now.saturating_sub(p.located_at_ms) < 20_000)
+    {
+        estimate = LocationEstimate {
+            status: "likely".into(),
+            confidence: last.confidence.min(0.6),
+            ..last.clone()
+        };
+    }
     if let (Some(current), Some(last)) = (
         estimate.position.as_mut(),
         previous.as_ref().and_then(|p| p.position.as_ref()),

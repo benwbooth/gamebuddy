@@ -154,10 +154,32 @@ pub fn run_tool(store: &Store, guide: &Guide, name: &str, args: &Value) -> Strin
                             None => format!("No known way from here to {}.", goal.label),
                         }
                     }
-                    (None, Some(goal)) => format!(
-                        "Destination set to {}, but where the player is now is not known yet; ask them.",
-                        goal.label
-                    ),
+                    (None, Some(goal)) => {
+                        // The room may be unknown while the area map is known.
+                        let saved: Option<Value> = store
+                            .get(&crate::navigation::estimate::key(guide))
+                            .ok()
+                            .flatten();
+                        let estimate = saved.map(|s| s["estimate"].clone()).unwrap_or_default();
+                        let map = estimate["map_id"].as_str().filter(|_| {
+                            matches!(estimate["status"].as_str(), Some("confident" | "likely"))
+                        });
+                        let position = estimate["position"]["x"]
+                            .as_f64()
+                            .zip(estimate["position"]["y"].as_f64())
+                            .map(|(x, y)| [x as f32, y as f32]);
+                        map.and_then(|map| {
+                            crate::navigation::routing::route_from_map(
+                                store, guide, &atlas, map, position, &goal,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            format!(
+                                "Destination set to {}, but where the player is now is not known yet; ask them.",
+                                goal.label
+                            )
+                        })
+                    }
                     _ => format!("No place called {place} is known."),
                 }
             }

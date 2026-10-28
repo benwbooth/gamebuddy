@@ -45,8 +45,42 @@ fn words(text: &str) -> Vec<String> {
 /// among those, the one sharing most other words wins ("buy Wing Boots in
 /// Forepaw" picks the Forepaw equipment shop over the Forepaw key shop when
 /// the walkthrough sells them there).
-pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
+/// Words as heard, plus each pair of neighbouring words joined: speech
+/// recognition splits names it does not know ("four paw" for Forepaw).
+fn heard_words(text: &str) -> Vec<String> {
     let said = words(text);
+    let mut out = said.clone();
+    out.extend(said.windows(2).map(|w| format!("{}{}", w[0], w[1])));
+    out
+}
+
+/// Edit distance, for names misheard by a letter or two.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let current = row[j + 1];
+            row[j + 1] = (previous + usize::from(ca != *cb))
+                .min(row[j] + 1)
+                .min(current + 1);
+            previous = current;
+        }
+    }
+    row[b.len()]
+}
+
+/// The word was said, or something close enough to it for a long name
+/// ("fourpaw" for "forepaw", "maskon" for "mascon").
+fn heard(said: &[String], word: &str) -> bool {
+    said.iter()
+        .any(|w| w == word || (word.len() >= 6 && w.len() >= 5 && distance(w, word) <= 2))
+}
+
+pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
+    let said = heard_words(text);
     // Words that start many labels but name no particular place.
     let common = [
         "the", "of", "and", "room", "chamber", "interior", "exterior", "shop", "door", "town",
@@ -59,10 +93,10 @@ pub fn named_place(atlas: &Atlas, text: &str) -> Option<String> {
         .filter_map(|place| {
             let label = words(&place.label);
             let head = label.first()?;
-            if common.contains(&head.as_str()) || !said.contains(head) {
+            if common.contains(&head.as_str()) || !heard(&said, head) {
                 return None;
             }
-            let shared = label.iter().filter(|w| said.contains(w)).count();
+            let shared = label.iter().filter(|w| heard(&said, w)).count();
             Some((
                 shared,
                 std::cmp::Reverse(place.label.len()),
@@ -300,23 +334,52 @@ pub fn area_path(atlas: &Atlas, from_map: &str, to_map: &str) -> Option<Vec<Stri
     Some(path)
 }
 
+/// A place's own map, else the area map named after its town (the Forepaw
+/// key shop has no map of its own, but the "Forepaw" map does).
+pub fn place_map(atlas: &Atlas, id: &str) -> Option<String> {
+    let place = atlas.places.iter().find(|p| p.id == id)?;
+    place.map_id.clone().or_else(|| {
+        let head = words(&place.label).into_iter().next()?;
+        atlas
+            .maps
+            .iter()
+            .find(|m| m.title.trim().eq_ignore_ascii_case(&head))
+            .map(|m| m.id.clone())
+    })
+}
+
+/// The way to the goal when only the area map the player is on is known
+/// (the map matched, the room did not): the areas to cross and, when known,
+/// which way to head first.
+pub fn route_from_map(
+    store: &Store,
+    guide: &Guide,
+    atlas: &Atlas,
+    map_id: &str,
+    position: Option<[f32; 2]>,
+    goal: &Goal,
+) -> Option<String> {
+    let goal_map = place_map(atlas, &goal.place_id)?;
+    let areas = area_path(atlas, map_id, &goal_map)?;
+    if areas.len() < 2 {
+        return Some(format!("{} is in this area.", goal.label));
+    }
+    let heading = area_heading(store, guide, atlas, map_id, position, &areas[1]);
+    Some(format!(
+        "To {}: go through {}{}",
+        goal.label,
+        areas.join(", then "),
+        heading
+            .map(|d| format!(". First head {}.", direction_word(d)))
+            .unwrap_or_default()
+    ))
+}
+
 /// The way from `current` to the goal: each place to pass, which way to head
 /// for it, and the walkthrough's own instruction for that move.
 pub fn route_view(guide: &Guide, atlas: &Atlas, current: &str, goal: &Goal) -> Option<Value> {
     let hops = routing::route(guide, atlas, current, &goal.place_id).unwrap_or_default();
-    // A place's own map, else the area map named after its town (the
-    // Forepaw key shop has no map of its own, but the "Forepaw" map does).
-    let map_of = |id: &str| {
-        let place = atlas.places.iter().find(|p| p.id == id)?;
-        place.map_id.clone().or_else(|| {
-            let head = words(&place.label).into_iter().next()?;
-            atlas
-                .maps
-                .iter()
-                .find(|m| m.title.trim().eq_ignore_ascii_case(&head))
-                .map(|m| m.id.clone())
-        })
-    };
+    let map_of = |id: &str| place_map(atlas, id);
     let areas = map_of(current)
         .zip(map_of(&goal.place_id))
         .and_then(|(a, b)| area_path(atlas, &a, &b));

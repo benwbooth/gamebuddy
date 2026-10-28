@@ -728,12 +728,14 @@ pub fn answer_streaming(
     let small = provider.config.kind == crate::ProviderKind::OpenAiCompatible
         && crate::providers::on_this_computer(&provider.config);
     if small {
-        let history: Vec<Value> = recent_turns(store, &guide.game)
+        // Only the player's own recent lines: the small model copied its own
+        // earlier (sometimes wrong) answers word for word when it saw them.
+        let mut history: Vec<Value> = recent_turns(store, &guide.game)
             .into_iter()
-            .rev()
-            .take(4)
-            .rev()
+            .filter(|t| t["role"] == "user")
             .collect();
+        let keep = history.len().saturating_sub(3);
+        history.drain(..keep);
         let started = std::time::Instant::now();
         let reply = super::agent::answer(store, guide, &provider.config, &history, question)?;
         let reply = reply
