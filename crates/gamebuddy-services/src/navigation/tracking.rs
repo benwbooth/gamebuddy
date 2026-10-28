@@ -375,7 +375,12 @@ pub fn spoken_area(atlas: &gamebuddy_core::Atlas, text: &str) -> Option<String> 
             // "in/at [the] [town of] <area>" said about themselves just before.
             let before = &words[at.saturating_sub(6)..at];
             let preposition = before.iter().rposition(|w| w == "in" || w == "at");
+            // "I'm not in Mascon" names where they are not.
+            let denied = before[..preposition.unwrap_or(0)]
+                .iter()
+                .any(|w| w == "not" || w.ends_with("n't"));
             if let Some(p) = preposition
+                && !denied
                 && before[p + 1..]
                     .iter()
                     .all(|w| ["the", "town", "of"].contains(&w.as_str()))

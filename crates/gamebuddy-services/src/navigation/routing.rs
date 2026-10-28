@@ -305,7 +305,7 @@ pub fn describe(
                     route["from"].as_str().unwrap_or("here"),
                     goal.label,
                     if areas.len() > 1 {
-                        format!("go through {}", areas.join(", then "))
+                        format!("cross {}", areas[1..].join(", then "))
                     } else {
                         "it is in this same area".into()
                     },
@@ -443,10 +443,11 @@ pub fn route_from_map(
         return Some(format!("{} is in this area.", goal.label));
     }
     let heading = area_heading(store, guide, atlas, map_id, position, &areas[1]);
+    // The first area is the one the player is in.
     Some(format!(
-        "To {}: go through {}{}",
+        "To {}: cross {}{}",
         goal.label,
-        areas.join(", then "),
+        areas[1..].join(", then "),
         heading
             .map(|d| format!(". First head {}.", direction_word(d)))
             .unwrap_or_default()

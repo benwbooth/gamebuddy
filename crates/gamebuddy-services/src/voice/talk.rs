@@ -783,6 +783,13 @@ pub fn answer_streaming(
             eprintln!("Possession report: {error:#}");
         }
     }
+    // "I'm in Mascon" moves the player there, whatever the screen matcher
+    // thinks, so the route starts from where they say they are.
+    match crate::navigation::tracking::report_spoken_location(store, guide, question) {
+        Ok(Some(area)) => crate::flight::event("player_location", json!({"area": area})),
+        Ok(None) => {}
+        Err(error) => eprintln!("Spoken location: {error:#}"),
+    }
     // "How do I get to Forepaw?" sets where the player is heading, so the
     // route (and the arrow) are ready for this very answer.
     let atlas = crate::navigation::atlas(store, guide)?;

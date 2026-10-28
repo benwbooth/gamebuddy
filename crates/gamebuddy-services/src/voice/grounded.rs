@@ -410,9 +410,12 @@ pub fn facts(
     question: &str,
 ) -> Result<(Vec<String>, Option<String>)> {
     let here = talk::current_place(store, guide);
-    let here_line = match talk::here_now(store, guide)["place"].as_str() {
-        Some(place) => format!("The player is at: {place}."),
-        None => "Where the player is right now is not known.".to_owned(),
+    // Where the player just said they are, before the estimate catches up.
+    let spoken_area = crate::navigation::tracking::spoken_area(atlas, question);
+    let here_line = match (talk::here_now(store, guide)["place"].as_str(), &spoken_area) {
+        (_, Some(area)) => format!("The player says they are in {area}; believe them."),
+        (Some(place), None) => format!("The player is at: {place}."),
+        (None, None) => "Where the player is right now is not known.".to_owned(),
     };
     let said = talk::player_statements(store, &guide.game);
     // Only the missing items this question is about: the save may list many.
@@ -428,7 +431,20 @@ pub fn facts(
         Kind::Travel => {
             let goal = routing::goal_for(atlas, intent.place.as_deref().unwrap_or_default());
             facts.push(here_line);
-            let way = routing::describe(store, guide, atlas, here.as_deref(), &goal);
+            let spoken_map = spoken_area.as_ref().and_then(|area| {
+                atlas
+                    .maps
+                    .iter()
+                    .find(|m| m.title.eq_ignore_ascii_case(area))
+                    .map(|m| m.id.clone())
+            });
+            let way = match (&here, spoken_map) {
+                (None, Some(map)) => {
+                    routing::route_from_map(store, guide, atlas, &map, None, &goal)
+                        .unwrap_or_else(|| format!("No known way from there to {}.", goal.label))
+                }
+                _ => routing::describe(store, guide, atlas, here.as_deref(), &goal),
+            };
             template = Some(if way.starts_with("The way to") {
                 format!(
                     "I'm not sure where you are yet, so I can't route you to {}. Where are you right now?",
