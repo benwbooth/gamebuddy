@@ -26,6 +26,10 @@ use std::{
 /// RetroArch's command port while GameBuddy runs (not its 55355 default, so
 /// it never collides with a port the player set up for something else).
 pub const PORT: u16 = 55393;
+/// RetroArch's network gamepad for player 1 (`network_remote`): GameBuddy's
+/// player presses buttons through it. It only writes input; nothing is read
+/// back from the emulator.
+pub const PAD_PORT: u16 = 55410;
 /// Frames per second ffmpeg extracts from the recording.
 const FRAMES_PER_SECOND: u32 = 4;
 /// A recording this old is from an earlier game, not the one running now.
@@ -83,7 +87,10 @@ pub fn write_config(root: &Path) -> Result<PathBuf> {
              video_record_quality = \"3\"\n\
              video_record_threads = \"2\"\n\
              video_record_scale_factor = \"1\"\n\
-             recording_output_directory = \"{}\"\n",
+             recording_output_directory = \"{}\"\n\
+             network_remote_enable = \"true\"\n\
+             network_remote_enable_user_p1 = \"true\"\n\
+             network_remote_base_port = \"{PAD_PORT}\"\n",
             recordings.display()
         ),
     )?;
@@ -303,4 +310,55 @@ pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
         .served
         .map(|_| out.to_path_buf())
         .filter(|p| p.is_file()))
+}
+
+/// A RetroPad button, numbered as libretro numbers them (on the NES, A and B
+/// are the face buttons).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    B = 0,
+    Y = 1,
+    Select = 2,
+    Start = 3,
+    Up = 4,
+    Down = 5,
+    Left = 6,
+    Right = 7,
+    A = 8,
+    X = 9,
+}
+
+impl Button {
+    pub const ALL: [Button; 10] = [
+        Button::B,
+        Button::Y,
+        Button::Select,
+        Button::Start,
+        Button::Up,
+        Button::Down,
+        Button::Left,
+        Button::Right,
+        Button::A,
+        Button::X,
+    ];
+}
+
+/// Hold exactly `held` on player 1's pad and release every other button.
+/// RetroArch keeps each button as last sent, so every call states them all.
+/// Each message is RetroArch's `remote_message`: port, device (1 = the
+/// RetroPad), index, button id, state, as native integers.
+pub fn hold(held: &[Button]) -> Result<()> {
+    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    for button in Button::ALL {
+        let mut message = Vec::with_capacity(20);
+        for value in [0i32, 1, 0, button as i32] {
+            message.extend_from_slice(&value.to_ne_bytes());
+        }
+        message.extend_from_slice(&u16::from(held.contains(&button)).to_ne_bytes());
+        // The struct is padded to a multiple of four bytes.
+        message.extend_from_slice(&[0, 0]);
+        socket.send_to(&message, ("127.0.0.1", PAD_PORT))?;
+    }
+    Ok(())
 }
