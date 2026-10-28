@@ -290,6 +290,27 @@ pub fn describe(
     if here == Some(goal.place_id.as_str()) {
         return format!("The player is already at {}.", goal.label);
     }
+    // Where the camera is on the area map: the screens to cross beat any
+    // room name, which may be a guess.
+    let saved: Option<Value> = store
+        .get(&crate::navigation::estimate::key(guide))
+        .ok()
+        .flatten();
+    let estimate = saved.map(|s| s["estimate"].clone()).unwrap_or_default();
+    let map = estimate["map_id"]
+        .as_str()
+        .filter(|_| matches!(estimate["status"].as_str(), Some("confident" | "likely")));
+    let position = estimate["position"]["x"]
+        .as_f64()
+        .zip(estimate["position"]["y"].as_f64())
+        .map(|(x, y)| [x as f32, y as f32]);
+    let from_map = map.and_then(|map| route_from_map(store, guide, atlas, map, position, goal));
+    if let Some(way) = from_map
+        .as_ref()
+        .filter(|w| w.contains("From this screen:"))
+    {
+        return way.clone();
+    }
     if let Some(here) = here {
         return match route_view(guide, atlas, here, goal) {
             Some(route) => {
@@ -318,16 +339,7 @@ pub fn describe(
         };
     }
     // The room may be unknown while the area map is known.
-    let saved: Option<Value> = store
-        .get(&crate::navigation::estimate::key(guide))
-        .ok()
-        .flatten();
-    let estimate = saved.map(|s| s["estimate"].clone()).unwrap_or_default();
-    let map = estimate["map_id"]
-        .as_str()
-        .filter(|_| matches!(estimate["status"].as_str(), Some("confident" | "likely")));
-    map.and_then(|map| route_from_map(atlas, map, goal))
-        .unwrap_or_else(|| {
+    from_map.unwrap_or_else(|| {
             format!(
                 "The way to {} is not known yet because where the player is now is not known; ask them where they are.",
                 goal.label
@@ -422,24 +434,60 @@ pub fn place_map(atlas: &Atlas, id: &str) -> Option<String> {
     })
 }
 
-/// The way to the goal when only the area map the player is on is known
-/// (the map matched, the room did not): the areas to cross and, when known,
-/// which way to head first.
-pub fn route_from_map(atlas: &Atlas, map_id: &str, goal: &Goal) -> Option<String> {
+/// The screen-by-screen way from where the camera is on `map_id` to the
+/// way into the next area on the route, along the walkthrough run's own path
+/// (`room_graph`). Empty when that way is on this screen.
+pub fn room_moves(
+    store: &Store,
+    guide: &Guide,
+    atlas: &Atlas,
+    map_id: &str,
+    position: [f32; 2],
+    goal: &Goal,
+) -> Option<(Vec<super::room_graph::Move>, String)> {
+    let areas = area_path(atlas, map_id, &place_map(atlas, &goal.place_id)?)?;
+    let title = areas.get(1)?;
+    let next = atlas.maps.iter().find(|m| m.title.trim() == title)?;
+    super::room_graph::way_out(store, guide, map_id, position, &next.id)
+        .ok()
+        .flatten()
+        .map(|moves| (moves, next.title.clone()))
+}
+
+/// The way to the goal from the area map the player is on: the areas to
+/// cross and, when the camera's spot is known and the walkthrough run passed
+/// it, which screens to cross to leave this area.
+pub fn route_from_map(
+    store: &Store,
+    guide: &Guide,
+    atlas: &Atlas,
+    map_id: &str,
+    position: Option<[f32; 2]>,
+    goal: &Goal,
+) -> Option<String> {
     let goal_map = place_map(atlas, &goal.place_id)?;
     let areas = area_path(atlas, map_id, &goal_map)?;
     if areas.len() < 2 {
         return Some(format!("{} is in this area.", goal.label));
     }
-    // Which way to walk inside this area is not known: the rooms between
-    // here and its exit can wind (a straight line or the side of the map the
-    // next area joins once led into a wall), so no left or right is given.
     // The first area is the one the player is in.
-    Some(format!(
-        "To {}: cross {}. Which way through this area's rooms leads there is not known yet.",
-        goal.label,
-        areas[1..].join(", then "),
-    ))
+    let cross = format!("To {}: cross {}.", goal.label, areas[1..].join(", then "));
+    // Never a guess from how the map is drawn or a straight line to the
+    // exit: the rooms wind, and that once pointed into a wall.
+    Some(
+        match position.and_then(|p| room_moves(store, guide, atlas, map_id, p, goal)) {
+            Some((moves, next)) if moves.is_empty() => {
+                format!("{cross} From this screen: you are on the screen that leads into {next}.")
+            }
+            Some((moves, _)) => format!(
+                "{cross} From this screen: {}.",
+                super::room_graph::words(&moves)
+            ),
+            None => {
+                format!("{cross} Which way through this area's rooms leads there is not known yet.")
+            }
+        },
+    )
 }
 
 /// The way from `current` to the goal: each place to pass, which way to head

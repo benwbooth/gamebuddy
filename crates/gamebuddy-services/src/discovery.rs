@@ -531,7 +531,11 @@ fn prepare_tracked(
     }
     tracker.detail("spatial", "Finishing world mapping…");
     match spatial_task.join() {
-        Ok(Ok(())) => tracker.finish("spatial", "Game world mapped"),
+        Ok(Ok(())) => {
+            tracker.finish("spatial", "Game world mapped");
+            // How the rooms connect, from the run's own path through them.
+            crate::navigation::room_graph::trace_in_background(store, &guide);
+        }
         other => {
             let error = match other {
                 Ok(Err(e)) => format!("{e:#}"),

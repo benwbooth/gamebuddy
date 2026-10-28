@@ -24,6 +24,7 @@ pub mod follow;
 pub mod hazards;
 pub mod placement;
 pub mod planning;
+pub mod room_graph;
 pub mod routing;
 pub mod tracking;
 pub use tracking::{LocationReport, report_location};
@@ -984,6 +985,33 @@ pub fn context(
         } else {
             travel = json!({"goal": goal.label, "route": Value::Null, "instruction": "Where the player is now is not known, so no route can be worked out yet."});
         }
+    }
+    // The screens to cross from where the camera is, along the walkthrough
+    // run's own path: the arrow points to the next one.
+    if direction.is_none()
+        && location_estimate.is_known()
+        && let Some(goal) = routing::goal(store, guide)?
+        && let (Some(map), Some(p)) = (
+            location_estimate.map_id.as_deref(),
+            location_estimate.position.as_ref(),
+        )
+        && let Some((moves, next)) =
+            routing::room_moves(store, guide, &atlas, map, [p.x, p.y], &goal)
+        && let Some(first) = moves.first()
+    {
+        if travel.is_null() || travel["route"].is_null() {
+            travel = json!({"goal": goal.label, "next_area": next, "route": Value::Null});
+        }
+        let step = room_graph::words(std::slice::from_ref(first));
+        direction = Some(gamebuddy_core::navigation::direction::DirectionCue {
+            direction: first.direction,
+            step_id: goal.place_id.clone(),
+            label: format!("Toward {}", goal.label),
+            instruction: format!("{}{} toward {next}", step[..1].to_uppercase(), &step[1..]),
+            valid_until_ms: now.saturating_add(15_000),
+            source: "route",
+            target: Some(goal.label.clone()),
+        });
     }
     // A fused estimate that is sure of its map outranks guesses from the plan.
     let selected_map = location_estimate

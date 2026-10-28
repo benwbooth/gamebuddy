@@ -142,7 +142,57 @@ fn stop_follower(state: &mut Recording) {
     }
 }
 
+/// Stop followers an earlier GameBuddy left running: `-follow` never ends on
+/// its own, so each past session's ffmpeg kept polling its finished file
+/// (ten were found after a day of play). Only ffmpeg writing this data
+/// directory's frame, and not owned by a running GameBuddy, is touched.
+fn clear_orphans(root: &Path) {
+    let target = latest_png(root).to_string_lossy().into_owned();
+    let me = std::process::id();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|p| p.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        if !cmdline.starts_with("ffmpeg")
+            || !cmdline.contains("-follow")
+            || !cmdline.contains(&target)
+        {
+            continue;
+        }
+        let parent = std::fs::read_to_string(entry.path().join("stat"))
+            .ok()
+            .and_then(|s| s.rsplit(')').next().map(str::to_owned))
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.parse::<u32>().ok())
+            });
+        let owner = parent
+            .and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok())
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if parent == Some(me) || owner.contains("gamebuddy") {
+            continue;
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+}
+
 fn start_follower(root: &Path, file: &Path) -> Result<Child> {
+    clear_orphans(root);
     Command::new("ffmpeg")
         .args(["-nostdin", "-loglevel", "error", "-follow", "1", "-i"])
         .arg(file)

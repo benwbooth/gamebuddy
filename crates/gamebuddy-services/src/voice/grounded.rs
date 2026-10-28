@@ -479,7 +479,7 @@ pub fn facts(
             .map(|m| m.id.clone())
     });
     let way_to = |goal: &routing::Goal| match (&here, &spoken_map) {
-        (None, Some(map)) => routing::route_from_map(atlas, map, goal)
+        (None, Some(map)) => routing::route_from_map(store, guide, atlas, map, None, goal)
             .unwrap_or_else(|| format!("No known way from there to {}.", goal.label)),
         _ => routing::describe(store, guide, atlas, here.as_deref(), goal),
     };
@@ -491,6 +491,32 @@ pub fn facts(
             let lower = question.to_lowercase().replace(['\'', '’'], "");
             let goal = routing::goal(store, guide).ok().flatten();
             let way = goal.as_ref().map(&way_to);
+            let areas = way
+                .as_deref()
+                .and_then(|w| w.split_once("cross "))
+                .and_then(|(_, rest)| rest.split(". ").next())
+                .map(|areas| areas.trim_end_matches('.').to_owned());
+            let dead_end = if blocked(&lower) {
+                "Okay, that way's a dead end. "
+            } else {
+                ""
+            };
+            let through = goal
+                .as_ref()
+                .zip(areas)
+                .map(|(goal, areas)| format!("{} is through {areas}", goal.label));
+            if let Some((_, screens)) = way
+                .as_deref()
+                .and_then(|w| w.split_once("From this screen: "))
+            {
+                // The screens to cross, from the walkthrough run's own path:
+                // GameBuddy's words, not a model's guess at a direction.
+                let line = format!(
+                    "{dead_end}{}From here, {screens}",
+                    through.map(|t| format!("{t}. ")).unwrap_or_default()
+                );
+                return Ok((vec![line.clone()], Some(line), true));
+            }
             if let Some(way) = way.clone().filter(|w| w.contains("First head")) {
                 // The walkthrough states which way to head from this room.
                 template = Some(way.replace("The player is", "You are"));
@@ -499,20 +525,10 @@ pub fn facts(
             } else {
                 // No path through these rooms is known: say so in GameBuddy's
                 // own words instead of letting a model guess a direction.
-                let areas = way
-                    .as_deref()
-                    .and_then(|w| w.split_once("cross "))
-                    .and_then(|(_, rest)| rest.split(". ").next())
-                    .map(|areas| areas.trim_end_matches('.').to_owned());
-                let mut line = if blocked(&lower) {
-                    "Okay, that way's a dead end. ".to_owned()
-                } else {
-                    String::new()
-                };
-                if let (Some(goal), Some(areas)) = (&goal, areas) {
-                    line.push_str(&format!("{} is back through {areas}, but ", goal.label));
-                }
-                line.push_str("I don't know the way through these rooms yet. Which exits can you see: a ladder, a door, or an opening?");
+                let line = format!(
+                    "{dead_end}{}I don't know the way through these rooms yet. Which exits can you see: a ladder, a door, or an opening?",
+                    through.map(|t| format!("{t}, but ")).unwrap_or_default()
+                );
                 return Ok((vec![line.clone()], Some(line), true));
             }
         }
