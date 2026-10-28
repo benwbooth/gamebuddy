@@ -39,7 +39,7 @@ impl Config {
         ensure!(
             self.model
                 .extension()
-                .is_some_and(|e| e == "kokoro" || e == "omni")
+                .is_some_and(|e| e == "kokoro" || e == "omni" || e == "orpheus")
                 || self.model.with_extension("onnx.json").is_file(),
             "Prepared speech model configuration is missing"
         );
@@ -95,6 +95,9 @@ fn save(key: String, audio: Vec<u8>) {
 }
 
 struct Worker {
+    /// Orpheus waits for its server and writes a sentence at about 1.3x
+    /// speaking speed: it gets longer to load and to answer.
+    slow: bool,
     child: Child,
     input: ChildStdin,
     output: mpsc::Receiver<Result<Value>>,
@@ -120,6 +123,9 @@ impl Worker {
             .arg(&config.model)
             .env("OMP_NUM_THREADS", "2")
             .env("OPENBLAS_NUM_THREADS", "2")
+            // A Nix shell's PYTHONPATH points at another Python's packages
+            // and breaks the voice runtimes' own.
+            .env_remove("PYTHONPATH")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -142,13 +148,14 @@ impl Worker {
             }
         });
         let worker = Self {
+            slow: config.model.extension().is_some_and(|e| e == "orpheus"),
             child,
             input,
             output: rx,
         };
         let value = worker
             .output
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(Duration::from_secs(if worker.slow { 90 } else { 20 }))
             .context("Loading prepared speech timed out")??;
         ensure!(value["ready"] == true, "Prepared speech failed: {value}");
         Ok(worker)
@@ -159,7 +166,7 @@ impl Worker {
         self.input.flush()?;
         let result = self
             .output
-            .recv_timeout(Duration::from_secs(15))
+            .recv_timeout(Duration::from_secs(if self.slow { 40 } else { 15 }))
             .context("Speech synthesis timed out")??;
         let wav = STANDARD.decode(
             result["wav"]

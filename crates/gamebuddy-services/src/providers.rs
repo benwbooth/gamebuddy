@@ -978,7 +978,8 @@ pub fn local_voice() -> Option<crate::voice::speech::Config> {
 }
 
 /// The player's own pick, `<data>/models/voice`: `kokoro:<voice>` (for
-/// example `kokoro:am_puck`) or `omni:<male|female|ref:clip.wav>`.
+/// example `kokoro:am_puck`), `omni:<male|female|ref:clip.wav>` or
+/// `orpheus:<voice>` (leo, zac, tara, ...).
 fn chosen_voice() -> Option<crate::voice::speech::Config> {
     let models = crate::store::data_dir().ok()?.join("models");
     let choice = std::fs::read_to_string(models.join("voice")).ok()?;
@@ -993,6 +994,22 @@ fn chosen_voice() -> Option<crate::voice::speech::Config> {
             python.is_file().then(|| crate::voice::speech::Config {
                 enabled: true,
                 python: python.to_string_lossy().into_owned(),
+                model: marker,
+            })
+        }
+        "orpheus" if crate::liquid::orpheus_installed() => {
+            let dir = models.join("orpheus");
+            let marker = dir.join(format!("{name}.orpheus"));
+            if !marker.is_file() {
+                std::fs::write(&marker, format!("{name}\n")).ok()?;
+            }
+            crate::liquid::ensure_orpheus();
+            // Omni still listens: start it too, so the first question is
+            // not held up by its start.
+            crate::liquid::ensure_voice();
+            Some(crate::voice::speech::Config {
+                enabled: true,
+                python: dir.join("venv/bin/python").to_string_lossy().into_owned(),
                 model: marker,
             })
         }

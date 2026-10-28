@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Persistent speech synthesis. JSON lines in/out; no microphone access.
 
-The model argument is a Piper .onnx voice, a .omni file naming an LFM3-Omni
+The model argument is a Piper .onnx voice, a .orpheus file naming an Orpheus
+voice (spoken by GameBuddy's own llama-server, decoded with SNAC), a .omni file naming an LFM3-Omni
 voice (male or female, spoken by GameBuddy's own llama-server), or a .kokoro file whose first line
 names a Kokoro voice (for example am_michael): Kokoro sounds far more natural.
 """
@@ -60,6 +61,77 @@ if model.endswith(".omni"):
             wav.setsampwidth(source.getsampwidth())
             wav.setframerate(source.getframerate())
             wav.writeframes(source.readframes(source.getnframes()))
+elif model.endswith(".orpheus"):
+    # Orpheus 3B through GameBuddy's own llama-server (port 11443): the model
+    # writes SNAC audio codes as tokens, decoded here on the GPU. The file
+    # names the voice (leo, zac, tara, ...).
+    import re
+    import time
+    import urllib.request
+
+    import numpy
+    import torch
+    from snac import SNAC
+
+    with open(model, encoding="utf-8") as voice_file:
+        voice_name = voice_file.readline().strip() or "leo"
+    base = "http://127.0.0.1:11443"
+    for _ in range(240):
+        try:
+            with urllib.request.urlopen(base + "/health", timeout=2) as reply:
+                if reply.status == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.25)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    snac = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval().to(device)
+
+    def audio_codes(text):
+        request = urllib.request.Request(
+            base + "/v1/completions",
+            data=json.dumps({"prompt": f"<|audio|>{voice_name}: {text}<|eot_id|>", "max_tokens": 2400,
+                             "temperature": 0.6, "top_p": 0.9, "repeat_penalty": 1.1}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as reply:
+            written = json.load(reply)["choices"][0]["text"]
+        codes = []
+        for number in re.findall(r"<custom_token_(\d+)>", written):
+            code = int(number) - 10 - ((len(codes) % 7) * 4096)
+            if 0 < code <= 4096:
+                codes.append(code)
+        return codes
+
+    def decode(window):
+        layers = ([], [], [])
+        for j in range(len(window) // 7):
+            f = window[7 * j:7 * j + 7]
+            layers[0].append(f[0])
+            layers[1].extend([f[1], f[4]])
+            layers[2].extend([f[2], f[3], f[5], f[6]])
+        return snac.decode([torch.tensor(l, device=device).unsqueeze(0) for l in layers])
+
+    def synthesize(text, wav):
+        codes = audio_codes(text)
+        pieces = []
+        # Seven codes are one frame. Decoding four frames at a time and
+        # keeping the middle keeps one tensor shape, so the GPU kernels are
+        # built once (decoding whole sentences rebuilt them for every new
+        # length, taking seconds each).
+        with torch.inference_mode():
+            for end in range(28, len(codes) + 1, 7):
+                pieces.append(decode(codes[end - 28:end])[0, 0, 2048:4096].float().cpu().numpy())
+        samples = numpy.concatenate(pieces) if pieces else numpy.zeros(1, dtype=numpy.float32)
+        pcm = (numpy.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(pcm.tobytes())
+
+    # Build the kernels before the first reply.
+    with torch.inference_mode():
+        decode([1] * 28)
 elif model.endswith(".kokoro"):
     import numpy
     import torch

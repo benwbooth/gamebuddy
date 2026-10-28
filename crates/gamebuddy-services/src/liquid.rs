@@ -73,6 +73,34 @@ const VOICE: Server = Server {
     context: 8_192,
 };
 
+/// Orpheus 3B, GameBuddy's speaking voice when the player picks it
+/// (`orpheus:<voice>`): it writes SNAC audio codes that the speech worker
+/// decodes. Its weights live in `models/orpheus`, beside its Python runtime.
+const ORPHEUS: Server = Server {
+    port: 11443,
+    model: "../orpheus/Orpheus-3b-FT-Q8_0.gguf",
+    projector: "",
+    alias: "orpheus-3b",
+    context: 4_096,
+};
+
+/// Orpheus is installed: the server runtime, its weights and the decoder's
+/// Python.
+pub fn orpheus_installed() -> bool {
+    models().is_ok_and(|d| {
+        d.join("runtime/bin/llama-server").is_file()
+            && d.join(ORPHEUS.model).is_file()
+            && d.join("../orpheus/venv/bin/python").is_file()
+    })
+}
+
+/// Start the Orpheus voice server in the background if it is installed.
+pub fn ensure_orpheus() {
+    if orpheus_installed() {
+        run(&ORPHEUS, &ORPHEUS_STARTED);
+    }
+}
+
 /// The voice model is installed (runtime and weights).
 pub fn voice_installed() -> bool {
     models().is_ok_and(|d| {
@@ -85,6 +113,7 @@ pub fn voice_installed() -> bool {
 static VL_STARTED: AtomicBool = AtomicBool::new(false);
 static VOICE_STARTED: AtomicBool = AtomicBool::new(false);
 static TEXT_STARTED: AtomicBool = AtomicBool::new(false);
+static ORPHEUS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Start the reasoning server in the background when its setup is selected.
 pub fn ensure(store: &Store) {
