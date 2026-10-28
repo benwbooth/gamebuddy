@@ -367,6 +367,49 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
             })
             .collect()
     };
+    // Prices and item facts from the walkthrough's own data cards, for every
+    // item the conversation touches. Without them a small model invented a
+    // price ("Wing Boots cost 50 gold"; the card says 2,800 in Forepaw).
+    let topic = format!(
+        "{question} {} {} {}",
+        lacking.join(" "),
+        next_text,
+        said.join(" ")
+    )
+    .to_lowercase();
+    let item_facts: Vec<String> = crate::game_data::cards(store, guide)
+        .unwrap_or_default()
+        .iter()
+        .filter(|card| {
+            card["name"]
+                .as_str()
+                .is_some_and(|name| name.len() > 3 && topic.contains(&name.to_lowercase()))
+        })
+        .take(4)
+        .map(|card| {
+            let costs: Vec<String> = card["costs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| {
+                    Some(format!("{} gold in {}", c["gold"].as_u64()?, c["place"].as_str()?))
+                })
+                .collect();
+            let notes = clip(card["notes"].as_str().unwrap_or_default(), 140);
+            format!(
+                "- {}: {}{}",
+                card["name"].as_str().unwrap_or_default(),
+                if costs.is_empty() { "price not listed".into() } else { costs.join(", ") },
+                if notes.is_empty() { String::new() } else { format!(". {notes}") }
+            )
+        })
+        .collect();
+    if !item_facts.is_empty() {
+        lines.push(format!(
+            "Item facts (use these exact prices; never give a price that is not listed here):\n{}",
+            item_facts.join("\n")
+        ));
+    }
     if !passages.is_empty() {
         lines.push(format!(
             "From the walkthrough, about what they said:\n{}",
