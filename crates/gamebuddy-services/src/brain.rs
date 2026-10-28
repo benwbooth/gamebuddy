@@ -36,7 +36,7 @@ pub struct Situation {
     /// HUD values read from this screenshot; null when not visible.
     pub gold: Option<u64>,
     pub experience: Option<u64>,
-    /// Fullness of the life (P) and magic (M) bars, 0 to 1, measured as the
+    /// Fullness of the life and magic (or energy) bars, 0 to 1, measured as the
     /// coloured part against the bar's whole length; null if unsure.
     pub life: Option<f64>,
     pub magic: Option<f64>,
@@ -71,7 +71,8 @@ pub struct Situation {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ScreenReading {
-    /// Every number on the HUD with its label, exactly as shown (E 08172, G 0007050).
+    /// Every number on the HUD with its label, exactly as shown (for example
+    /// a label letter and its digits, leading zeros included).
     pub hud: Vec<String>,
     /// Dialogue, menu or message text on screen, verbatim; empty when none.
     pub text: String,
