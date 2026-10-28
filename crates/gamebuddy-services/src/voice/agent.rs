@@ -364,9 +364,11 @@ pub fn answer(
             if !text.is_empty() {
                 return Ok(text);
             }
-            // Still no words: say what the lookups found rather than nothing.
+            // Still no words: ask once more with the lookups as plain facts
+            // and no tool history, which small models answer far more often.
+            // Raw lookup output is never spoken; it reads as gibberish.
             anyhow::ensure!(!findings.is_empty(), "No answer");
-            return Ok(clip(&findings.join(" "), 280));
+            return plain_answer(&client, &url, provider, question, &findings);
         }
         // Keep the exchange in the shape the chat template expects.
         messages.push(json!({"role": "assistant", "content": spoken(&content),
@@ -388,6 +390,42 @@ pub fn answer(
         }
     }
     anyhow::bail!("No answer after several lookups")
+}
+
+/// One plain request: the facts the lookups found, the question, and nothing
+/// to call. Falls back to asking the player rather than reading facts aloud.
+fn plain_answer(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    provider: &crate::ProviderConfig,
+    question: &str,
+    findings: &[String],
+) -> Result<String> {
+    let facts = findings
+        .iter()
+        .map(|f| format!("- {}", clip(f, 400)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = json!({"model": provider.model, "messages": [
+            {"role": "system", "content": "You are GameBuddy, the player's upbeat gaming friend. Reply in one or two short, natural spoken sentences. Use only the facts given. Never read out codes, numbers lists or HUD labels. If the facts say something is not known, ask the player about it."},
+            {"role": "user", "content": format!("Facts:\n{facts}\n\nThe player said: {question}")}],
+        "temperature": 0.1, "top_k": 50, "repeat_penalty": 1.1, "max_tokens": 120});
+    let reply: Value = client
+        .post(url)
+        .json(&body)
+        .send()
+        .context("Could not reach the local model")?
+        .error_for_status()?
+        .json()?;
+    let text = spoken(
+        reply["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default(),
+    );
+    if text.is_empty() {
+        return Ok("Sorry, I couldn't work that out. Where are you right now?".to_owned());
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

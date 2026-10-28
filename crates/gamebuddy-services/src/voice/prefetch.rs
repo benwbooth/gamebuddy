@@ -51,6 +51,14 @@ fn state(store: &Store, guide: &Guide) -> Result<(String, Option<String>)> {
 /// Work out the answer now if the stored one no longer fits. Returns true
 /// when a new answer was stored.
 pub fn refresh(store: &Store, guide: &Guide) -> Result<bool> {
+    // On this computer's GPU the voice answers live and fast; this big
+    // background request only slowed the game (and overflows small models).
+    if store
+        .get::<crate::Settings>("settings")?
+        .is_some_and(|s| crate::providers::on_this_computer(&s.reasoning))
+    {
+        return Ok(false);
+    }
     let (current, step_id) = state(store, guide)?;
     let now = screen::now_ms();
     if let Some(saved) = store.get::<Prefetched>(&key(guide))?
