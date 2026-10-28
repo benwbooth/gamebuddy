@@ -654,6 +654,12 @@ pub(crate) fn situation_lines(store: &Store, guide: &Guide) -> Result<Vec<String
 /// The request for this turn: compact context, the screenshot, the history.
 pub fn request(store: &Store, guide: &Guide, question: &str) -> Result<ModelRequest> {
     let full = crate::harness::call_tool_with_images(store, "get_game_context", json!({}))?;
+    // What this answer is shown, for the screenshot widget.
+    if !full.images.is_empty()
+        && let Ok(snapshot) = crate::screen::snapshot(store)
+    {
+        let _ = crate::screen::seen::record(store, &snapshot, "assistant");
+    }
     let context = super::prompts::gemini_context(&full.value, Some((store, guide)));
     let matches = crate::harness::call_tool(store, "search_guide", json!({"query": question}))
         .ok()

@@ -351,6 +351,12 @@ pub fn think_with(
     let situation: Situation =
         serde_json::from_value(reply).context("Brain reply did not match the situation schema")?;
     apply(store, guide, &situation)?;
+    // The screenshot widget shows what was read: only the observer and the
+    // tool loop recorded theirs, so with the brain on a cloud model the
+    // widget stayed empty.
+    if let Some(snapshot) = &snapshot {
+        let _ = screen::seen::record(store, snapshot, "observer");
+    }
     store.put(
         &key(guide),
         &json!({"situation":situation,"session":snapshot.as_ref().map(|s| s.ticket.session.clone()),"captured_at_ms":snapshot.as_ref().map_or(screen::now_ms(), |s| s.captured_at_ms),"updated_at_ms":screen::now_ms(),"elapsed_ms":started.elapsed().as_millis() as u64}),
