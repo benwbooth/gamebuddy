@@ -14,6 +14,60 @@ const SYSTEM: &str = "You are GameBuddy, the player's friend on the couch who kn
 pub fn is_noise(transcript: &str) -> bool {
     let t = transcript.trim();
     let bare = t.trim_matches(|c: char| !c.is_alphanumeric());
+    // The player reacting to the game ("Oh.", "What the heck?"), not talking
+    // to GameBuddy: answering each one got "Oh, that's cool! Let's keep
+    // chatting" four times in two minutes.
+    let reaction = bare
+        .to_lowercase()
+        .replace(['\'', '’', ',', '!', '.', '?'], "");
+    if [
+        "oh",
+        "ah",
+        "aah",
+        "ooh",
+        "oh oh",
+        "oh no",
+        "oh man",
+        "oh my god",
+        "oh wow",
+        "whoa",
+        "woah",
+        "wow",
+        "huh",
+        "oops",
+        "whoops",
+        "yikes",
+        "ouch",
+        "ow",
+        "damn",
+        "dang",
+        "darn",
+        "crap",
+        "shoot",
+        "ugh",
+        "argh",
+        "nice",
+        "cool",
+        "ok",
+        "okay",
+        "alright",
+        "all right",
+        "come on",
+        "seriously",
+        "what the heck",
+        "what the hell",
+        "are you kidding me",
+        "jeez",
+        "geez",
+        "ha",
+        "haha",
+        "hahaha",
+        "lol",
+    ]
+    .contains(&reaction.trim())
+    {
+        return true;
+    }
     bare.is_empty()
         || (t.starts_with('[') && t.ends_with(']'))
         || (t.starts_with('(') && t.ends_with(')'))
@@ -932,10 +986,19 @@ mod tests {
             "",
             "Thank you.",
             "you",
+            "Oh.",
+            "What the heck?",
+            "Oh, no!",
         ] {
             assert!(super::is_noise(t), "{t}");
         }
-        for t in ["I don't have wing boots.", "Check again.", "what now"] {
+        for t in [
+            "I don't have wing boots.",
+            "Check again.",
+            "what now",
+            "Yes.",
+            "Oh, where now?",
+        ] {
             assert!(!super::is_noise(t), "{t}");
         }
     }

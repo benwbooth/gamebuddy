@@ -501,6 +501,10 @@ pub fn facts(
             } else {
                 ""
             };
+            let next_area = areas
+                .as_deref()
+                .and_then(|a| a.split(", then ").next())
+                .map(str::to_owned);
             let through = goal
                 .as_ref()
                 .zip(areas)
@@ -510,11 +514,17 @@ pub fn facts(
                 .and_then(|w| w.split_once("From this screen: "))
             {
                 // The screens to cross, from the walkthrough run's own path:
-                // GameBuddy's words, not a model's guess at a direction.
-                let line = format!(
-                    "{dead_end}{}From here, {screens}",
-                    through.map(|t| format!("{t}. ")).unwrap_or_default()
-                );
+                // GameBuddy's words, not a model's guess at a direction. The
+                // moves lead; the list of areas every time was a mouthful.
+                let mut screens = screens.trim_end_matches('.').to_owned();
+                if let Some(first) = screens.get(..1).map(str::to_uppercase) {
+                    screens.replace_range(..1, &first);
+                }
+                let toward = next_area
+                    .filter(|_| !screens.contains("ask me again"))
+                    .map(|area| format!(" That takes you toward {area}."))
+                    .unwrap_or_else(|| ".".into());
+                let line = format!("{dead_end}{screens}{toward}");
                 return Ok((vec![line.clone()], Some(line), true));
             }
             if let Some(way) = way.clone().filter(|w| w.contains("First head")) {
@@ -628,12 +638,13 @@ pub fn facts(
         }
         Kind::Repeat => {}
         Kind::Location => {
-            template = Some(match talk::here_now(store, guide)["place"].as_str() {
+            // Said by GameBuddy itself: a small model given the screen facts
+            // read the HUD numbers aloud.
+            let line = match talk::here_now(store, guide)["place"].as_str() {
                 Some(place) => format!("You're at {place}."),
-                None => "I can't tell where you are yet.".into(),
-            });
-            facts.push(here_line);
-            facts.extend(screen_facts(store));
+                None => "I can't tell where you are yet. What do you see around you?".into(),
+            };
+            return Ok((vec![here_line], Some(line), true));
         }
         Kind::Screen => {
             let lines = screen_facts(store);
