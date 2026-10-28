@@ -67,6 +67,7 @@ ScrollView {
             GbButton { objectName:"presetDevice"; text:"All local · this computer (Qwen + Kokoro)"; accent:true; onClicked:page.backend.apply_preset("device") }
             GbButton { objectName:"presetLiquid"; text:"All local · Liquid LFM3 (fastest)"; onClicked:page.backend.apply_preset("liquid") }
             GbButton { objectName:"presetLocal"; text:"Claude Sonnet + local voice"; onClicked:page.backend.apply_preset("local") }
+            GbButton { objectName:"presetOpus"; text:"Claude Opus 5.5 + local voice"; onClicked:page.backend.apply_preset("opus") }
             GbButton { objectName:"presetOpenAI"; text:"OpenAI (Codex)"; onClicked:page.backend.apply_preset("openai") }
             GbButton { objectName:"presetGemini"; text:"Gemini Live"; onClicked:page.backend.apply_preset("gemini") }
         }

@@ -101,6 +101,15 @@ pub fn ensure_orpheus() {
     }
 }
 
+/// The LFM3-VL screen reader is installed (runtime, weights, projector).
+pub fn installed() -> bool {
+    models().is_ok_and(|d| {
+        d.join("runtime/bin/llama-server").is_file()
+            && d.join(VL.model).is_file()
+            && d.join(VL.projector).is_file()
+    })
+}
+
 /// The voice model is installed (runtime and weights).
 pub fn voice_installed() -> bool {
     models().is_ok_and(|d| {

@@ -232,6 +232,8 @@ impl Settings {
     /// - "openai": Codex live voice with Codex reasoning (the original setup)
     /// - "gemini": Gemini Live voice and reasoning; Claude Code prepares guides
     /// - "local": Claude Code reasoning with local speech
+    /// - "opus": Claude Opus 5.5 at medium thinking answers and runs the
+    ///   brain; the screen reader and the voice stay on this computer
     /// - "device": everything on this computer: Ollama models for reasoning,
     ///   vision, planning and the brain, with local speech
     pub fn with_preset(&self, preset: &str) -> Result<Settings> {
@@ -256,6 +258,14 @@ impl Settings {
             ),
             "gemini" => (claude, SpeechBackend::GeminiLive),
             "local" => (claude, SpeechBackend::Local),
+            "opus" => (
+                ProviderConfig {
+                    model: "claude-opus-5-5".into(),
+                    reasoning_effort: "medium".into(),
+                    ..claude
+                },
+                SpeechBackend::Local,
+            ),
             // All Liquid: LFM3-1.7B thinks and talks (with the short plain
             // context), LFM3-VL reads the screen, Omni listens and speaks.
             "liquid" => (
@@ -280,14 +290,14 @@ impl Settings {
             ),
             other => anyhow::bail!("Unknown setup: {other}"),
         };
-        if matches!(preset, "device" | "liquid") {
+        if matches!(preset, "device" | "liquid" | "opus") {
             // The brain reads the screen with the same local model.
             settings.brain.enabled = true;
             settings.brain.provider = None;
         }
         // Local voice speaks with Kokoro when it is installed
         // (scripts/setup-kokoro-speech): it sounds far more natural than Piper.
-        if matches!(preset, "local" | "device" | "liquid")
+        if matches!(preset, "local" | "device" | "liquid" | "opus")
             && let Some(voice) = local_voice()
         {
             settings.prepared_speech = Some(voice);
@@ -300,7 +310,9 @@ impl Settings {
             settings.fast_voice = true;
         }
         settings.apply_provider_scope();
-        if preset == "liquid" {
+        // The quick LFM3 screen reader: a cloud thinker reading every
+        // screenshot itself took seconds per look.
+        if preset == "liquid" || (preset == "opus" && crate::liquid::installed()) {
             settings.single_provider = false;
             settings.vision = ProviderConfig {
                 kind: ProviderKind::OpenAiCompatible,

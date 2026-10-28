@@ -512,7 +512,7 @@ Item {
                 readonly property var options: [
                     {label: "Brain · same as reasoning", enabled: true, provider: null},
                     {label: "Brain · Claude Sonnet", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "sonnet", api_key_env: "", reasoning_effort: "low"}},
-                    {label: "Brain · Claude Opus", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "opus", api_key_env: "", reasoning_effort: "low"}},
+                    {label: "Brain · Claude Opus 5.5 (medium)", enabled: true, provider: {kind: "claude_code", endpoint: "", model: "claude-opus-5-5", api_key_env: "", reasoning_effort: "medium"}},
                     {label: "Brain · GPT (Codex)", enabled: true, provider: {kind: "codex", endpoint: "", model: "", api_key_env: "", reasoning_effort: ""}},
                     {label: "Brain · Local Qwen 3.5 9B", enabled: true, provider: {kind: "ollama", endpoint: "http://127.0.0.1:11434", model: "qwen3.5:9b", api_key_env: "", reasoning_effort: ""}},
                     {label: "Brain · Gemini Flash", enabled: true, provider: {kind: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-3.8-flash", api_key_env: "GEMINI_API_KEY", reasoning_effort: ""}},
@@ -547,16 +547,18 @@ Item {
                     id: setupPreset
                     objectName: "companionSetup"
                     Layout.fillWidth: true
-                    readonly property var values: ["device", "liquid", "local", "openai", "gemini"]
-                    model: ["All local · Qwen + Kokoro voice", "All local · Liquid LFM3 (fastest)", "Claude Sonnet + local voice", "OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Custom (Options)"]
+                    readonly property var values: ["device", "liquid", "local", "opus", "openai", "gemini"]
+                    model: ["All local · Qwen + Kokoro voice", "All local · Liquid LFM3 (fastest)", "Claude Sonnet + local voice", "Claude Opus 5.5 + local voice", "OpenAI · Codex voice + Codex brain", "Gemini Live · voice + brain", "Custom (Options)"]
                     currentIndex: {
                         const s = JSON.parse(buddy.settings_json)
                         if (s.speech === "local" && s.reasoning?.endpoint === "http://127.0.0.1:11442/v1") return 1
                         if (s.speech === "local" && s.reasoning?.kind === "ollama") return 0
-                        if (s.speech === "local" && s.reasoning?.kind === "claude_code") return 2
-                        if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 3
-                        if (s.speech === "gemini_live") return 4
-                        return 5
+                        // By model: any Claude used to show as the Sonnet setup.
+                        if (s.speech === "local" && s.reasoning?.kind === "claude_code" && s.reasoning?.model === "sonnet") return 2
+                        if (s.speech === "local" && s.reasoning?.kind === "claude_code" && s.reasoning?.model === "claude-opus-5-5") return 3
+                        if (s.speech === "codex_realtime" && s.reasoning?.kind === "codex") return 4
+                        if (s.speech === "gemini_live") return 5
+                        return 6
                     }
                     Accessible.name: "Assistant and voice setup"
                     onActivated: index => { if (index < values.length) buddy.apply_preset(values[index]); else { controlsTray.close(); companion.workbenchRequested() } }
