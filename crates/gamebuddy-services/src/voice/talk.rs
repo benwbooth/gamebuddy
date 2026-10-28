@@ -141,7 +141,7 @@ fn here_now(store: &Store, guide: &Guide) -> Value {
 }
 
 /// Where the fused location estimate puts the player, when it is sure enough.
-fn current_place(store: &Store, guide: &Guide) -> Option<String> {
+pub(crate) fn current_place(store: &Store, guide: &Guide) -> Option<String> {
     let saved: Value = store
         .get(&crate::navigation::estimate::key(guide))
         .ok()
@@ -392,15 +392,27 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
                 .into_iter()
                 .flatten()
                 .filter_map(|c| {
-                    Some(format!("{} gold in {}", c["gold"].as_u64()?, c["place"].as_str()?))
+                    Some(format!(
+                        "{} gold in {}",
+                        c["gold"].as_u64()?,
+                        c["place"].as_str()?
+                    ))
                 })
                 .collect();
             let notes = clip(card["notes"].as_str().unwrap_or_default(), 140);
             format!(
                 "- {}: {}{}",
                 card["name"].as_str().unwrap_or_default(),
-                if costs.is_empty() { "price not listed".into() } else { costs.join(", ") },
-                if notes.is_empty() { String::new() } else { format!(". {notes}") }
+                if costs.is_empty() {
+                    "price not listed".into()
+                } else {
+                    costs.join(", ")
+                },
+                if notes.is_empty() {
+                    String::new()
+                } else {
+                    format!(". {notes}")
+                }
             )
         })
         .collect();
@@ -455,6 +467,44 @@ pub fn compact_request(store: &Store, guide: &Guide, question: &str) -> Result<M
         images: vec![],
         json: false,
     })
+}
+
+/// Walkthrough passages for a query, as short "title: instructions" lines.
+pub(crate) fn passages(store: &Store, query: &str, count: usize) -> Vec<String> {
+    crate::harness::call_tool(store, "search_guide", json!({"query": query}))
+        .ok()
+        .and_then(|m| m["steps"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .take(count)
+        .map(|s| {
+            format!(
+                "{}: {}",
+                s["title"].as_str().unwrap_or_default(),
+                clip(s["instructions"].as_str().unwrap_or_default(), 240)
+            )
+        })
+        .collect()
+}
+
+/// Where the player is, what they have told GameBuddy, what the screen
+/// shows and what to do next (getting a missing item first): the plain
+/// summary the voice's next_step lookup answers with.
+pub(crate) fn situation_lines(store: &Store, guide: &Guide) -> Result<Vec<String>> {
+    let prompt = compact_request(store, guide, "")?.prompt;
+    let before = prompt
+        .split("\nRecent conversation:")
+        .next()
+        .unwrap_or_default();
+    let before = before
+        .split("\n\nThe player just said")
+        .next()
+        .unwrap_or_default();
+    Ok(before
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// The request for this turn: compact context, the screenshot, the history.
@@ -673,9 +723,39 @@ pub fn answer_streaming(
     let here = current_place(store, guide);
     let asked =
         crate::navigation::routing::set_from_text(store, guide, &atlas, question, here.as_deref())?;
-    // Small models on GameBuddy's own llama-server get the short version.
+    // Small models on GameBuddy's own llama-server call GameBuddy's lookups
+    // (prices, routes, next step) instead of answering from memory.
     let small = provider.config.kind == crate::ProviderKind::OpenAiCompatible
         && crate::providers::on_this_computer(&provider.config);
+    if small {
+        let history: Vec<Value> = recent_turns(store, &guide.game)
+            .into_iter()
+            .rev()
+            .take(4)
+            .rev()
+            .collect();
+        let started = std::time::Instant::now();
+        let reply = super::agent::answer(store, guide, &provider.config, &history, question)?;
+        let reply = reply
+            .strip_prefix("GameBuddy, ")
+            .unwrap_or(&reply)
+            .to_owned();
+        let mut sentences = Sentences::new();
+        for sentence in sentences.push(&reply) {
+            on_sentence(sentence);
+        }
+        if let Some(rest) = sentences.finish() {
+            on_sentence(rest);
+        }
+        crate::flight::event(
+            "talk",
+            json!({"ms": started.elapsed().as_millis() as u64, "chars": reply.len(), "agent": true}),
+        );
+        let turn = uuid::Uuid::new_v4().to_string();
+        store.append_conversation(&guide.game, &turn, "user", "user", question)?;
+        store.append_conversation(&guide.game, &turn, "assistant", "assistant", &reply)?;
+        return Ok(reply);
+    }
     let mut request = if small {
         compact_request(store, guide, question)?
     } else {

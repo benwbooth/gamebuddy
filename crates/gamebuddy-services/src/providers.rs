@@ -204,6 +204,13 @@ impl Settings {
     /// Liquid says is not for conversation; that setup now thinks with
     /// LFM3-1.7B and keeps LFM3-VL for reading the screen.
     pub fn upgrade(&mut self) -> bool {
+        // The 1.7B text thinker invented facts; Omni calling GameBuddy's
+        // lookups replaced it.
+        if self.reasoning.endpoint == LIQUID_TEXT_ENDPOINT {
+            self.reasoning.endpoint = LIQUID_OMNI_ENDPOINT.into();
+            self.reasoning.model = LIQUID_OMNI_MODEL.into();
+            return true;
+        }
         if self.reasoning.endpoint == LIQUID_ENDPOINT {
             let vision = self.reasoning.clone();
             self.reasoning = ProviderConfig {
@@ -254,8 +261,8 @@ impl Settings {
             "liquid" => (
                 ProviderConfig {
                     kind: ProviderKind::OpenAiCompatible,
-                    endpoint: LIQUID_TEXT_ENDPOINT.into(),
-                    model: LIQUID_TEXT_MODEL.into(),
+                    endpoint: LIQUID_OMNI_ENDPOINT.into(),
+                    model: LIQUID_OMNI_MODEL.into(),
                     api_key_env: String::new(),
                     reasoning_effort: String::new(),
                 },
@@ -1140,6 +1147,10 @@ pub const LIQUID_ENDPOINT: &str = "http://127.0.0.1:11440/v1";
 pub const LIQUID_MODEL: &str = "lfm3-vl-2b";
 /// LFM3-1.7B, Liquid's text model for conversation and agents (port 11442).
 pub const LIQUID_TEXT_ENDPOINT: &str = "http://127.0.0.1:11442/v1";
+/// LFM3-Omni (port 11441): hears, sees, speaks and calls tools; the live
+/// voice of the Liquid setup, one model for the whole conversation.
+pub const LIQUID_OMNI_ENDPOINT: &str = "http://127.0.0.1:11441/v1";
+pub const LIQUID_OMNI_MODEL: &str = "lfm3-omni-2b";
 pub const LIQUID_TEXT_MODEL: &str = "lfm3-1.7b";
 
 /// Load every Ollama model the settings use, in the background, and keep it

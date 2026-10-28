@@ -1,4 +1,5 @@
 //! Microphone activation and bounded, local speech turn detection.
+pub mod agent;
 pub mod briefing;
 pub mod decision;
 pub mod delivery;

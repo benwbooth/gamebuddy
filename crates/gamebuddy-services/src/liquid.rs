@@ -29,6 +29,7 @@ pub fn selected(settings: &Settings) -> bool {
     [&settings.reasoning, &settings.vision].iter().any(|c| {
         c.endpoint == crate::providers::LIQUID_ENDPOINT
             || c.endpoint == crate::providers::LIQUID_TEXT_ENDPOINT
+            || c.endpoint == crate::providers::LIQUID_OMNI_ENDPOINT
     })
 }
 
@@ -82,18 +83,23 @@ pub fn voice_installed() -> bool {
 }
 
 static VL_STARTED: AtomicBool = AtomicBool::new(false);
+static VOICE_STARTED: AtomicBool = AtomicBool::new(false);
 static TEXT_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Start the reasoning server in the background when its setup is selected.
 pub fn ensure(store: &Store) {
-    if store
-        .get::<Settings>("settings")
-        .ok()
-        .flatten()
-        .is_some_and(|s| selected(&s))
-    {
-        run(&VL, &VL_STARTED);
-        run(&TEXT, &TEXT_STARTED);
+    let Some(settings) = store.get::<Settings>("settings").ok().flatten() else {
+        return;
+    };
+    // Only the servers this setup uses: each holds video memory the game needs.
+    for config in [&settings.reasoning, &settings.vision] {
+        if config.endpoint == crate::providers::LIQUID_ENDPOINT {
+            run(&VL, &VL_STARTED);
+        } else if config.endpoint == crate::providers::LIQUID_TEXT_ENDPOINT {
+            run(&TEXT, &TEXT_STARTED);
+        } else if config.endpoint == crate::providers::LIQUID_OMNI_ENDPOINT && voice_installed() {
+            run(&VOICE, &VOICE_STARTED);
+        }
     }
 }
 
@@ -105,6 +111,8 @@ pub fn ready_for(config: &crate::ProviderConfig) {
         (&VL, &VL_STARTED)
     } else if config.endpoint == crate::providers::LIQUID_TEXT_ENDPOINT {
         (&TEXT, &TEXT_STARTED)
+    } else if config.endpoint == crate::providers::LIQUID_OMNI_ENDPOINT {
+        (&VOICE, &VOICE_STARTED)
     } else {
         return;
     };
@@ -122,9 +130,8 @@ pub fn ready_for(config: &crate::ProviderConfig) {
 
 /// Start the voice server in the background if it is installed.
 pub fn ensure_voice() {
-    static STARTED: AtomicBool = AtomicBool::new(false);
     if voice_installed() {
-        run(&VOICE, &STARTED);
+        run(&VOICE, &VOICE_STARTED);
     }
 }
 

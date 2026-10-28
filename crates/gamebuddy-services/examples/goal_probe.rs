@@ -4,7 +4,9 @@ fn main() -> anyhow::Result<()> {
     let store = gamebuddy_services::Store::open(&args[1])?;
     let guide = store.guide(&args[2])?;
     let atlas = gamebuddy_services::navigation::atlas(&store, &guide)?;
-    let goal = gamebuddy_services::navigation::routing::set_from_text(&store, &guide, &atlas, &args[3], None)?;
+    let goal = gamebuddy_services::navigation::routing::set_from_text(
+        &store, &guide, &atlas, &args[3], None,
+    )?;
     println!("{:?}", goal.map(|g| g.label));
     Ok(())
 }
