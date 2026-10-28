@@ -92,6 +92,44 @@ pub fn is_noise(transcript: &str) -> bool {
         .contains(&bare.to_lowercase().as_str())
 }
 
+/// A bare "Yeah." or "No." answers GameBuddy only when it just asked
+/// something; otherwise it is the player talking to the game or the room,
+/// and replying to it gave "Nice! Keep chatting and having fun."
+pub fn ignorable(store: &Store, game: &str, transcript: &str) -> bool {
+    if is_noise(transcript) {
+        return true;
+    }
+    let bare = transcript
+        .trim()
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    let acknowledgement = [
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "no",
+        "nope",
+        "nah",
+        "sure",
+        "right",
+        "uh huh",
+        "mhm",
+        "got it",
+        "i see",
+        "thanks",
+        "thank you",
+    ]
+    .contains(&bare.as_str());
+    acknowledgement
+        && !recent_turns(store, game)
+            .iter()
+            .rev()
+            .find(|t| t["role"] != "user")
+            .and_then(|t| t["text"].as_str())
+            .is_some_and(|t| t.trim_end().ends_with('?'))
+}
+
 pub(crate) fn recent_turns(store: &Store, game: &str) -> Vec<Value> {
     let mut turns: Vec<Value> = crate::conversation::recent(store, game)
         .unwrap_or_default()
@@ -863,7 +901,29 @@ pub fn answer_streaming(
         store.append_conversation(&guide.game, &id, "assistant", "assistant", &turn.reply)?;
         return Ok(turn.reply);
     }
+    // A cloud model thinks for itself, but which screens to cross is
+    // GameBuddy's own knowledge (the walkthrough run's path): "which way?"
+    // with that route known is answered at once, and every other answer
+    // gets the route as a fact.
+    let intent = super::grounded::classify(store, guide, &atlas, question, None);
+    if intent.kind == super::grounded::Kind::Move
+        && let Ok((_, Some(line), true)) =
+            super::grounded::facts(store, guide, &atlas, &intent, question)
+        && line.contains(" screen")
+    {
+        on_sentence(line.clone());
+        let id = uuid::Uuid::new_v4().to_string();
+        store.append_conversation(&guide.game, &id, "user", "user", question)?;
+        store.append_conversation(&guide.game, &id, "assistant", "assistant", &line)?;
+        return Ok(line);
+    }
     let mut request = request(store, guide, question)?;
+    if let Some(goal) = crate::navigation::routing::goal(store, guide)? {
+        request.prompt.push_str(&format!(
+            "\n\nGameBuddy's own route for where the player is heading (from the walkthrough run's path through the screens; trust it over guesses for directions): {}",
+            crate::navigation::routing::describe(store, guide, &atlas, here.as_deref(), &goal)
+        ));
+    }
     // A text-only model answers from the brain's reading of the screen.
     if !crate::providers::accepts_images(&provider.config) {
         request.images.clear();

@@ -1542,6 +1542,10 @@ impl ffi::Buddy {
                     return Ok(Outcome::VoiceCommand(transcript, action));
                 }
                 let store = Store::open(root)?;
+                // "Yeah." with nothing asked is not for GameBuddy.
+                if services::voice::talk::ignorable(&store, &game, &transcript) {
+                    return Ok(Outcome::Message("Ready to listen".into()));
+                }
                 let settings = store.get::<Settings>("settings")?.unwrap_or_default();
                 // Answers that need no model call first: the prepared "what
                 // now?" and prices from the walkthrough's data cards.
