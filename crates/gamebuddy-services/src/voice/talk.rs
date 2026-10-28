@@ -361,6 +361,109 @@ impl Default for Sentences {
     }
 }
 
+/// "I don't have the Wing Boots" / "I got the Wing Boots": record it as a
+/// world fact so the plan stops (or starts) assuming the item. Uses the
+/// outcome model's exact item names when it has them; otherwise updates the
+/// matching `has_…` fact the save already holds, or adds one. Returns the
+/// fact and value recorded.
+pub fn record_possession(
+    store: &Store,
+    guide: &Guide,
+    text: &str,
+) -> Result<Option<(String, bool)>> {
+    let lower = text
+        .trim()
+        .trim_end_matches(['.', '!', '?', ','])
+        .to_lowercase();
+    let negative = [
+        "i don't have ",
+        "i dont have ",
+        "i do not have ",
+        "i no longer have ",
+        "i haven't got ",
+        "i never got ",
+        "i didn't get ",
+        "i did not get ",
+        "i still don't have ",
+        "i still dont have ",
+    ];
+    let positive = [
+        "i already have ",
+        "i have ",
+        "i've got ",
+        "i got ",
+        "i bought ",
+        "i picked up ",
+    ];
+    let found = negative
+        .iter()
+        .find_map(|p| lower.find(p).map(|at| (&lower[at + p.len()..], false)))
+        .or_else(|| {
+            positive
+                .iter()
+                .find_map(|p| lower.find(p).map(|at| (&lower[at + p.len()..], true)))
+        });
+    let Some((rest, value)) = found else {
+        return Ok(None);
+    };
+    // The item: up to the end of the clause, without articles or "any"/"yet".
+    let item: Vec<&str> = rest
+        .split([',', ';', '.', '?', '!'])
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|w| {
+            ![
+                "the", "a", "an", "any", "yet", "anymore", "them", "it", "pair", "of",
+            ]
+            .contains(w)
+        })
+        .take_while(|w| !["so", "and", "but", "because", "how", "where", "what"].contains(w))
+        .collect();
+    if item.is_empty() || item.len() > 4 {
+        return Ok(None);
+    }
+    if let Ok(Some(_)) = crate::outcomes::quick_report(store, &guide.game, text) {
+        return Ok(Some((item.join(" "), value)));
+    }
+    let slug = item.join("_");
+    let singular = slug.trim_end_matches('s').to_owned();
+    let progress = store.progress(guide)?;
+    let known: Vec<String> = progress
+        .world
+        .facts
+        .keys()
+        .filter(|id| id.starts_with("has_") && (id.contains(&slug) || id.contains(&singular)))
+        .cloned()
+        .collect();
+    let ids = if known.is_empty() {
+        vec![format!("has_{slug}")]
+    } else {
+        known
+    };
+    store.report_world(
+        guide,
+        crate::outcomes::Report {
+            expected_revision: guide.revision,
+            epoch: progress.epoch,
+            player_report: text.chars().take(400).collect(),
+            facts: ids
+                .iter()
+                .map(|id| gamebuddy_core::outcomes::FactValue {
+                    id: id.clone(),
+                    value,
+                })
+                .collect(),
+            include_optional: None,
+            goal: None,
+            clear_goal: false,
+            source: Some("player_report"),
+        },
+    )?;
+    crate::flight::event("player_fact", json!({"facts": ids, "value": value}));
+    Ok(Some((ids.join(","), value)))
+}
+
 /// Answer a spoken turn with one call to the reasoning provider and record
 /// both sides in the conversation.
 pub fn answer(store: &Store, guide: &Guide, question: &str) -> Result<String> {
@@ -377,6 +480,10 @@ pub fn answer_streaming(
 ) -> Result<String> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let provider = HttpProvider::new(settings.reasoning)?;
+    // What the player says they have or lack becomes a fact the plan uses.
+    if let Err(error) = record_possession(store, guide, question) {
+        eprintln!("Possession report: {error:#}");
+    }
     // "How do I get to Forepaw?" sets where the player is heading, so the
     // route (and the arrow) are ready for this very answer.
     let atlas = crate::navigation::atlas(store, guide)?;
@@ -450,6 +557,42 @@ pub fn answer_streaming(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn possession_reports_update_the_fact_the_plan_uses() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = crate::Store::open(dir.path())?;
+        let guide =
+            gamebuddy_core::import_markdown("Game", "Guide", "# Buy boots\nBuy the Wing Boots.")?;
+        store.save_guide(&guide)?;
+        // A misheard old report left the boots marked as owned.
+        let progress = store.progress(&guide)?;
+        store.report_world(
+            &guide,
+            crate::outcomes::Report {
+                expected_revision: guide.revision,
+                epoch: progress.epoch,
+                player_report: "I already contain the wing boots.".into(),
+                facts: vec![gamebuddy_core::outcomes::FactValue {
+                    id: "has_wing_boots".into(),
+                    value: true,
+                }],
+                include_optional: None,
+                goal: None,
+                clear_goal: false,
+                source: None,
+            },
+        )?;
+        let recorded = super::record_possession(&store, &guide, "I don't have wing boots.")?;
+        assert_eq!(recorded, Some(("has_wing_boots".into(), false)));
+        assert!(!store.progress(&guide)?.world.facts["has_wing_boots"].value);
+        assert!(super::record_possession(&store, &guide, "Where do I get the boots?")?.is_none());
+        assert_eq!(
+            super::record_possession(&store, &guide, "Okay, I got the Magic Shield")?,
+            Some(("has_magic_shield".into(), true))
+        );
+        Ok(())
+    }
+
     #[test]
     fn sentences_are_handed_over_as_they_complete() {
         let mut s = super::Sentences::new();

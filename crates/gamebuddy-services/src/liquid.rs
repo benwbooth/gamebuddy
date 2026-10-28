@@ -140,10 +140,71 @@ pub fn wait_for_voice(seconds: u64) -> bool {
     false
 }
 
+/// Stop LFM3 servers left behind by an earlier GameBuddy (their parent is
+/// gone): they hold video memory, and one answering on our port with an
+/// exhausted heap failed every request. Only GameBuddy's own runtime binary
+/// is touched.
+fn clear_orphans() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let Ok(dir) = models() else { return };
+    let binary = dir.join("runtime").join("bin").join("llama-server");
+    let me = std::process::id();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|p| p.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(exe) = std::fs::read_link(entry.path().join("exe")) else {
+            continue;
+        };
+        if exe != binary && !exe.ends_with("llama-server") {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        if !cmdline.starts_with(binary.to_string_lossy().as_ref()) {
+            continue;
+        }
+        // Still owned by a running GameBuddy (this one or another)?
+        let parent = std::fs::read_to_string(entry.path().join("stat"))
+            .ok()
+            .and_then(|s| s.rsplit(')').next().map(str::to_owned))
+            .and_then(|s| {
+                s.split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.parse::<u32>().ok())
+            });
+        let owner = parent
+            .and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok())
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if parent == Some(me) || owner.contains("gamebuddy") {
+            continue;
+        }
+        eprintln!("Stopping a leftover LFM3 server (pid {pid})");
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+}
+
 fn run(server: &'static Server, started: &'static AtomicBool) {
     if started.swap(true, Ordering::AcqRel) {
         return;
     }
+    clear_orphans();
     // This thread owns the server for its whole life: the child is told to
     // stop when its parent thread ends, which is when GameBuddy exits.
     std::thread::spawn(move || {
@@ -204,7 +265,9 @@ fn serve(server: &Server) -> Result<()> {
         unsafe {
             let parent = libc::getpid();
             command.pre_exec(move || {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                // SIGKILL: llama-server catches SIGTERM for a graceful stop
+                // and could linger, holding video memory, after GameBuddy.
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
                 // GameBuddy already gone before the signal was armed.
                 if libc::getppid() != parent {
                     libc::_exit(0);
