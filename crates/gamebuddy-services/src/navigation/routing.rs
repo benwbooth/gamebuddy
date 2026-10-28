@@ -124,6 +124,72 @@ fn travel_target(lower: &str) -> Option<&str> {
         })
 }
 
+/// Among the places of one town ("Forepaw key shop", "Forepaw equipment
+/// shop"…), the one where the walkthrough does what the sentence is about:
+/// "buy the Wing Boots in Forepaw" picks the shop whose steps sell Wing
+/// Boots. Keeps `place_id` when nothing in the sentence points elsewhere.
+fn best_place_for(guide: &Guide, atlas: &Atlas, place_id: &str, sentence: &str) -> String {
+    let Some(head) = atlas
+        .places
+        .iter()
+        .find(|p| p.id == place_id)
+        .and_then(|p| words(&p.label).into_iter().next())
+    else {
+        return place_id.to_owned();
+    };
+    let stop = [
+        "head",
+        "back",
+        "then",
+        "there",
+        "where",
+        "that",
+        "this",
+        "with",
+        "from",
+        "have",
+        "need",
+        "your",
+        "them",
+        "into",
+        "buy",
+        "get",
+        "go",
+        "the",
+        "and",
+        "for",
+        head.as_str(),
+    ];
+    let wanted: Vec<String> = words(sentence)
+        .into_iter()
+        .filter(|w| w.len() > 3 && !stop.contains(&w.as_str()))
+        .collect();
+    if wanted.is_empty() {
+        return place_id.to_owned();
+    }
+    let score = |id: &str| {
+        atlas
+            .bindings
+            .iter()
+            .filter(|b| b.place_id == id)
+            .filter_map(|b| guide.step(&b.step_id))
+            .map(|step| {
+                let text = format!("{} {}", step.title, step.instructions).to_lowercase();
+                wanted.iter().filter(|w| text.contains(w.as_str())).count()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    atlas
+        .places
+        .iter()
+        .filter(|p| words(&p.label).first() == Some(&head))
+        .map(|p| (score(&p.id), p.id == place_id, p.id.clone()))
+        .max()
+        .filter(|(best, _, _)| *best > 0)
+        .map_or_else(|| place_id.to_owned(), |(_, _, id)| id)
+}
+
 /// Remember where the player is heading. Returns the goal when it changed.
 pub fn set_from_text(
     store: &Store,
@@ -141,6 +207,7 @@ pub fn set_from_text(
     let Some(place_id) = travel_target(&lower).and_then(|target| named_place(atlas, target)) else {
         return Ok(None);
     };
+    let place_id = best_place_for(guide, atlas, &place_id, &lower);
     if current == Some(place_id.as_str()) {
         return Ok(None);
     }
