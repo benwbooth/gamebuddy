@@ -119,20 +119,21 @@ class Data:
 class IDM(nn.Module):
     """Frames stacked on channels plus their differences, a small conv net."""
 
-    def __init__(self):
+    def __init__(self, width=1.0):
         super().__init__()
         c = 3 * WINDOW + 3 * (WINDOW - 1)
+        a, b, d, e = (int(n * width) for n in (64, 128, 192, 256))
 
         def block(i, o, s):
             return nn.Sequential(nn.Conv2d(i, o, 3, s, 1), nn.BatchNorm2d(o), nn.GELU())
 
         self.net = nn.Sequential(
-            block(c, 64, 1), block(64, 64, 2),      # 64x60
-            block(64, 128, 1), block(128, 128, 2),  # 32x30
-            block(128, 192, 1), block(192, 192, 2),  # 16x15
-            block(192, 256, 1), block(256, 256, 2),  # 8x8
+            block(c, a, 1), block(a, a, 2),  # 64x60
+            block(a, b, 1), block(b, b, 2),  # 32x30
+            block(b, d, 1), block(d, d, 2),  # 16x15
+            block(d, e, 1), block(e, e, 2),  # 8x8
         )
-        self.head = nn.Sequential(nn.Flatten(), nn.Linear(256 * 8 * 8, 512), nn.GELU(),
+        self.head = nn.Sequential(nn.Flatten(), nn.Linear(e * 8 * 8, 512), nn.GELU(),
                                   nn.Dropout(0.2), nn.Linear(512, len(BUTTONS)))
 
     def forward(self, x):
@@ -192,7 +193,7 @@ def train(args):
     for d in args.train + args.test:
         prepare(d)
     train_data, test_data = Data(args.train), Data(args.test)
-    model = IDM().to(device)
+    model = IDM(args.width).to(device)
     print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters", flush=True)
     positive = np.concatenate([lab for _, lab, _ in train_data.sets]).mean(0)
     pos_weight = torch.tensor(np.clip((1 - positive) / np.maximum(positive, 1e-3), 1, 10),
@@ -216,7 +217,7 @@ def train(args):
         if step % args.eval_every == 0 or step == args.steps:
             print("test", evaluate(model, test_data, device), flush=True)
             torch.save({"model": model.state_dict(), "before": BEFORE, "after": AFTER,
-                        "size": [W, H], "buttons": BUTTONS}, args.out)
+                        "size": [W, H], "buttons": BUTTONS, "width": args.width}, args.out)
     print("train", evaluate(model, train_data, device, samples=2000), flush=True)
 
 
@@ -233,6 +234,7 @@ def main():
     t.add_argument("--batch", type=int, default=64)
     t.add_argument("--lr", type=float, default=1e-3)
     t.add_argument("--eval-every", type=int, default=2000)
+    t.add_argument("--width", type=float, default=1.0)
     e = sub.add_parser("eval")
     e.add_argument("model")
     e.add_argument("dirs", nargs="+")
@@ -244,8 +246,9 @@ def main():
     elif args.command == "train":
         train(args)
     else:
-        model = IDM().cuda()
-        model.load_state_dict(torch.load(args.model)["model"])
+        saved = torch.load(args.model)
+        model = IDM(saved.get("width", 1.0)).cuda()
+        model.load_state_dict(saved["model"])
         for d in args.dirs:
             prepare(d)
         print(evaluate(model, Data(args.dirs), "cuda"))
