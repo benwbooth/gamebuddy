@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Inverse-dynamics model for the player: from a few frames before and after
+moment t, which NES buttons were held at t.
+
+Trained on TAS replays (crates/gamebuddy-services/examples/tas_replay.rs
+writes video.mkv + inputs.txt per movie), then used to label speedrun videos
+that have no inputs.
+
+  player-idm.py prepare REPLAY_DIR...          decode video.mkv to frames.u8
+  player-idm.py train OUT.pt --train DIR... --test DIR... [--steps N]
+  player-idm.py eval MODEL.pt DIR...
+
+Frames are kept at 128x120 RGB (a quarter of the NES picture), which still
+shows the player's sprite move a pixel or two between frames.
+"""
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+W, H = 128, 120
+BUTTONS = "RLDUTSBA"  # FCEUX order: Right Left Down Up sTart Select B A
+# Frames around t the model sees: input at t shows up a frame or two later,
+# and the frames before give the motion it changes.
+BEFORE, AFTER = 2, 5
+WINDOW = BEFORE + 1 + AFTER
+
+
+def prepare(directory):
+    out = os.path.join(directory, "frames.u8")
+    if os.path.exists(out):
+        return
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", os.path.join(directory, "video.mkv"),
+         "-vf", f"scale={W}:{H}:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", out + ".tmp"],
+        check=True)
+    os.rename(out + ".tmp", out)
+
+
+def load(directory):
+    frames = np.memmap(os.path.join(directory, "frames.u8"), dtype=np.uint8, mode="r")
+    frames = frames.reshape(-1, H, W, 3)
+    with open(os.path.join(directory, "inputs.txt")) as f:
+        pads = [line.rstrip("\n") for line in f]
+    labels = np.array([[c not in ". " for c in pad] for pad in pads], dtype=np.float32)
+    n = min(len(frames), len(labels))
+    return frames[:n], labels[:n]
+
+
+class Data:
+    def __init__(self, directories):
+        self.sets = [load(d) for d in directories]
+        self.names = directories
+        sizes = np.array([len(f) - WINDOW for f, _ in self.sets])
+        self.weights = sizes / sizes.sum()
+
+    def batch(self, size, rng):
+        which = rng.choice(len(self.sets), size=size, p=self.weights)
+        xs, ys = [], []
+        for i in which:
+            frames, labels = self.sets[i]
+            t = rng.integers(BEFORE, len(frames) - AFTER)
+            xs.append(frames[t - BEFORE:t + AFTER + 1])
+            ys.append(labels[t])
+        return np.stack(xs), np.stack(ys)
+
+
+class IDM(nn.Module):
+    """Frames stacked on channels plus their differences, a small conv net."""
+
+    def __init__(self):
+        super().__init__()
+        c = 3 * WINDOW + 3 * (WINDOW - 1)
+
+        def block(i, o, s):
+            return nn.Sequential(nn.Conv2d(i, o, 3, s, 1), nn.BatchNorm2d(o), nn.GELU())
+
+        self.net = nn.Sequential(
+            block(c, 64, 1), block(64, 64, 2),      # 64x60
+            block(64, 128, 1), block(128, 128, 2),  # 32x30
+            block(128, 192, 1), block(192, 192, 2),  # 16x15
+            block(192, 256, 1), block(256, 256, 2),  # 8x8
+        )
+        self.head = nn.Sequential(nn.Flatten(), nn.Linear(256 * 8 * 8, 512), nn.GELU(),
+                                  nn.Dropout(0.2), nn.Linear(512, len(BUTTONS)))
+
+    def forward(self, x):
+        # x: (B, WINDOW, H, W, 3) uint8
+        x = x.float().div(255).permute(0, 1, 4, 2, 3)  # B T C H W
+        diff = x[:, 1:] - x[:, :-1]
+        x = torch.cat([x.flatten(1, 2), diff.flatten(1, 2) * 4], 1)
+        return self.head(self.net(x))
+
+
+def augment(x, generator):
+    """Make clean emulator frames look more like captured video: brightness,
+    contrast, colour balance, a little blur and a shift of a few pixels."""
+    b = x.shape[0]
+    x = x.float()
+    gain = 1 + 0.25 * (torch.rand(b, 1, 1, 1, 3, device=x.device, generator=generator) - 0.5)
+    bias = 20 * (torch.rand(b, 1, 1, 1, 1, device=x.device, generator=generator) - 0.5)
+    x = (x * gain + bias).clamp(0, 255)
+    if torch.rand(1, generator=generator, device=x.device).item() < 0.5:
+        t = x.permute(0, 1, 4, 2, 3).flatten(0, 1)
+        t = F.interpolate(F.interpolate(t, scale_factor=0.6, mode="bilinear"), size=(H, W),
+                          mode="bilinear")
+        x = t.unflatten(0, (b, WINDOW)).permute(0, 1, 3, 4, 2)
+    dx, dy = (int(v) for v in torch.randint(-4, 5, (2,), generator=generator, device=x.device))
+    x = torch.roll(x, shifts=(dy, dx), dims=(2, 3))
+    return x.round().clamp(0, 255).to(torch.uint8)
+
+
+@torch.no_grad()
+def evaluate(model, data, device, samples=4000, seed=1):
+    model.eval()
+    rng = np.random.default_rng(seed)
+    results = {}
+    for name, (frames, labels) in zip(data.names, data.sets):
+        ts = rng.integers(BEFORE, len(frames) - AFTER, size=min(samples, len(frames) - WINDOW))
+        preds = []
+        for chunk in np.array_split(ts, max(1, len(ts) // 256)):
+            x = torch.from_numpy(np.stack([frames[t - BEFORE:t + AFTER + 1] for t in chunk]))
+            preds.append(torch.sigmoid(model(x.to(device))).cpu().numpy())
+        p = np.concatenate(preds) > 0.5
+        y = labels[ts] > 0.5
+        f1 = {}
+        for i, button in enumerate(BUTTONS):
+            tp = (p[:, i] & y[:, i]).sum()
+            fp = (p[:, i] & ~y[:, i]).sum()
+            fn = (~p[:, i] & y[:, i]).sum()
+            if y[:, i].sum() >= 20:
+                f1[button] = round(2 * tp / max(1, 2 * tp + fp + fn), 3)
+        exact = float((p == y).all(1).mean())
+        results[os.path.basename(name.rstrip("/"))] = {"exact": round(exact, 3), "f1": f1}
+    model.train()
+    return results
+
+
+def train(args):
+    device = "cuda"
+    for d in args.train + args.test:
+        prepare(d)
+    train_data, test_data = Data(args.train), Data(args.test)
+    model = IDM().to(device)
+    print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters", flush=True)
+    positive = np.concatenate([lab for _, lab in train_data.sets]).mean(0)
+    pos_weight = torch.tensor(np.clip((1 - positive) / np.maximum(positive, 1e-3), 1, 10),
+                              device=device, dtype=torch.float32)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, args.lr, total_steps=args.steps, pct_start=0.05)
+    rng = np.random.default_rng(0)
+    gen = torch.Generator(device=device).manual_seed(0)
+    started = time.time()
+    for step in range(1, args.steps + 1):
+        x, y = train_data.batch(args.batch, rng)
+        x = augment(torch.from_numpy(x).to(device), gen)
+        y = torch.from_numpy(y).to(device)
+        loss = F.binary_cross_entropy_with_logits(model(x), y, pos_weight=pos_weight)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        sched.step()
+        if step % 200 == 0:
+            print(f"step {step} loss {loss.item():.4f} {time.time() - started:.0f}s", flush=True)
+        if step % args.eval_every == 0 or step == args.steps:
+            print("test", evaluate(model, test_data, device), flush=True)
+            torch.save({"model": model.state_dict(), "before": BEFORE, "after": AFTER,
+                        "size": [W, H], "buttons": BUTTONS}, args.out)
+    print("train", evaluate(model, train_data, device, samples=2000), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("prepare")
+    p.add_argument("dirs", nargs="+")
+    t = sub.add_parser("train")
+    t.add_argument("out")
+    t.add_argument("--train", nargs="+", required=True)
+    t.add_argument("--test", nargs="+", required=True)
+    t.add_argument("--steps", type=int, default=20000)
+    t.add_argument("--batch", type=int, default=64)
+    t.add_argument("--lr", type=float, default=1e-3)
+    t.add_argument("--eval-every", type=int, default=2000)
+    e = sub.add_parser("eval")
+    e.add_argument("model")
+    e.add_argument("dirs", nargs="+")
+    args = parser.parse_args()
+    if args.command == "prepare":
+        for d in args.dirs:
+            prepare(d)
+    elif args.command == "train":
+        train(args)
+    else:
+        model = IDM().cuda()
+        model.load_state_dict(torch.load(args.model)["model"])
+        for d in args.dirs:
+            prepare(d)
+        print(evaluate(model, Data(args.dirs), "cuda"))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
