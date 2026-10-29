@@ -32,40 +32,85 @@ BEFORE, AFTER = 2, 5
 WINDOW = BEFORE + 1 + AFTER
 
 
-def prepare(directory):
+CHUNK = 1200  # 20 s of play kept together, so windows never span a cut
+
+
+def pads(directory):
+    with open(os.path.join(directory, "inputs.txt")) as f:
+        return [line.rstrip("\n") for line in f]
+
+
+def prepare(directory, cap=24000):
+    """Decode video.mkv to frames.u8 at 128x120. Long runs keep evenly spaced
+    20 s stretches up to `cap` frames, so one long movie doesn't outweigh
+    many short games. chunks.npy holds each kept stretch's source start."""
     out = os.path.join(directory, "frames.u8")
     if os.path.exists(out):
         return
-    subprocess.run(
+    total = len(pads(directory))
+    count = max(1, total // CHUNK)
+    keep = min(count, max(1, cap // CHUNK))
+    starts = sorted({int(i * count / keep) * CHUNK for i in range(keep)})
+    wanted = np.zeros(total + CHUNK, dtype=bool)
+    for start in starts:
+        wanted[start:start + CHUNK] = True
+    size = W * H * 3
+    decoder = subprocess.Popen(
         ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", os.path.join(directory, "video.mkv"),
-         "-vf", f"scale={W}:{H}:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", out + ".tmp"],
-        check=True)
+         "-vf", f"scale={W}:{H}:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        stdout=subprocess.PIPE)
+    with open(out + ".tmp", "wb") as f:
+        index = 0
+        while index < total:
+            frame = decoder.stdout.read(size)
+            if len(frame) < size:
+                break
+            if wanted[index]:
+                f.write(frame)
+            index += 1
+    decoder.wait()
+    np.save(os.path.join(directory, "chunks.npy"), np.array(starts, dtype=np.int64))
     os.rename(out + ".tmp", out)
 
 
 def load(directory):
     frames = np.memmap(os.path.join(directory, "frames.u8"), dtype=np.uint8, mode="r")
     frames = frames.reshape(-1, H, W, 3)
-    with open(os.path.join(directory, "inputs.txt")) as f:
-        pads = [line.rstrip("\n") for line in f]
-    labels = np.array([[c not in ". " for c in pad] for pad in pads], dtype=np.float32)
-    n = min(len(frames), len(labels))
-    return frames[:n], labels[:n]
+    labels = np.array([[c not in ". " for c in pad] for pad in pads(directory)], dtype=np.float32)
+    chunks_path = os.path.join(directory, "chunks.npy")
+    if os.path.exists(chunks_path):
+        starts = np.load(chunks_path)
+        labels = np.concatenate([labels[s:s + CHUNK] for s in starts])
+        n = min(len(frames), len(labels))
+        # Kept stretches, as (begin, end) in the kept arrays.
+        spans = [(i * CHUNK, min(n, (i + 1) * CHUNK)) for i in range(len(starts))]
+    else:
+        n = min(len(frames), len(labels))
+        spans = [(0, n)]
+    spans = [(b, e) for b, e in spans if e - b > WINDOW]
+    return frames[:n], labels[:n], spans
 
 
 class Data:
     def __init__(self, directories):
         self.sets = [load(d) for d in directories]
         self.names = directories
-        sizes = np.array([len(f) - WINDOW for f, _ in self.sets])
-        self.weights = sizes / sizes.sum()
+        # Square root of size: long runs count for more, but not linearly.
+        sizes = np.array([sum(e - b for b, e in spans) for _, _, spans in self.sets], dtype=float)
+        self.weights = np.sqrt(sizes) / np.sqrt(sizes).sum()
+
+    def moments(self, i, count, rng):
+        _, _, spans = self.sets[i]
+        lengths = np.array([e - b - WINDOW for b, e in spans], dtype=float)
+        which = rng.choice(len(spans), size=count, p=lengths / lengths.sum())
+        return np.array([rng.integers(spans[k][0] + BEFORE, spans[k][1] - AFTER) for k in which])
 
     def batch(self, size, rng):
         which = rng.choice(len(self.sets), size=size, p=self.weights)
         xs, ys = [], []
         for i in which:
-            frames, labels = self.sets[i]
-            t = rng.integers(BEFORE, len(frames) - AFTER)
+            frames, labels, _ = self.sets[i]
+            t = self.moments(i, 1, rng)[0]
             xs.append(frames[t - BEFORE:t + AFTER + 1])
             ys.append(labels[t])
         return np.stack(xs), np.stack(ys)
@@ -121,8 +166,8 @@ def evaluate(model, data, device, samples=4000, seed=1):
     model.eval()
     rng = np.random.default_rng(seed)
     results = {}
-    for name, (frames, labels) in zip(data.names, data.sets):
-        ts = rng.integers(BEFORE, len(frames) - AFTER, size=min(samples, len(frames) - WINDOW))
+    for i, (name, (frames, labels, _)) in enumerate(zip(data.names, data.sets)):
+        ts = data.moments(i, samples, rng)
         preds = []
         for chunk in np.array_split(ts, max(1, len(ts) // 256)):
             x = torch.from_numpy(np.stack([frames[t - BEFORE:t + AFTER + 1] for t in chunk]))
@@ -149,7 +194,7 @@ def train(args):
     train_data, test_data = Data(args.train), Data(args.test)
     model = IDM().to(device)
     print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters", flush=True)
-    positive = np.concatenate([lab for _, lab in train_data.sets]).mean(0)
+    positive = np.concatenate([lab for _, lab, _ in train_data.sets]).mean(0)
     pos_weight = torch.tensor(np.clip((1 - positive) / np.maximum(positive, 1e-3), 1, 10),
                               device=device, dtype=torch.float32)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
@@ -193,8 +238,9 @@ def main():
     e.add_argument("dirs", nargs="+")
     args = parser.parse_args()
     if args.command == "prepare":
-        for d in args.dirs:
-            prepare(d)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            list(pool.map(prepare, args.dirs))
     elif args.command == "train":
         train(args)
     else:
