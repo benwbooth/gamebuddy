@@ -14,6 +14,7 @@ Frames are kept at 128x120 RGB (a quarter of the NES picture), which still
 shows the player's sprite move a pixel or two between frames.
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -25,7 +26,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 W, H = 128, 120
-BUTTONS = "RLDUTSBA"  # FCEUX order: Right Left Down Up sTart Select B A
+# libretro RetroPad order, the same output for every system.
+BUTTONS = ["B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"]
+D_PAD = ["Up", "Down", "Left", "Right"]
+# Buttons each system's pad has (Genesis A/B/C/X/Y/Z/Mode sit on RetroPad
+# Y/B/A/L/X/R/Select); the loss ignores the others.
+SYSTEM_BUTTONS = {
+    "NES": D_PAD + ["B", "A", "Select", "Start"],
+    "GB": D_PAD + ["B", "A", "Select", "Start"],
+    "GBC": D_PAD + ["B", "A", "Select", "Start"],
+    "GBA": D_PAD + ["B", "A", "Select", "Start", "L", "R"],
+    "SNES": BUTTONS,
+    "Genesis": BUTTONS,
+}
+FCEUX = {"R": "Right", "L": "Left", "D": "Down", "U": "Up", "T": "Start", "S": "Select",
+         "B": "B", "A": "A"}
 # Frames around t the model sees: input at t shows up a frame or two later,
 # and the frames before give the motion it changes.
 BEFORE, AFTER = 2, 5
@@ -36,8 +51,28 @@ CHUNK = 1200  # 20 s of play kept together, so windows never span a cut
 
 
 def pads(directory):
+    """Buttons held on each frame, as (frames, 12) RetroPad booleans: pads.txt
+    (hex masks, `!` marks a reset) or an older FCEUX-order inputs.txt."""
+    path = os.path.join(directory, "pads.txt")
+    if os.path.exists(path):
+        with open(path) as f:
+            masks = np.array([int(line.strip().lstrip("!"), 16) for line in f if line.strip()])
+        return ((masks[:, None] >> np.arange(len(BUTTONS))) & 1).astype(np.float32)
     with open(os.path.join(directory, "inputs.txt")) as f:
-        return [line.rstrip("\n") for line in f]
+        rows = [line.rstrip("\n") for line in f]
+    labels = np.zeros((len(rows), len(BUTTONS)), dtype=np.float32)
+    for i, pad in enumerate(rows):
+        for c, key in zip(pad, "RLDUTSBA"):
+            if c not in ". ":
+                labels[i, BUTTONS.index(FCEUX[key])] = 1
+    return labels
+
+
+def system(directory):
+    try:
+        return json.load(open(os.path.join(directory, "publication.json"))).get("system", "NES")
+    except OSError:
+        return "NES"
 
 
 def prepare(directory, cap=24000):
@@ -76,7 +111,7 @@ def prepare(directory, cap=24000):
 def load(directory):
     frames = np.memmap(os.path.join(directory, "frames.u8"), dtype=np.uint8, mode="r")
     frames = frames.reshape(-1, H, W, 3)
-    labels = np.array([[c not in ". " for c in pad] for pad in pads(directory)], dtype=np.float32)
+    labels = pads(directory)
     chunks_path = os.path.join(directory, "chunks.npy")
     if os.path.exists(chunks_path):
         starts = np.load(chunks_path)
@@ -88,7 +123,8 @@ def load(directory):
         n = min(len(frames), len(labels))
         spans = [(0, n)]
     spans = [(b, e) for b, e in spans if e - b > WINDOW]
-    return frames[:n], labels[:n], spans
+    mask = np.array([b in SYSTEM_BUTTONS[system(directory)] for b in BUTTONS], dtype=np.float32)
+    return frames[:n], labels[:n], spans, mask
 
 
 class Data:
@@ -96,24 +132,25 @@ class Data:
         self.sets = [load(d) for d in directories]
         self.names = directories
         # Square root of size: long runs count for more, but not linearly.
-        sizes = np.array([sum(e - b for b, e in spans) for _, _, spans in self.sets], dtype=float)
+        sizes = np.array([sum(e - b for b, e in spans) for _, _, spans, _ in self.sets], dtype=float)
         self.weights = np.sqrt(sizes) / np.sqrt(sizes).sum()
 
     def moments(self, i, count, rng):
-        _, _, spans = self.sets[i]
+        _, _, spans, _ = self.sets[i]
         lengths = np.array([e - b - WINDOW for b, e in spans], dtype=float)
         which = rng.choice(len(spans), size=count, p=lengths / lengths.sum())
         return np.array([rng.integers(spans[k][0] + BEFORE, spans[k][1] - AFTER) for k in which])
 
     def batch(self, size, rng):
         which = rng.choice(len(self.sets), size=size, p=self.weights)
-        xs, ys = [], []
+        xs, ys, ms = [], [], []
         for i in which:
-            frames, labels, _ = self.sets[i]
+            frames, labels, _, mask = self.sets[i]
             t = self.moments(i, 1, rng)[0]
             xs.append(frames[t - BEFORE:t + AFTER + 1])
             ys.append(labels[t])
-        return np.stack(xs), np.stack(ys)
+            ms.append(mask)
+        return np.stack(xs), np.stack(ys), np.stack(ms)
 
 
 class IDM(nn.Module):
@@ -167,7 +204,7 @@ def evaluate(model, data, device, samples=4000, seed=1):
     model.eval()
     rng = np.random.default_rng(seed)
     results = {}
-    for i, (name, (frames, labels, _)) in enumerate(zip(data.names, data.sets)):
+    for i, (name, (frames, labels, _, mask)) in enumerate(zip(data.names, data.sets)):
         ts = data.moments(i, samples, rng)
         preds = []
         for chunk in np.array_split(ts, max(1, len(ts) // 256)):
@@ -180,9 +217,9 @@ def evaluate(model, data, device, samples=4000, seed=1):
             tp = (p[:, i] & y[:, i]).sum()
             fp = (p[:, i] & ~y[:, i]).sum()
             fn = (~p[:, i] & y[:, i]).sum()
-            if y[:, i].sum() >= 20:
+            if mask[i] and y[:, i].sum() >= 20:
                 f1[button] = round(2 * tp / max(1, 2 * tp + fp + fn), 3)
-        exact = float((p == y).all(1).mean())
+        exact = float((p == y)[:, mask > 0].all(1).mean())
         results[os.path.basename(name.rstrip("/"))] = {"exact": round(exact, 3), "f1": f1}
     model.train()
     return results
@@ -195,7 +232,7 @@ def train(args):
     train_data, test_data = Data(args.train), Data(args.test)
     model = IDM(args.width).to(device)
     print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters", flush=True)
-    positive = np.concatenate([lab for _, lab, _ in train_data.sets]).mean(0)
+    positive = np.concatenate([lab for _, lab, _, _ in train_data.sets]).mean(0)
     pos_weight = torch.tensor(np.clip((1 - positive) / np.maximum(positive, 1e-3), 1, 10),
                               device=device, dtype=torch.float32)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
@@ -204,10 +241,12 @@ def train(args):
     gen = torch.Generator(device=device).manual_seed(0)
     started = time.time()
     for step in range(1, args.steps + 1):
-        x, y = train_data.batch(args.batch, rng)
+        x, y, m = train_data.batch(args.batch, rng)
         x = augment(torch.from_numpy(x).to(device), gen)
-        y = torch.from_numpy(y).to(device)
-        loss = F.binary_cross_entropy_with_logits(model(x), y, pos_weight=pos_weight)
+        y, m = torch.from_numpy(y).to(device), torch.from_numpy(m).to(device)
+        loss = F.binary_cross_entropy_with_logits(model(x), y, pos_weight=pos_weight,
+                                                  reduction="none")
+        loss = (loss * m).sum() / m.sum()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

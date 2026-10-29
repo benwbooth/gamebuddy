@@ -116,17 +116,30 @@ struct GameInfo {
     meta: *const c_char,
 }
 
-/// The movie's frames: (reset command, RLDUTSBA pad 1 string).
-fn movie(path: &str) -> Result<Vec<(u32, String)>> {
+/// The movie's frames: (reset command, RetroPad bits, FCEUX RLDUTSBA string
+/// when the movie is an .fm2). A `.pads` file is any movie already turned
+/// into RetroPad bits by scripts/player-tas-collect.py: one hex mask per
+/// frame, `!` in front for a reset before that frame.
+fn movie(path: &str) -> Result<Vec<(u32, u16, Option<String>)>> {
     let bytes = std::fs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let mut frames = vec![];
+    if path.ends_with(".pads") {
+        for line in text.lines() {
+            let (command, hex) = match line.strip_prefix('!') {
+                Some(rest) => (1, rest),
+                None => (0, line),
+            };
+            frames.push((command, u16::from_str_radix(hex.trim(), 16)?, None));
+        }
+        return Ok(frames);
+    }
     for line in text.lines().filter(|l| l.starts_with('|')) {
         let fields: Vec<&str> = line.split('|').collect();
         let command: u32 = fields.get(1).context("Movie line")?.trim().parse()?;
         let pad = fields.get(2).context("Movie pad")?.to_owned();
         ensure!(pad.len() == 8, "Pad 1 must be a standard controller");
-        frames.push((command, pad.to_owned()));
+        frames.push((command, retropad(pad), Some(pad.to_owned())));
     }
     Ok(frames)
 }
@@ -167,7 +180,7 @@ unsafe fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     ensure!(
         args.len() >= 5,
-        "Usage: tas_replay CORE ROM MOVIE.fm2 OUTPUT_DIR [--header HEX32] [--check N]"
+        "Usage: tas_replay CORE ROM MOVIE.fm2|.pads OUTPUT_DIR [--header HEX32] [--ext nes] [--fps 60] [--check N]"
     );
     let flag = |name: &str| {
         args.iter()
@@ -214,7 +227,8 @@ unsafe fn run() -> Result<()> {
     call!("retro_init", unsafe extern "C" fn());
     let rom = rom(&args[2], flag("--header"))?;
     // Cores open the ROM by path as well as taking its bytes.
-    let file = directory.join("game.nes");
+    let file = directory.join(format!("game.{}", flag("--ext").unwrap_or("nes")));
+    let fps = flag("--fps").unwrap_or("60");
     std::fs::write(&file, &rom)?;
     let rompath = CString::new(file.to_str().context("Path")?)?;
     let info = GameInfo {
@@ -231,9 +245,18 @@ unsafe fn run() -> Result<()> {
         ),
         "Core could not load ROM"
     );
-    let mut inputs = std::io::BufWriter::new(std::fs::File::create(directory.join("inputs.txt"))?);
+    let mut inputs = std::io::BufWriter::new(std::fs::File::create(directory.join("pads.txt"))?);
+    let mut fceux = match frames.first() {
+        Some((_, _, Some(_))) => Some(std::io::BufWriter::new(std::fs::File::create(
+            directory.join("inputs.txt"),
+        )?)),
+        _ => None,
+    };
     let mut encoder: Option<std::process::Child> = None;
-    for (index, (command, pad)) in frames.iter().enumerate() {
+    // The video keeps the first frame's size; cores that change resolution
+    // mid-game (SNES hi-res, Genesis 256/320 wide) are scaled to it.
+    let mut canvas = None;
+    for (index, (command, buttons, pad)) in frames.iter().enumerate() {
         match command {
             0 => {}
             1 => call!("retro_reset", unsafe extern "C" fn()),
@@ -242,20 +265,35 @@ unsafe fn run() -> Result<()> {
             2 => call!("retro_reset", unsafe extern "C" fn()),
             other => bail!("Unsupported movie command {other} at frame {index}"),
         }
-        CAPTURE.with(|s| s.borrow_mut().buttons = retropad(pad));
+        CAPTURE.with(|s| s.borrow_mut().buttons = *buttons);
         call!("retro_run", unsafe extern "C" fn());
+        // A core may skip drawing a frame that didn't change (a dupe); the
+        // previous picture stands for it.
         let (size, pixels) = CAPTURE.with(|s| {
-            let mut s = s.borrow_mut();
-            (s.size, std::mem::take(&mut s.pixels))
+            let s = s.borrow();
+            (s.size, s.pixels.clone())
         });
         ensure!(!pixels.is_empty(), "No picture at frame {index}");
+        let canvas = *canvas.get_or_insert(size);
+        let (size, pixels) = if size == canvas {
+            (size, pixels)
+        } else {
+            let frame = image::RgbImage::from_raw(size.0, size.1, pixels).context("Frame size")?;
+            let scaled = image::imageops::resize(
+                &frame,
+                canvas.0,
+                canvas.1,
+                image::imageops::FilterType::Nearest,
+            );
+            (canvas, scaled.into_raw())
+        };
         let child = match &mut encoder {
             Some(child) => child,
             None => encoder.insert(
                 Command::new("ffmpeg")
                     .args(["-nostdin", "-loglevel", "error", "-y", "-f", "rawvideo"])
                     .args(["-pix_fmt", "rgb24", "-s", &format!("{}x{}", size.0, size.1)])
-                    .args(["-r", "60", "-i", "-", "-c:v", "libx264", "-preset", "fast"])
+                    .args(["-r", fps, "-i", "-", "-c:v", "libx264", "-preset", "fast"])
                     .args(["-crf", "10", "-pix_fmt", "yuv444p"])
                     .arg(directory.join("video.mkv"))
                     .stdin(Stdio::piped())
@@ -268,7 +306,10 @@ unsafe fn run() -> Result<()> {
             .as_mut()
             .context("ffmpeg stdin")?
             .write_all(&pixels)?;
-        writeln!(inputs, "{pad}")?;
+        writeln!(inputs, "{buttons:04x}")?;
+        if let (Some(f), Some(pad)) = (fceux.as_mut(), pad) {
+            writeln!(f, "{pad}")?;
+        }
         if check > 0 && (index as u64).is_multiple_of(check) {
             image::RgbImage::from_raw(size.0, size.1, pixels)
                 .context("Frame size")?
@@ -276,6 +317,9 @@ unsafe fn run() -> Result<()> {
         }
     }
     inputs.flush()?;
+    if let Some(mut f) = fceux {
+        f.flush()?;
+    }
     if let Some(mut child) = encoder {
         drop(child.stdin.take());
         ensure!(child.wait()?.success(), "ffmpeg failed");
