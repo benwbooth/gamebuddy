@@ -47,6 +47,7 @@ BEFORE, AFTER = 2, 5
 WINDOW = BEFORE + 1 + AFTER
 
 
+STATIC_KEPT = 0.1  # share of static moments left in training
 CHUNK = 1200  # 20 s of play kept together, so windows never span a cut
 
 
@@ -127,6 +128,13 @@ def load(directory):
     return frames[:n], labels[:n], spans, mask
 
 
+def moving(frames, t):
+    """Did the picture change around t? About 60% of TAS frames are static
+    (text, menus, lag), where a held button leaves nothing to read."""
+    a, b = frames[t - 1, ::4, ::4], frames[t + 3, ::4, ::4]
+    return np.abs(a.astype(np.int16) - b).mean() >= 1
+
+
 class Data:
     def __init__(self, directories):
         self.sets = [load(d) for d in directories]
@@ -147,6 +155,10 @@ class Data:
         for i in which:
             frames, labels, _, mask = self.sets[i]
             t = self.moments(i, 1, rng)[0]
+            for _ in range(8):
+                if moving(frames, t) or rng.random() < STATIC_KEPT:
+                    break
+                t = self.moments(i, 1, rng)[0]
             xs.append(frames[t - BEFORE:t + AFTER + 1])
             ys.append(labels[t])
             ms.append(mask)
@@ -205,7 +217,10 @@ def evaluate(model, data, device, samples=4000, seed=1):
     rng = np.random.default_rng(seed)
     results = {}
     for i, (name, (frames, labels, _, mask)) in enumerate(zip(data.names, data.sets)):
-        ts = data.moments(i, samples, rng)
+        ts = data.moments(i, samples * 3, rng)
+        ts = np.array([t for t in ts if moving(frames, t)][:samples], dtype=np.int64)
+        if len(ts) < 20:
+            continue
         preds = []
         for chunk in np.array_split(ts, max(1, len(ts) // 256)):
             x = torch.from_numpy(np.stack([frames[t - BEFORE:t + AFTER + 1] for t in chunk]))
