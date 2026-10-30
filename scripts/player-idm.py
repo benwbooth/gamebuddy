@@ -246,6 +246,8 @@ def train(args):
         prepare(d)
     train_data, test_data = Data(args.train), Data(args.test)
     model = IDM(args.width).to(device)
+    if args.init:
+        model.load_state_dict(torch.load(args.init)["model"])
     print(f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters", flush=True)
     positive = np.concatenate([lab for _, lab, _, _ in train_data.sets]).mean(0)
     pos_weight = torch.tensor(np.clip((1 - positive) / np.maximum(positive, 1e-3), 1, 10),
@@ -289,6 +291,7 @@ def main():
     t.add_argument("--lr", type=float, default=1e-3)
     t.add_argument("--eval-every", type=int, default=2000)
     t.add_argument("--width", type=float, default=1.0)
+    t.add_argument("--init", help="fine-tune from this model")
     e = sub.add_parser("eval")
     e.add_argument("model")
     e.add_argument("dirs", nargs="+")
