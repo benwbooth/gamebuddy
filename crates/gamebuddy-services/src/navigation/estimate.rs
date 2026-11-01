@@ -245,7 +245,8 @@ pub(super) fn update(store: &Store, inputs: &Inputs<'_>) -> Result<LocationEstim
             || p.position != estimate.position
             || (p.confidence - estimate.confidence).abs() > 0.05
     });
-    if changed {
+    // A replay holds the recorded location; its frame shows the past.
+    if changed && std::env::var_os("GAMEBUDDY_PROBE_ESTIMATE").is_none() {
         store.put(
             &key,
             &Remembered {

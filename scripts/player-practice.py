@@ -130,10 +130,26 @@ def run_policy(args):
 
 
 def health(frame, row=27, x0=24, x1=105):
-    """Share of the HUD's power bar that is lit, a game-specific scorecard
-    setting: the bar sits on one row, lit pixels are strongly red."""
-    p = np.asarray(frame.convert("RGB"), dtype=int)[row, x0:x1]
-    return float(((p[:, 0] > 150) & (p[:, 1] < 110)).mean())
+    """Share of the HUD's power bar that is lit, or None on a screen without
+    the HUD (a transition): a game-specific scorecard setting, the bar sits
+    on one row and its lit pixels are strongly red."""
+    p = np.asarray(frame.convert("RGB"), dtype=int)
+    if (p[22, x0:x1].min(axis=1) > 200).mean() < 0.8:
+        return None
+    return float(((p[row, x0:x1, 0] > 150) & (p[row, x0:x1, 1] < 110)).mean())
+
+
+def deaths(bars):
+    """A bar that reached empty and came back near full: the hero respawned."""
+    count, empty = 0, False
+    for bar in bars:
+        if bar is None:
+            continue
+        if bar < 0.04:
+            empty = True
+        elif empty and bar > 0.7:
+            count, empty = count + 1, False
+    return count
 
 
 def score(args):
@@ -152,11 +168,9 @@ def score(args):
         left = [r["left"] for r in rows.get(run, []) if r.get("left") is not None]
         reached = next((r["ms"] / 1000 for r in rows.get(run, []) if r.get("left") == 0), None)
         bars = [health(Image.open(p)) for p in sorted(glob.glob(run + "/*.png"))]
-        deaths = len([1 for i in range(1, len(bars)) if bars[i - 1] < 0.08 <= bars[i] and
-                      max(bars[i:i + 20]) > 0.7])
         result = {"start": left[0] if left else None, "best": min(left) if left else None,
                   "covered": left[0] - min(left) if left else 0, "reached_s": reached,
-                  "deaths": deaths, "frames": len(bars)}
+                  "deaths": deaths(bars), "frames": len(bars)}
         print(run, json.dumps(result), flush=True)
         table.setdefault(run.split("/")[-2], []).append(result)
     for policy, results in table.items():

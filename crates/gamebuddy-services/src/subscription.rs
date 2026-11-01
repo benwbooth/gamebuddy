@@ -407,6 +407,127 @@ pub(crate) fn codex_complete_scoped(
     }
 }
 
+/// A signed-in Claude process started ahead of the question: Claude Code takes
+/// over a second to start, more than a spoken answer can wait, so each model
+/// and system prompt keeps one ready, and a fresh one replaces it after use
+/// (a used process would carry the last question along).
+type ReadyClaude = (Process, tempfile::TempDir);
+static READY_CLAUDE: std::sync::Mutex<Option<std::collections::HashMap<String, ReadyClaude>>> =
+    std::sync::Mutex::new(None);
+
+fn start_claude(model: &str, effort: &str, system: &str) -> Result<ReadyClaude> {
+    let directory = tempfile::tempdir()?;
+    let mut command = Command::new("claude");
+    command
+        .args([
+            "--print",
+            "--verbose",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--include-partial-messages",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{\"mcpServers\":{}}",
+            "--system-prompt",
+            system,
+        ])
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .current_dir(directory.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if !model.is_empty() {
+        command.args(["--model", model]);
+    }
+    if !matches!(effort, "" | "auto") {
+        command.args(["--effort", effort]);
+    }
+    let process = command
+        .spawn()
+        .context("Install Claude Code and run `claude auth login` with your Claude account")?;
+    Ok((Process(process), directory))
+}
+
+/// Have a Claude process ready for this model and system prompt.
+pub fn claude_warm(model: &str, effort: &str, system: &str) {
+    let key = format!("{model}|{effort}|{system}");
+    let mut ready = READY_CLAUDE.lock().unwrap();
+    let ready = ready.get_or_insert_with(Default::default);
+    if !ready.contains_key(&key)
+        && let Ok(claude) = start_claude(model, effort, system)
+    {
+        ready.insert(key, claude);
+    }
+}
+
+/// One question to Claude with its words as they arrive, on the signed-in
+/// subscription. Prompts are text only.
+pub fn claude_stream(
+    model: &str,
+    effort: &str,
+    r: ModelRequest,
+    on_text: &mut dyn FnMut(&str),
+) -> Result<String> {
+    let key = format!("{model}|{effort}|{}", r.system);
+    let taken = READY_CLAUDE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .remove(&key);
+    // A ready process that has since exited counts as none.
+    let taken = taken
+        .filter(|(process, _)| std::path::Path::new(&format!("/proc/{}", process.0.id())).exists());
+    let (mut process, _directory) = match taken {
+        Some(claude) => claude,
+        None => start_claude(model, effort, &r.system)?,
+    };
+    {
+        let (model, effort, system) = (model.to_owned(), effort.to_owned(), r.system.clone());
+        std::thread::spawn(move || claude_warm(&model, &effort, &system));
+    }
+    let mut input = process.0.stdin.take().context("Claude stdin unavailable")?;
+    serde_json::to_writer(
+        &mut input,
+        &json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":r.prompt}]}}),
+    )?;
+    input.write_all(b"\n")?;
+    input.flush()?;
+    let output = process
+        .0
+        .stdout
+        .take()
+        .context("Claude stdout unavailable")?;
+    let mut text = String::new();
+    for line in BufReader::new(output).lines() {
+        let Ok(value) = serde_json::from_str::<Value>(&line?) else {
+            continue;
+        };
+        if value["type"] == "stream_event"
+            && let Some(piece) = value["event"]["delta"]["text"].as_str()
+        {
+            text.push_str(piece);
+            on_text(piece);
+        }
+        if value["type"] == "result" {
+            let failure = value["result"].as_str().unwrap_or_default();
+            if value["is_error"] == true && crate::is_quota_error(failure) {
+                return Err(crate::out_of_tokens("Claude", failure));
+            }
+            ensure!(value["is_error"] != true, "Claude: {}", value["result"]);
+            ensure!(!text.trim().is_empty(), "Claude returned an empty answer");
+            return Ok(text);
+        }
+    }
+    anyhow::bail!("Claude returned no result; check `claude auth status`")
+}
+
 pub fn claude_complete(model: &str, effort: &str, r: ModelRequest) -> Result<String> {
     claude_complete_structured(model, effort, r, None)
 }

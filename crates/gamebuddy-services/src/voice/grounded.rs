@@ -151,6 +151,36 @@ fn named_item(store: &Store, guide: &Guide, text: &str) -> Option<String> {
         })
         .max()
         .map(|(_, _, name)| name)
+        .or_else(|| short_item_name(store, guide, &said))
+}
+
+/// "The boots" for Wing Boots: the last word of a name, when one item is
+/// meant: the only card ending in that word, or the only such item the
+/// player lacks.
+fn short_item_name(store: &Store, guide: &Guide, said: &[String]) -> Option<String> {
+    let names: Vec<String> = crate::game_data::cards(store, guide)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|card| card["name"].as_str().map(|n| n.trim().to_owned()))
+        .filter(|name| {
+            let last = name.to_lowercase();
+            let last = last
+                .split_whitespace()
+                .last()
+                .unwrap_or_default()
+                .to_owned();
+            name.contains(' ') && last.len() > 3 && routing::heard(said, &last)
+        })
+        .collect();
+    if names.len() == 1 {
+        return names.into_iter().next();
+    }
+    let statements = talk::player_statements(store, &guide.game);
+    let lacking = talk::lacking_items(store, guide, &statements);
+    let mut lacked = names
+        .into_iter()
+        .filter(|name| lacking.iter().any(|item| item.eq_ignore_ascii_case(name)));
+    lacked.next().filter(|_| lacked.next().is_none())
 }
 
 /// What the player asked, by rules first (instant, never wrong about a
@@ -239,6 +269,22 @@ pub fn classify(
         .unwrap_or_else(|| plain(Kind::General))
 }
 
+const SORT: &str =
+    "You sort what a video game player just said to their helper. Reply with JSON only.";
+
+/// Have the provider's ready processes started before the first question.
+pub fn warm(provider: &HttpProvider) {
+    if provider.config.kind == crate::ProviderKind::ClaudeCode {
+        for system in [SORT, SPEAK] {
+            crate::subscription::claude_warm(
+                &provider.config.model,
+                &provider.config.reasoning_effort,
+                system,
+            );
+        }
+    }
+}
+
 /// The local model's reading of an unclear sentence, held to a fixed set of
 /// intents by a JSON schema so it can only pick, never wander.
 fn model_intent(
@@ -258,17 +304,26 @@ fn model_intent(
         },
         "required": ["intent", "place", "item"]
     });
-    let reply = speaker.complete_structured(
-        ModelRequest {
-            system: "You sort what a video game player just said to their helper. Reply with JSON only.".into(),
-            prompt: format!(
-                "The player said: \"{text}\"\nPick one intent: travel (how to get to a named place; put the place in \"place\"), move (which way to go from here, or the way they tried is blocked), item (where to get something, its price or what it does; put it in \"item\"), next (what to do now), location (where am I), screen (what is on screen), general (any other question about the game), chat (not about the game). Leave \"place\" and \"item\" empty when not used."
-            ),
-            images: vec![],
-            json: true,
-        },
-        schema,
-    )?;
+    let request = |json| ModelRequest {
+        system: SORT.into(),
+        prompt: format!(
+            "The player said: \"{text}\"\nPick one intent: travel (how to get to a named place; put the place in \"place\"), move (which way to go from here, or the way they tried is blocked), item (where to get something, its price or what it does; put it in \"item\"), next (what to do now), location (where am I), screen (what is on screen), general (any other question about the game), chat (not about the game). Leave \"place\" and \"item\" empty when not used."
+        ),
+        images: vec![],
+        json,
+    };
+    // Claude's schema path starts a new process for every question; its
+    // ready process answers in time, and an unknown intent reads as general.
+    let reply = if speaker.config.kind == crate::ProviderKind::ClaudeCode {
+        let reply = speaker.complete_streaming(request(false), &mut |_| {})?;
+        reply
+            .find('{')
+            .zip(reply.rfind('}'))
+            .map(|(a, b)| reply[a..=b].to_owned())
+            .unwrap_or(reply)
+    } else {
+        speaker.complete_structured(request(true), schema)?
+    };
     let parsed: Value = serde_json::from_str(reply.trim())?;
     let kind = match parsed["intent"].as_str() {
         Some("travel") => Kind::Travel,
@@ -594,9 +649,13 @@ pub fn facts(
                 facts.push(format!(
                     "The player asked where to get {name}: answer with the place and price, not how to use it."
                 ));
-                // "Where do I get X" wants where it is bought or found.
-                for passage in talk::passages(store, &format!("buy get {name}"), 2) {
-                    facts.push(format!("From the game notes: {}", clip(&passage, 220)));
+                // "Where do I get X" wants where it is bought or found. Listed
+                // shops answer that; notes on the run's own pickups only
+                // send the player somewhere the walkthrough happened to be.
+                if !facts.iter().any(|f| f.contains(" gold in ")) {
+                    for passage in talk::passages(store, &format!("buy get {name}"), 2) {
+                        facts.push(format!("From the game notes: {}", clip(&passage, 220)));
+                    }
                 }
             }
             facts.extend(lacking);
@@ -610,7 +669,22 @@ pub fn facts(
                 ));
                 template = Some("Got it.".into());
             }
-            let lines = talk::situation_lines(store, guide)?;
+            let mut lines = talk::situation_lines(store, guide)?;
+            // On the way somewhere, that trip is what to do now; the
+            // walkthrough's next step waits at the other end, and saying it
+            // here sends the player the opposite way.
+            let trip = (intent.kind == Kind::Next)
+                .then(|| routing::goal(store, guide).ok().flatten())
+                .flatten();
+            if let Some(goal) = &trip {
+                lines.retain(|l| {
+                    !l.starts_with("The walkthrough's next task:")
+                        && !l.starts_with("What the walkthrough video did")
+                });
+                facts.push(format!("What to do now: get to {}.", goal.label));
+                facts.push(way_to(goal));
+                template = Some(format!("Head for {}.", goal.label));
+            }
             if let Some(next) = lines
                 .iter()
                 .find(|l| l.starts_with("The walkthrough's next task:"))

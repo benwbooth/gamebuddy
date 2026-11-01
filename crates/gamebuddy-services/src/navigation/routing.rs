@@ -130,8 +130,10 @@ pub fn wants_to_travel(text: &str) -> bool {
 /// boots" gives "forepaw and buy boots"): the destination is named there,
 /// not anywhere else in the sentence ("…so you can leave town").
 fn travel_target(lower: &str) -> Option<&str> {
-    const TRAVEL: [&str; 14] = [
+    const TRAVEL: [&str; 15] = [
         "get to",
+        // "How do I get the four paw?": speech recognition drops the "to".
+        "how do i get",
         "go to",
         "go back to",
         "head to",

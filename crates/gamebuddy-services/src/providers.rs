@@ -558,6 +558,14 @@ impl HttpProvider {
         on_text: &mut dyn FnMut(&str),
     ) -> Result<String> {
         use std::io::BufRead;
+        if self.config.kind == ProviderKind::ClaudeCode {
+            return crate::subscription::claude_stream(
+                &self.config.model,
+                &self.config.reasoning_effort,
+                r,
+                on_text,
+            );
+        }
         if !matches!(
             self.config.kind,
             ProviderKind::Ollama | ProviderKind::OpenAiCompatible

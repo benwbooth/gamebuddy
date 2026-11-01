@@ -910,10 +910,12 @@ pub fn answer_streaming(
     let here = current_place(store, guide);
     let asked =
         crate::navigation::routing::set_from_text(store, guide, &atlas, question, here.as_deref())?;
-    // Models on this computer: GameBuddy's code decides the intent and looks
-    // the facts up; the model only puts them into words, and nothing it says
+    // Models on this computer and the Claude login: GameBuddy's code decides
+    // the intent and looks the facts up; the model only puts them into words, and nothing it says
     // may carry a number or place that is not in those facts.
-    if crate::providers::on_this_computer(&provider.config) {
+    if crate::providers::on_this_computer(&provider.config)
+        || provider.config.kind == crate::ProviderKind::ClaudeCode
+    {
         let turn = super::grounded::answer(store, guide, &provider, question, on_sentence)?;
         let id = uuid::Uuid::new_v4().to_string();
         store.append_conversation(&guide.game, &id, "user", "user", question)?;

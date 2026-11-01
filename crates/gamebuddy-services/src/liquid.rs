@@ -129,6 +129,15 @@ pub fn ensure(store: &Store) {
     let Some(settings) = store.get::<Settings>("settings").ok().flatten() else {
         return;
     };
+    // The Claude login answers from a process started ahead of the question.
+    if settings.reasoning.kind == crate::ProviderKind::ClaudeCode {
+        let config = settings.reasoning.clone();
+        std::thread::spawn(move || {
+            if let Ok(provider) = crate::HttpProvider::new(config) {
+                crate::voice::grounded::warm(&provider);
+            }
+        });
+    }
     // Only the servers this setup uses: each holds video memory the game needs.
     for config in [&settings.reasoning, &settings.vision] {
         if config.endpoint == crate::providers::LIQUID_ENDPOINT {

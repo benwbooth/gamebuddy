@@ -43,6 +43,10 @@ fn main() -> Result<()> {
     }
     store.put("settings", &settings)?;
     store.put("active_guide", &guide.id)?;
+    gamebuddy_services::voice::grounded::warm(&gamebuddy_services::HttpProvider::new(
+        settings.reasoning.clone(),
+    )?);
+    std::thread::sleep(std::time::Duration::from_secs(2));
     let ticket = screen::start(&store, &guide.game, true)?;
     let frame = std::path::Path::new(args.get(4).context("Frame")?);
     for question in &args[5..] {
