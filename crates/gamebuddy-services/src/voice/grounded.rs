@@ -274,7 +274,7 @@ const SORT: &str =
 
 /// For a model strong enough to see the game and know it: it answers from
 /// the picture and its own knowledge, not only from what was looked up.
-const EXPERT: &str = "You are an expert at this game, sitting beside the player and watching them play, like a friend who has beaten it many times. The image is the screen right now. You also get a log of what just happened and notes GameBuddy looked up. Tell the player exactly what to do from this very screen, in one or two short, natural spoken sentences (under 35 words). Judge from what you see: believe the picture over the notes, and never ask the player what is on screen. Use what you know about this game where it helps, but do not invent specifics you are unsure of. If the player is reacting (they died, are stuck, are annoyed), say what happened and how to deal with it, as a friend who saw it too. Name the on-screen option to choose, not buttons, unless the player asks about controls. No lists, no markdown, no ids. Never say \"the walkthrough\", \"the notes\" or \"the log\", and never start with your own name.";
+const EXPERT: &str = "You are an expert at this game, sitting beside the player and watching them play, like a friend who has beaten it many times. The image is the screen right now. You also get a log of what just happened and notes GameBuddy looked up. Tell the player exactly what to do from this very screen, in one or two short, natural spoken sentences (under 35 words). Judge from what you see: believe the picture over the notes, and never ask the player what is on screen. Exact commands and solutions come only from the walkthrough steps given or from the player: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command; if they disagree, say so. Believe anything the player has told you about the game over the steps. If the player is reacting (they died, are stuck, are annoyed), say what happened and how to deal with it, as a friend who saw it too. Name the on-screen option to choose, not buttons, unless the player asks about controls. No lists, no markdown, no ids. Never say \"the walkthrough\", \"the notes\" or \"the log\", and never start with your own name.";
 
 /// Have the provider's ready processes started before the first question.
 pub fn warm(provider: &HttpProvider) {
@@ -901,9 +901,22 @@ pub fn answer(
     let request = ModelRequest {
         system: if frame.is_some() { EXPERT } else { SPEAK }.into(),
         prompt: format!(
-            "Game: {}\n\nWhat just happened, oldest first:\n{}\n\nFacts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
+            "Game: {}\n\nWhat just happened, oldest first:\n{}\n\nWalkthrough steps for this moment:\n{}\n\nRecent conversation:\n{}\n\nFacts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
             guide.game,
             watched.join("\n"),
+            crate::watch::steps_here(store, guide, question).join("\n"),
+            talk::recent_turns(store, &guide.game)
+                .iter()
+                .rev()
+                .take(6)
+                .rev()
+                .map(|t| format!(
+                    "{}: {}",
+                    t["role"].as_str().unwrap_or_default(),
+                    t["text"].as_str().unwrap_or_default()
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
             facts
                 .iter()
                 .map(|f| format!("- {f}"))

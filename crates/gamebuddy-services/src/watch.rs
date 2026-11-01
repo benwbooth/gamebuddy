@@ -9,12 +9,12 @@ use gamebuddy_core::Guide;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Mutex, OnceLock},
 };
 
-pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
+pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
 
 const LOG_LIMIT: usize = 30;
 /// How far back the log counts as what just happened.
@@ -127,6 +127,48 @@ pub fn lines(store: &Store, guide: &Guide) -> Vec<String> {
         .collect()
 }
 
+/// The walkthrough steps about this moment, wherever the plan thinks the
+/// player is: matched on what the watcher last saw and what was just said.
+pub fn steps_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
+    let log: Vec<Entry> = store.get(&key(guide)).ok().flatten().unwrap_or_default();
+    let recent = log
+        .iter()
+        .rev()
+        .take(4)
+        .flat_map(|e| [e.happening.as_str(), e.text.as_str()])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = |text: &str| -> HashSet<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 3)
+            .map(str::to_owned)
+            .collect()
+    };
+    let asked = words(&format!("{recent} {question}"));
+    let mut scored: Vec<_> = guide
+        .steps
+        .iter()
+        .filter(|s| !s.instructions.starts_with("Reference reviewed"))
+        .filter(|s| !s.instructions.starts_with("Chapter supplied"))
+        .map(|s| {
+            let title = words(&s.title).intersection(&asked).count();
+            let body = words(&s.instructions).intersection(&asked).count();
+            (title * 3 + body, s)
+        })
+        .filter(|(score, _)| *score >= 3)
+        .collect();
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    scored
+        .into_iter()
+        .take(4)
+        .map(|(_, s)| {
+            let body: String = s.instructions.chars().take(420).collect();
+            format!("{}: {body}", s.title)
+        })
+        .collect()
+}
+
 /// Called with each new frame. Reading and looking run behind it.
 pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
@@ -210,9 +252,10 @@ fn look(
         ModelRequest {
             system: LOOK.into(),
             prompt: format!(
-                "Game: {}\n\nWhat the guide knows:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
+                "Game: {}\n\nWhat the guide knows:\n{}\n\nWalkthrough steps for this moment:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
                 guide.game,
                 plan.join("\n"),
+                steps_here(store, guide, "").join("\n"),
                 lines(store, guide).join("\n"),
             ),
             images: vec![snapshot.jpeg.clone()],
