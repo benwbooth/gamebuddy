@@ -5,7 +5,6 @@ fn main() -> anyhow::Result<()> {
     use anyhow::ensure;
     use std::time::{Duration, Instant};
     use x11rb::{
-        COPY_DEPTH_FROM_PARENT,
         connection::Connection,
         protocol::{Event, xproto::*, xtest::ConnectionExt as _},
         wrapper::ConnectionExt as _,
@@ -40,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     let window = |name: &str| -> anyhow::Result<Window> {
         let id = conn.generate_id()?;
         conn.create_window(
-            COPY_DEPTH_FROM_PARENT.max(depth),
+            depth,
             id,
             root,
             0,
