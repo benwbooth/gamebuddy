@@ -53,11 +53,19 @@ def screenshot():
 
 
 def practice_running():
-    active = subprocess.run(["systemctl", "--user", "is-active", "-q", "gb-practice"])
-    if active.returncode:
-        subprocess.run(["systemd-run", "--user", "--unit=gb-practice", str(PRACTICE / "run.sh")],
-                       check=True)
-        time.sleep(9)
+    """Start the hidden RetroArch if needed; it sometimes crashes starting
+    under Xvfb, so a run only begins once it answers with a screenshot."""
+    for _ in range(4):
+        active = subprocess.run(["systemctl", "--user", "is-active", "-q", "gb-practice"])
+        if active.returncode:
+            subprocess.run(["systemctl", "--user", "reset-failed", "gb-practice"],
+                           stderr=subprocess.DEVNULL)
+            subprocess.run(["systemd-run", "--user", "--unit=gb-practice", str(PRACTICE / "run.sh")],
+                           check=True)
+            time.sleep(9)
+        if screenshot() is not None:
+            return
+    raise SystemExit("The practice RetroArch would not start")
 
 
 class Nitrogen:
@@ -193,6 +201,7 @@ def run_policy(args):
     for n in range(1, args.runs + 1):
         out = Path(args.out) / args.policy / f"run{n}"
         out.mkdir(parents=True, exist_ok=True)
+        practice_running()
         command("LOAD_STATE")
         time.sleep(1)
         if args.policy == "plain":
