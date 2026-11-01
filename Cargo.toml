@@ -18,7 +18,7 @@ url = "2"
 schemars = "1.2"
 
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
 
 # The continuously running image matcher must remain usable in dev builds.
 [profile.dev.package.gamebuddy-core]
