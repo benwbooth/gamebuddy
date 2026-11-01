@@ -44,7 +44,9 @@ def screenshot():
         now = newest()
         if now and now != before:
             try:
-                return Image.open(now[1]).convert("RGB")
+                frame = Image.open(now[1]).convert("RGB")
+                os.unlink(now[1])
+                return frame
             except OSError:
                 pass
     return None
@@ -89,7 +91,7 @@ class Nitrogen:
             if on("WEST") or on("EAST"):
                 held.add("B")
             out.append(held)
-        return out[:12]
+        return out[:int(os.environ.get("PLAYER_STEP_FRAMES", 12))]
 
 
 class Random:
@@ -162,7 +164,7 @@ class Gate:
             if self.fight_until - now < 0.7:
                 side = self.OPPOSITE[side]
             self.policy.act(frame)
-            return [{side}, {side}, {"B"}, {"B"}, set(), set(), {"B"}, {"B"}, set(), set(), {"B"}, {"B"}]
+            return [{side}, {side}, {"B"}, {"B"}, set(), set()]
         if want is None:
             return self.policy.act(frame)
         if want in ("Up", "Down") and now - self.turned > 3:
