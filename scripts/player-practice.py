@@ -5,13 +5,13 @@ how many screens of the room-graph route it covered and how often it died.
 Input goes in through RetroArch's network gamepad; what the policy and the
 score see is the screen, nothing is read from the emulator.
 
-  player-practice.py run OUT --policy nitrogen|random|plain [--runs 5] [--secs 120]
+  player-practice.py run OUT --policy nitrogen|random|plain|gated [--runs 5] [--secs 120]
   player-practice.py score DATA TOWARD OUT
 
 The practice RetroArch is ~/.cache/gamebuddy-practice/run.sh under the
 gb-practice unit; a run starts with LOAD_STATE, slot 0 of its state folder.
 """
-import argparse, glob, json, os, random, socket, struct, subprocess, sys, time
+import argparse, glob, json, os, random, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 import numpy as np
@@ -102,9 +102,92 @@ class Random:
         return [choice] * 12
 
 
+class Router:
+    """The route's next move, kept fresh by a background thread: placing a
+    frame on the maps takes half a second, the player can't wait for it."""
+
+    def __init__(self, data, toward):
+        self.process = subprocess.Popen(
+            ["target/debug/examples/player_route", data, toward], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.path = PRACTICE / "route-frame.png"
+        self.latest, self.frame = {}, None
+        threading.Thread(target=self.follow, daemon=True).start()
+
+    def follow(self):
+        while True:
+            frame = self.frame
+            if frame is None:
+                time.sleep(0.05)
+                continue
+            self.frame = None
+            frame.save(self.path)
+            self.process.stdin.write(f"{self.path}\n")
+            self.process.stdin.flush()
+            self.latest = json.loads(self.process.stdout.readline())
+
+
+class Gate:
+    """Obedience in code. The route names a direction; the player model may
+    jump, swing and time its moves, but never holds the opposite direction,
+    and walking toward the goal is held when it has no opinion. A vertical
+    move has no known ladder spot on the screen, so it sweeps the screen
+    trying the ladder, the way a person looks for one."""
+
+    OPPOSITE = {"Left": "Right", "Right": "Left", "Up": "Down", "Down": "Up"}
+
+    def __init__(self, policy, router):
+        self.policy, self.router = policy, router
+        self.sweep, self.turned = "Right", time.time()
+        self.want, self.wanted_at = None, 0
+        self.bar, self.fight_until = None, 0
+
+    def act(self, frame):
+        self.router.frame = frame
+        now = time.time()
+        moves = self.router.latest.get("moves")
+        if moves:
+            self.want, self.wanted_at = moves[0][0], now
+        # A transition or a room off the maps: the last order stands a moment,
+        # then the screen has nothing to say and the model finds its way out.
+        want = self.want if now - self.wanted_at < 2 else None
+        # Losing health means something is on us: stop walking into it and
+        # swing, turning round after a moment in case it is behind.
+        bar = health(frame)
+        if bar is not None and self.bar is not None and bar < self.bar - 0.02:
+            self.fight_until = now + 1.5
+        self.bar = bar if bar is not None else self.bar
+        if now < self.fight_until:
+            side = want if want in ("Left", "Right") else self.sweep
+            if self.fight_until - now < 0.7:
+                side = self.OPPOSITE[side]
+            self.policy.act(frame)
+            return [{side}, {side}, {"B"}, {"B"}, set(), set(), {"B"}, {"B"}, set(), set(), {"B"}, {"B"}]
+        if want is None:
+            return self.policy.act(frame)
+        if want in ("Up", "Down") and now - self.turned > 3:
+            self.sweep, self.turned = self.OPPOSITE[self.sweep], now
+        out = []
+        for i, held in enumerate(self.policy.act(frame)):
+            if want in ("Left", "Right"):
+                wanted = want in held
+                opposed = self.OPPOSITE[want] in held
+                held = held & {"A", "B"}
+                # Against orders it stands and fights; with no opinion it walks.
+                if wanted or not opposed:
+                    held.add(want)
+            else:
+                held = held & {"A", "B"}
+                held.add(want if i % 12 < 6 else self.sweep)
+            out.append(held)
+        return out
+
+
 def run_policy(args):
     practice_running()
     policy = {"nitrogen": Nitrogen, "random": Random}.get(args.policy, lambda: None)()
+    if args.policy == "gated":
+        policy = Gate(Nitrogen(), Router(args.data, args.toward))
     for n in range(1, args.runs + 1):
         out = Path(args.out) / args.policy / f"run{n}"
         out.mkdir(parents=True, exist_ok=True)
@@ -121,6 +204,10 @@ def run_policy(args):
             frame = screenshot()
             if frame is None:
                 continue
+            if args.policy == "gated" and policy.router.latest.get("arrived"):
+                hold(set())
+                frame.save(out / f"{int((time.time() - started) * 1000):07d}.png")
+                break
             frame.save(out / f"{int((time.time() - started) * 1000):07d}.png")
             for held in policy.act(frame):
                 hold(held)
