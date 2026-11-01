@@ -9,6 +9,7 @@ pub mod speech;
 pub mod store;
 pub mod subscription;
 pub mod voice;
+pub mod watch;
 
 pub use media::*;
 pub use providers::*;

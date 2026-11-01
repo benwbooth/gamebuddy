@@ -951,6 +951,7 @@ impl ffi::Buddy {
                     );
                     if let Some(guide) = &guide {
                         services::brain::schedule(&store, guide, &snapshot);
+                        services::watch::schedule(&store, guide, &snapshot);
                         let settings = store.get::<Settings>("settings").ok().flatten();
                         let on_device = settings
                             .as_ref()

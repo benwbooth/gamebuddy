@@ -468,7 +468,7 @@ pub fn claude_warm(model: &str, effort: &str, system: &str) {
 }
 
 /// One question to Claude with its words as they arrive, on the signed-in
-/// subscription. Prompts are text only.
+/// subscription.
 pub fn claude_stream(
     model: &str,
     effort: &str,
@@ -493,9 +493,11 @@ pub fn claude_stream(
         std::thread::spawn(move || claude_warm(&model, &effort, &system));
     }
     let mut input = process.0.stdin.take().context("Claude stdin unavailable")?;
+    let mut content = vec![json!({"type":"text","text":r.prompt})];
+    content.extend(r.images.into_iter().map(|data| json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":data}})));
     serde_json::to_writer(
         &mut input,
-        &json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":r.prompt}]}}),
+        &json!({"type":"user","message":{"role":"user","content":content}}),
     )?;
     input.write_all(b"\n")?;
     input.flush()?;

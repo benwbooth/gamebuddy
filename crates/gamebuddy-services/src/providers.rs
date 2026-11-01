@@ -790,6 +790,12 @@ impl HttpProvider {
                 content.extend(r.images.iter().map(|data|json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}")}})));
                 let mut body = json!({"model":self.config.model,"messages":[{"role":"system","content":r.system},{"role":"user","content":content}]});
                 liquid_sampling(&self.config, &mut body);
+                // A screen read is short. A small model that loses its way
+                // would otherwise write until its context ran out.
+                if !r.images.is_empty() && self.config.endpoint.starts_with("http://127.0.0.1:1144")
+                {
+                    body["max_tokens"] = json!(600);
+                }
                 // llama-server and most compatible servers honour a JSON
                 // schema, which keeps a small model's replies well formed.
                 if r.json {

@@ -51,6 +51,9 @@ fn state(store: &Store, guide: &Guide) -> Result<(String, Option<String>)> {
 /// Work out the answer now if the stored one no longer fits. Returns true
 /// when a new answer was stored.
 pub fn refresh(store: &Store, guide: &Guide) -> Result<bool> {
+    if claude_login(store) {
+        return Ok(false);
+    }
     // On this computer's GPU the voice answers live and fast; this big
     // background request only slowed the game (and overflows small models).
     if store
@@ -111,6 +114,14 @@ pub fn refresh(store: &Store, guide: &Guide) -> Result<bool> {
 }
 
 /// Refresh in the background, one at a time.
+fn claude_login(store: &Store) -> bool {
+    store
+        .get::<crate::Settings>("settings")
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.reasoning.kind == crate::ProviderKind::ClaudeCode)
+}
+
 pub fn schedule(root: std::path::PathBuf, guide: Guide) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     if RUNNING.swap(true, Ordering::AcqRel) {
@@ -130,6 +141,11 @@ pub fn reply(
     game: &str,
     request: &str,
 ) -> Result<Option<super::prepared::Response>> {
+    // Claude sees the screen when asked, so a prepared answer could only be
+    // older than what it would say.
+    if claude_login(store) {
+        return Ok(None);
+    }
     if super::prepared::intent(request) != Some("next") {
         return Ok(None);
     }

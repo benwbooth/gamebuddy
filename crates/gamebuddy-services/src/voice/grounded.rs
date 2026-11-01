@@ -272,10 +272,14 @@ pub fn classify(
 const SORT: &str =
     "You sort what a video game player just said to their helper. Reply with JSON only.";
 
+/// For a model strong enough to see the game and know it: it answers from
+/// the picture and its own knowledge, not only from what was looked up.
+const EXPERT: &str = "You are an expert at this game, sitting beside the player and watching them play, like a friend who has beaten it many times. The image is the screen right now. You also get a log of what just happened and notes GameBuddy looked up. Tell the player exactly what to do from this very screen, in one or two short, natural spoken sentences (under 35 words). Judge from what you see: believe the picture over the notes, and never ask the player what is on screen. Use what you know about this game where it helps, but do not invent specifics you are unsure of. If the player is reacting (they died, are stuck, are annoyed), say what happened and how to deal with it, as a friend who saw it too. Name the on-screen option to choose, not buttons, unless the player asks about controls. No lists, no markdown, no ids. Never say \"the walkthrough\", \"the notes\" or \"the log\", and never start with your own name.";
+
 /// Have the provider's ready processes started before the first question.
 pub fn warm(provider: &HttpProvider) {
     if provider.config.kind == crate::ProviderKind::ClaudeCode {
-        for system in [SORT, SPEAK] {
+        for system in [EXPERT, crate::watch::LOOK] {
             crate::subscription::claude_warm(
                 &provider.config.model,
                 &provider.config.reasoning_effort,
@@ -312,18 +316,7 @@ fn model_intent(
         images: vec![],
         json,
     };
-    // Claude's schema path starts a new process for every question; its
-    // ready process answers in time, and an unknown intent reads as general.
-    let reply = if speaker.config.kind == crate::ProviderKind::ClaudeCode {
-        let reply = speaker.complete_streaming(request(false), &mut |_| {})?;
-        reply
-            .find('{')
-            .zip(reply.rfind('}'))
-            .map(|(a, b)| reply[a..=b].to_owned())
-            .unwrap_or(reply)
-    } else {
-        speaker.complete_structured(request(true), schema)?
-    };
+    let reply = speaker.complete_structured(request(true), schema)?;
     let parsed: Value = serde_json::from_str(reply.trim())?;
     let kind = match parsed["intent"].as_str() {
         Some("travel") => Kind::Travel,
@@ -841,7 +834,10 @@ pub fn answer(
 ) -> Result<Turn> {
     let started = std::time::Instant::now();
     let atlas = crate::navigation::atlas(store, guide)?;
-    let intent = classify(store, guide, &atlas, question, Some(provider));
+    // A model that sees the screen needs no help working out what was meant,
+    // and sorting the sentence first cost it six seconds.
+    let sees = !crate::providers::on_this_computer(&provider.config);
+    let intent = classify(store, guide, &atlas, question, (!sees).then_some(provider));
     crate::flight::event("voice_intent", json!(intent));
     if intent.kind == Kind::Repeat {
         let last = talk::recent_turns(store, &guide.game)
@@ -861,7 +857,15 @@ pub fn answer(
             first_sentence_ms: Some(0),
         });
     }
-    let (facts, template, settled) = facts(store, guide, &atlas, &intent, question)?;
+    let (mut facts, template, settled) = facts(store, guide, &atlas, &intent, question)?;
+    if sees {
+        for line in talk::situation_lines(store, guide).unwrap_or_default() {
+            if !facts.contains(&line) {
+                facts.push(line);
+            }
+        }
+    }
+    let watched = crate::watch::lines(store, guide);
     if settled && let Some(line) = template {
         on_sentence(line.clone());
         crate::flight::event(
@@ -890,19 +894,26 @@ pub fn answer(
             eprintln!("FACT {fact}");
         }
     }
+    let frame = sees
+        .then(|| crate::screen::snapshot(store).ok())
+        .flatten()
+        .map(|snapshot| snapshot.jpeg);
     let request = ModelRequest {
-        system: SPEAK.into(),
+        system: if frame.is_some() { EXPERT } else { SPEAK }.into(),
         prompt: format!(
-            "Facts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
+            "Game: {}\n\nWhat just happened, oldest first:\n{}\n\nFacts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
+            guide.game,
+            watched.join("\n"),
             facts
                 .iter()
                 .map(|f| format!("- {f}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
-        images: vec![],
+        images: frame.iter().cloned().collect(),
         json: false,
     };
+    let checked = frame.is_none();
     // "You're at the elevated shop" came from a walkthrough passage while
     // where the player was stood unknown: a location is said only when the
     // facts hold one.
@@ -931,7 +942,9 @@ pub fn answer(
         if sentence.is_empty() {
             return;
         }
-        if grounded(&sentence, &facts, &names) && (knows_place || !claims_place(&sentence)) {
+        if !checked
+            || (grounded(&sentence, &facts, &names) && (knows_place || !claims_place(&sentence)))
+        {
             first_ms.get_or_insert(started.elapsed().as_millis() as u64);
             on_sentence(sentence.clone());
             spoken.push(sentence);
