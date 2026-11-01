@@ -4,7 +4,10 @@
 //! `GAMESCOPE_CURSOR_VISIBLE_FEEDBACK` reports whether the game shows a cursor.
 //! Keeping these names lets the existing overlay run unchanged.
 
-use std::{collections::HashMap, os::fd::AsRawFd};
+use std::{
+    collections::{HashMap, HashSet},
+    os::fd::AsRawFd,
+};
 
 use anyhow::{Context, Result};
 use smithay::reexports::calloop::{
@@ -14,7 +17,12 @@ use smithay::reexports::calloop::{
 use tracing::warn;
 use x11rb::{
     connection::Connection,
-    protocol::{Event, xproto::*},
+    protocol::{
+        Event,
+        shape::SK,
+        xfixes::{ConnectionExt as _, Region},
+        xproto::*,
+    },
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
@@ -38,6 +46,10 @@ pub struct Props {
     screenshot: Atom,
     /// Overlay windows and their requested input focus mode.
     pub overlays: HashMap<Window, u32>,
+    /// An empty region, the input shape of windows clicks pass through.
+    empty_region: Region,
+    /// Windows that currently have that empty input shape.
+    passing: HashSet<Window>,
 }
 
 impl Props {
@@ -49,6 +61,9 @@ impl Props {
             Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
         };
         let server_id = atom("GAMESCOPE_XWAYLAND_SERVER_ID")?;
+        conn.xfixes_query_version(5, 0)?.reply()?;
+        let empty_region = conn.generate_id()?;
+        conn.xfixes_create_region(empty_region, &[])?;
         let props = Self {
             overlay: atom("STEAM_OVERLAY")?,
             focus: atom("STEAM_INPUT_FOCUS")?,
@@ -56,6 +71,8 @@ impl Props {
             cursor_visible_value: None,
             screenshot: atom("GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT")?,
             overlays: HashMap::new(),
+            empty_region,
+            passing: HashSet::new(),
             root,
             conn,
         };
@@ -106,6 +123,33 @@ impl Props {
 
     pub fn forget(&mut self, window: Window) {
         self.overlays.remove(&window);
+    }
+
+    /// Xwayland picks the window for a click by X11 stacking and input shape,
+    /// whichever surface we entered, so a fullscreen overlay left in the way
+    /// takes the clicks meant for the game beneath it. An empty input shape
+    /// takes the window out of that search.
+    pub fn set_passes_input(&mut self, window: Window, passes: bool) {
+        if self.passing.contains(&window) == passes {
+            return;
+        }
+        let region = if passes { self.empty_region } else { 0 };
+        match self
+            .conn
+            .xfixes_set_window_shape_region(window, SK::INPUT, 0, 0, region)
+        {
+            Ok(_) if passes => {
+                self.passing.insert(window);
+            }
+            Ok(_) => {
+                self.passing.remove(&window);
+            }
+            Err(err) => warn!(?err, window, "Could not change an input shape"),
+        }
+    }
+
+    pub fn flush(&self) {
+        let _ = self.conn.flush();
     }
 
     fn cardinal(&self, window: Window, property: Atom) -> Option<u32> {

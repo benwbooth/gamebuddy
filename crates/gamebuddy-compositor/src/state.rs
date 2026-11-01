@@ -300,6 +300,15 @@ impl State {
             .cloned()
             .collect();
         for overlay in overlays {
+            if let (Some(surface), Some(props)) = (overlay.x11_surface(), self.props.as_mut()) {
+                let passes = props.overlays.get(&surface.window_id()) == Some(&0);
+                props.set_passes_input(surface.window_id(), passes);
+                // The frame around the client would catch the click otherwise.
+                if let Some(frame) = surface.mapped_window_id() {
+                    props.set_passes_input(frame, passes);
+                }
+                props.flush();
+            }
             self.space.raise_element(&overlay, false);
         }
         let windows = self.x11_windows();
