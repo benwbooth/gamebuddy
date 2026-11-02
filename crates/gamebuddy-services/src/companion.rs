@@ -17,7 +17,7 @@ use std::{
     sync::{Mutex, OnceLock, mpsc},
 };
 
-const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. Your folder holds walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video), narration.txt (the walkthrough video's narrator, word for word with times), video/ (full frames from the walkthrough video from the task before the player's to two tasks after it, named by task number and video time: when the text does not say which door, exit or object, Read the frames just before the new room or result appears and find where the video's cursor or character was, such as the exit picked on a map or the door walked through, then match it to the player's screen; the video may label rooms by name), frames/ (recent screens) and notes.md (your own notes). Read notes.md first when you start. Keep notes.md current with Edit or Write: what the player carries, rooms seen and how they connect, what they have done and solved, deaths and their causes, anything the player told you (their corrections always win), the walkthrough task they are on and your plan. Keep it under 60 short lines: rewrite entries as things change rather than adding a line per screen, and update it whenever something changes. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) from the walkthrough, the narration and the video frames, and write it in your notes, so that a question about it can be answered at once. Use Grep and Read on walkthrough.md and narration.txt to check facts before telling the player anything; exact commands and solutions come only from those files or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen now and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
+const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. Your folder holds walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video), narration.txt (the walkthrough video's narrator, word for word with times), video/ (full frames from the walkthrough video from the task before the player's to two tasks after it, named by task number and video time: when the text does not say which door, exit or object, Read the frames just before the new room or result appears (they are half a second apart there) and find where the video's cursor or character was in the very last frame before the change, not where it passed earlier, such as the exit picked on a map or the door walked through, then match it to the player's screen; the video may label rooms by name), frames/ (recent screens) and notes.md (your own notes). Read notes.md first when you start. Keep notes.md current with Edit or Write: what the player carries, rooms seen and how they connect, what they have done and solved, deaths and their causes, anything the player told you (their corrections always win), the walkthrough task they are on and your plan. Keep it under 60 short lines: rewrite entries as things change rather than adding a line per screen, and update it whenever something changes. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) from the walkthrough, the narration and the video frames, and write it in your notes, so that a question about it can be answered at once. Use Grep and Read on walkthrough.md and narration.txt to check facts before telling the player anything; exact commands and solutions come only from those files or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen now and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
 
 /// After this many looks the session starts over from its notes, so the
 /// conversation (a picture each look) never grows past what fits.
@@ -27,6 +27,9 @@ const FRAMES_KEPT: usize = 20;
 struct Job {
     guide: Guide,
     snapshot: screen::Snapshot,
+    /// A question the quick answer could not settle, and where the
+    /// companion's spoken answer goes.
+    question: Option<(String, mpsc::Sender<String>)>,
 }
 
 struct Running {
@@ -68,14 +71,7 @@ pub fn observe(
 ) -> bool {
     use std::sync::atomic::Ordering;
     let mut running = RUNNING.get_or_init(Default::default).lock().unwrap();
-    let key = (store.root.clone(), guide.id.clone());
-    let entry = running.entry(key).or_insert_with(|| {
-        let (sender, receiver) = mpsc::sync_channel::<Job>(1);
-        let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (root, config, flag) = (store.root.clone(), settings.reasoning.clone(), busy.clone());
-        std::thread::spawn(move || run(root, config, receiver, flag));
-        Running { sender, busy }
-    });
+    let entry = entry(&mut running, store, guide, settings);
     if entry.busy.load(Ordering::Acquire) {
         return false;
     }
@@ -85,12 +81,73 @@ pub fn observe(
         .try_send(Job {
             guide: guide.clone(),
             snapshot: snapshot.clone(),
+            question: None,
         })
         .is_ok();
     if !sent {
         entry.busy.store(false, Ordering::Release);
     }
     sent
+}
+
+fn entry<'a>(
+    running: &'a mut HashMap<(PathBuf, String), Running>,
+    store: &Store,
+    guide: &Guide,
+    settings: &Settings,
+) -> &'a Running {
+    running
+        .entry((store.root.clone(), guide.id.clone()))
+        .or_insert_with(|| {
+            let (sender, receiver) = mpsc::sync_channel::<Job>(1);
+            let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (root, config, flag) =
+                (store.root.clone(), settings.reasoning.clone(), busy.clone());
+            std::thread::spawn(move || run(root, config, receiver, flag));
+            Running { sender, busy }
+        })
+}
+
+/// Put a question to the companion, which can search the walkthrough, the
+/// narrator and the video, and wait for its spoken answer. It waits for a
+/// look already under way to finish first.
+pub fn ask(
+    store: &Store,
+    guide: &Guide,
+    settings: &Settings,
+    question: &str,
+    within: std::time::Duration,
+) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    let started = std::time::Instant::now();
+    let snapshot = screen::snapshot(store).ok()?;
+    let (answer, reply) = mpsc::channel();
+    loop {
+        {
+            let mut running = RUNNING.get_or_init(Default::default).lock().unwrap();
+            let entry = entry(&mut running, store, guide, settings);
+            if !entry.busy.swap(true, Ordering::AcqRel) {
+                let job = Job {
+                    guide: guide.clone(),
+                    snapshot: snapshot.clone(),
+                    question: Some((question.to_owned(), answer.clone())),
+                };
+                if entry.sender.try_send(job).is_err() {
+                    entry.busy.store(false, Ordering::Release);
+                    return None;
+                }
+                break;
+            }
+        }
+        if started.elapsed() > within {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    reply
+        .recv_timeout(within.saturating_sub(started.elapsed()))
+        .ok()
+        .filter(|a| !a.trim().is_empty())
 }
 
 struct Session {
@@ -143,9 +200,25 @@ fn run(
                     text.as_str().unwrap_or_default()
                 ));
             }
+            if let Some((question, _)) = &job.question {
+                let text = &mut message["message"]["content"][0]["text"];
+                *text = json!(format!(
+                    "{}\n\nThe player just asked you: \"{question}\". Find the answer in walkthrough.md, narration.txt and video/ as needed, write it in your notes, and put your spoken answer to them in say (urgency tip).",
+                    text.as_str().unwrap_or_default()
+                ));
+            }
             let reply = turn(session, message)?;
             since_ms = job.snapshot.captured_at_ms;
-            watch::apply(&store, &job.guide, &job.snapshot, &reply)
+            let Some((_, answer)) = &job.question else {
+                return watch::apply(&store, &job.guide, &job.snapshot, &reply);
+            };
+            // The answer is spoken by the voice that asked, not the narrator.
+            let start = reply.find('{').unwrap_or(0);
+            let end = reply.rfind('}').map_or(reply.len(), |at| at + 1);
+            let mut look: Value = serde_json::from_str(reply.get(start..end).unwrap_or("{}"))?;
+            let _ = answer.send(look["say"].as_str().unwrap_or_default().to_owned());
+            look["say"] = json!("");
+            watch::apply(&store, &job.guide, &job.snapshot, &look.to_string())
         });
         if let Err(error) = result {
             eprintln!("Companion: {error:#}");
@@ -294,9 +367,18 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
             .end_ms
             .unwrap_or(start + 30_000)
             .min(start + 30_000);
-        let mut ms = start.saturating_sub(12_000);
+        // Every half second over the moments before the task starts, where
+        // the click that led here happens (two seconds apart missed it, and
+        // a cursor passing over another exit looked like the choice), then
+        // every two seconds.
+        let mut ms = start.saturating_sub(16_000);
         while ms <= end {
-            let name = format!("task{}-{}.jpg", offset + 1, clock(ms).replace(':', "m"));
+            let name = format!(
+                "task{}-{}m{:04.1}.jpg",
+                offset + 1,
+                ms / 60_000,
+                (ms % 60_000) as f64 / 1000.0
+            );
             let _ = Command::new("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-ss"])
                 .arg(format!("{:.1}", ms as f64 / 1000.0))
@@ -306,7 +388,7 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
                 .arg(directory.join(name))
                 .stdin(Stdio::null())
                 .status();
-            ms += 2_000;
+            ms += if ms + 2_000 < start { 500 } else { 2_000 };
         }
     }
     *shown = Some(at);

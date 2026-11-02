@@ -274,7 +274,7 @@ const SORT: &str =
 
 /// For a model strong enough to see the game and know it: it answers from
 /// the picture and its own knowledge, not only from what was looked up.
-const EXPERT: &str = "You are an expert at this game, sitting beside the player and watching them play, like a friend who has beaten it many times. The image is the screen right now. You also get a log of what just happened and notes GameBuddy looked up. Tell the player exactly what to do from this very screen, in one or two short, natural spoken sentences (under 35 words). Judge from what you see: believe the picture over the notes, and never ask the player what is on screen. Follow the walkthrough: it is placed by the player's progress, not the room they are in. If they are somewhere the walkthrough only reaches later, say so and lead them back to the task they are on. When it shows which task the player is on, tell them the next action that moves the game forward, as it is written, skipping anything it calls optional or flavor unless they ask, and never invent other goals. Exact commands and solutions come only from the walkthrough steps given or from the player: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command; if they disagree, say so. Believe anything the player has told you about the game over the steps. If the player is reacting (they died, are stuck, are annoyed), say what happened and how to deal with it, as a friend who saw it too. Name the on-screen option to choose, not buttons, unless the player asks about controls. No lists, no markdown, no ids. Never say \"the walkthrough\", \"the notes\" or \"the log\", and never start with your own name.";
+const EXPERT: &str = "You are an expert at this game, sitting beside the player and watching them play, like a friend who has beaten it many times. The image is the screen right now. You also get a log of what just happened and notes GameBuddy looked up. Tell the player exactly what to do from this very screen, in one or two short, natural spoken sentences (under 35 words). Judge from what you see: believe the picture over the notes, and never ask the player what is on screen. Follow the walkthrough: it is placed by the player's progress, not the room they are in. If they are somewhere the walkthrough only reaches later, say so and lead them back to the task they are on. When it shows which task the player is on, tell them the next action that moves the game forward, as it is written, skipping anything it calls optional or flavor unless they ask, and never invent other goals. Exact commands and solutions come only from the walkthrough steps given or from the player: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command; if they disagree, say so. Believe anything the player has told you about the game over the steps. If the player is reacting (they died, are stuck, are annoyed), say what happened and how to deal with it, as a friend who saw it too. Name the on-screen option to choose, not buttons, unless the player asks about controls. If the answer they need is not in your notes, the walkthrough or the narrator's words, reply with only the word CHECK, and it will be looked up in the walkthrough video. No lists, no markdown, no ids. Never say \"the walkthrough\", \"the notes\" or \"the log\", and never start with your own name.";
 
 /// Have the provider's ready processes started before the first question.
 pub fn warm(provider: &HttpProvider) {
@@ -950,6 +950,8 @@ pub fn answer(
     let fallback = template
         .clone()
         .unwrap_or_else(|| "Sorry, I'm not sure about that one. Where are you right now?".into());
+    // The quick answer could not settle it: the companion looks it up.
+    let look_up = std::cell::Cell::new(false);
     let mut take = |sentence: String,
                     spoken: &mut Vec<String>,
                     stopped: &mut bool,
@@ -960,6 +962,16 @@ pub fn answer(
         }
         let sentence = tidy(&sentence);
         if sentence.is_empty() {
+            return;
+        }
+        if !checked
+            && spoken.is_empty()
+            && sentence
+                .trim_matches(|c: char| !c.is_alphabetic())
+                .eq_ignore_ascii_case("check")
+        {
+            look_up.set(true);
+            *stopped = true;
             return;
         }
         if !checked
@@ -1000,6 +1012,23 @@ pub fn answer(
             &mut all_grounded,
             &mut first_ms,
         );
+    }
+    if look_up.get() {
+        let holding = "Let me check the walkthrough video for that.".to_owned();
+        first_ms.get_or_insert(started.elapsed().as_millis() as u64);
+        on_sentence(holding.clone());
+        spoken.push(holding);
+        let settings: crate::Settings = store.get("settings")?.unwrap_or_default();
+        let found = crate::companion::ask(
+            store,
+            guide,
+            &settings,
+            question,
+            std::time::Duration::from_secs(90),
+        )
+        .unwrap_or_else(|| "I couldn't find that in the walkthrough, sorry.".into());
+        on_sentence(found.clone());
+        spoken.push(found);
     }
     let mut templated = !all_grounded && spoken.first() == Some(&fallback);
     if spoken.is_empty() {

@@ -42,8 +42,9 @@ fn main() -> Result<()> {
             {
                 let started = std::time::Instant::now();
                 let mut first = None;
-                let turn = grounded::answer(&store, &guide, &provider, question, &mut |_| {
+                let turn = grounded::answer(&store, &guide, &provider, question, &mut |s| {
                     first.get_or_insert(started.elapsed());
+                    println!("  SPOKE ({:.1}s) {s}", started.elapsed().as_secs_f32());
                 })?;
                 println!("  ASK {question}");
                 println!(
