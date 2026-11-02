@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod brain;
+pub mod companion;
 pub mod fast_perception;
 pub mod media;
 pub mod provider_catalog;

@@ -73,7 +73,7 @@ struct Job {
 
 static JOBS: OnceLock<Mutex<HashMap<PathBuf, Job>>> = OnceLock::new();
 
-fn key(guide: &Guide) -> String {
+pub(crate) fn key(guide: &Guide) -> String {
     format!("watch-log:{}", guide.id)
 }
 
@@ -277,7 +277,7 @@ pub fn tasks(guide: &Guide) -> Vec<&gamebuddy_core::Step> {
 }
 
 /// The index in `tasks` where the watcher last placed the player.
-fn placed_task(store: &Store, guide: &Guide) -> Option<usize> {
+pub(crate) fn placed_task(store: &Store, guide: &Guide) -> Option<usize> {
     let placed: Value = store.get(&task_key(guide)).ok()??;
     if screen::now_ms().saturating_sub(placed["at_ms"].as_u64()?) >= LOG_MS {
         return None;
@@ -461,6 +461,9 @@ pub fn watch(
     if !news || !may_look || on_this_computer(&settings.reasoning) {
         return Ok(false);
     }
+    if settings.reasoning.kind == crate::ProviderKind::ClaudeCode {
+        return Ok(crate::companion::observe(store, guide, &settings, snapshot));
+    }
     look(store, guide, &settings, snapshot)?;
     Ok(true)
 }
@@ -496,6 +499,17 @@ fn look(
         },
         &mut |_| {},
     )?;
+    apply(store, guide, snapshot, &reply)
+}
+
+/// Act on a look's JSON reply: log what is going on, place the player, map
+/// the room, and offer any remark to the narrator.
+pub(crate) fn apply(
+    store: &Store,
+    guide: &Guide,
+    snapshot: &screen::Snapshot,
+    reply: &str,
+) -> Result<()> {
     let start = reply.find('{').unwrap_or(0);
     let end = reply.rfind('}').map_or(reply.len(), |at| at + 1);
     let look: Look = serde_json::from_str(reply.get(start..end).unwrap_or_default())?;
@@ -536,7 +550,11 @@ fn look(
         json!({"happening": look.happening, "place": look.place, "say": say, "urgency": look.urgency}),
     );
     if !say.is_empty() {
-        offer(store, guide, snapshot, say, &look.urgency)?;
+        // The game may have moved on while the model thought; the remark
+        // is then dropped, and the look still counts.
+        if let Err(error) = offer(store, guide, snapshot, say, &look.urgency) {
+            eprintln!("Remark not offered: {error:#}");
+        }
     }
     Ok(())
 }

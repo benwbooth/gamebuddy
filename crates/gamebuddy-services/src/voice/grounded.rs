@@ -904,8 +904,12 @@ pub fn answer(
     let request = ModelRequest {
         system: if frame.is_some() { EXPERT } else { SPEAK }.into(),
         prompt: format!(
-            "Game: {}\n\nWhat just happened, oldest first:\n{}\n\nThe walkthrough from where the player is:\n{}\n\nRecent conversation:\n{}\n\nFacts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
+            "Game: {}\n\nYour notes from watching this whole game (trust them):\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe walkthrough from where the player is:\n{}\n\nRecent conversation:\n{}\n\nFacts GameBuddy looked up:\n{}\n\nThe player said: \"{question}\"\n\nWhat GameBuddy says out loud:",
             guide.game,
+            crate::companion::notes(store, guide)
+                .chars()
+                .take(6000)
+                .collect::<String>(),
             watched.join("\n"),
             crate::watch::guide_here(store, guide, question).join("\n"),
             talk::recent_turns(store, &guide.game)

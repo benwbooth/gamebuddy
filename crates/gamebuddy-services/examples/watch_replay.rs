@@ -23,6 +23,9 @@ fn main() -> Result<()> {
         let snapshot = screen::snapshot(&store)?;
         let started = std::time::Instant::now();
         let looked = watch::watch(&store, &guide, &snapshot, true, true)?;
+        while gamebuddy_services::companion::busy(&store, &guide) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         println!(
             "FRAME {index} {:.1}s looked={looked}",
             started.elapsed().as_secs_f32()
