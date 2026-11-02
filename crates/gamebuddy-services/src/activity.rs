@@ -497,12 +497,13 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: screen::Snapshot) {
 /// on this computer, where its 30 KB prompt overflows the local model's
 /// context (every review failed) and each try delays spoken answers.
 fn interval_ms(store: &Store) -> Option<u64> {
-    let local = store
-        .get::<Settings>("settings")
-        .ok()
-        .flatten()
-        .is_some_and(|s| crate::providers::on_this_computer(&s.reasoning));
-    (!local).then_some(10_000)
+    let settings = store.get::<Settings>("settings").ok().flatten()?;
+    // On this computer it competes for the GPU; with the Claude login the
+    // companion watches instead, and a second Claude reviewing every ten
+    // seconds only slowed the spoken answers.
+    (!crate::providers::on_this_computer(&settings.reasoning)
+        && settings.reasoning.kind != crate::ProviderKind::ClaudeCode)
+        .then_some(10_000)
 }
 
 pub fn save(store: &Store, observation: &Observation, completions: &[Completion]) -> Result<usize> {

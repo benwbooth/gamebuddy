@@ -55,6 +55,15 @@ fn slots(kind: &ProviderKind) -> usize {
 }
 
 const BACKGROUND_SLOTS: usize = 2;
+
+/// The Claude login also runs the companion and the spoken answers outside
+/// these slots, so its background work takes one at a time.
+fn background_slots(kind: &ProviderKind) -> usize {
+    match kind {
+        ProviderKind::ClaudeCode => 1,
+        _ => BACKGROUND_SLOTS,
+    }
+}
 const COOLDOWN: Duration = Duration::from_secs(60);
 const QUOTA_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
@@ -103,7 +112,7 @@ pub fn acquire(kind: &ProviderKind, priority: Priority) -> Permit {
             Priority::Background => {
                 lane.in_flight + 1 < total.max(2)
                     && lane.live_waiting == 0
-                    && lane.background < BACKGROUND_SLOTS
+                    && lane.background < background_slots(kind)
                     && lane.cooldown_until.is_none_or(|t| Instant::now() >= t)
                     && lane.quota_until.is_none_or(|t| Instant::now() >= t)
             }
