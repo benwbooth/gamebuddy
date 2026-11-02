@@ -278,6 +278,28 @@ impl State {
     /// it, and mirror a lock on the host so the desktop pointer stays put.
     pub fn update_constraint(&mut self) {
         let pointer = self.seat.get_pointer().unwrap();
+        // While GameBuddy takes input the player needs a free pointer to use
+        // it: a game's lock would keep the host pointer still and hidden.
+        let windows: Vec<_> = self
+            .space
+            .elements()
+            .filter_map(|e| e.x11_surface().cloned())
+            .collect();
+        if windows.iter().any(|w| self.overlay_mode(w) == Some(1)) {
+            for surface in windows.iter().filter_map(|w| w.wl_surface()) {
+                with_pointer_constraint(&surface, &pointer, |constraint| {
+                    if let Some(constraint) = constraint
+                        && constraint.is_active()
+                    {
+                        constraint.deactivate();
+                    }
+                });
+            }
+            if let Some(Backend::Host(backend)) = self.backend.as_mut() {
+                backend.host.set_pointer_locked(false);
+            }
+            return;
+        }
         let surface = pointer.current_focus().and_then(|focus| focus.wl_surface());
         let locked = surface.as_ref().is_some_and(|surface| {
             with_pointer_constraint(surface, &pointer, |constraint| match constraint {

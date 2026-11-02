@@ -349,6 +349,8 @@ impl State {
             },
         );
         pointer.frame(self);
+        // A game's pointer lock gives way to GameBuddy and comes back after.
+        self.update_constraint();
         self.needs_redraw = true;
     }
 
