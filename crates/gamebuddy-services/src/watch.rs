@@ -14,7 +14,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". task is the number of the walkthrough task the player is on now, the first one not yet done, judged from the screen, what they carry and the log; 0 if unclear. Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
+pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". task is the number of the first walkthrough task the player has not done yet: judge it by their progress, mostly what they carry (a task that gives an item they lack is not done) and what the log shows they did, not by the room they stand in, since players wander ahead and back. 0 if unclear. It is usually the task you gave last time or a later one. Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
 
 const LOG_LIMIT: usize = 30;
 /// How far back the log counts as what just happened.
@@ -276,16 +276,22 @@ pub fn tasks(guide: &Guide) -> Vec<&gamebuddy_core::Step> {
         .collect()
 }
 
+/// The index in `tasks` where the watcher last placed the player.
+fn placed_task(store: &Store, guide: &Guide) -> Option<usize> {
+    let placed: Value = store.get(&task_key(guide)).ok()??;
+    if screen::now_ms().saturating_sub(placed["at_ms"].as_u64()?) >= LOG_MS {
+        return None;
+    }
+    let id = placed["step_id"].as_str()?;
+    tasks(guide).iter().position(|s| s.id == id)
+}
+
 /// The walkthrough from where the watcher last placed the player: that task
 /// with its detailed actions, then the tasks after it. Without a placing,
 /// the steps that match what was seen and said.
 pub fn guide_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
-    let placed: Option<Value> = store.get(&task_key(guide)).ok().flatten();
-    let placed = placed
-        .filter(|p| screen::now_ms().saturating_sub(p["at_ms"].as_u64().unwrap_or(0)) < LOG_MS)
-        .and_then(|p| p["step_id"].as_str().map(str::to_owned));
     let list = tasks(guide);
-    let Some(at) = placed.and_then(|id| list.iter().position(|s| s.id == id)) else {
+    let Some(at) = placed_task(store, guide) else {
         return steps_here(store, guide, question);
     };
     let clip = |text: &str, limit: usize| text.chars().take(limit).collect::<String>();
@@ -471,8 +477,9 @@ fn look(
         ModelRequest {
             system: LOOK.into(),
             prompt: format!(
-                "Game: {}\n\nRooms seen so far (use the same name again for the same room): {}\n\nWhat the guide knows:\n{}\n\nThe walkthrough's tasks in order:\n{}\n\nThe walkthrough where the player was last seen:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
+                "Game: {}\n\nThe task you placed the player on last time: {}\n\nRooms seen so far (use the same name again for the same room): {}\n\nWhat the guide knows:\n{}\n\nThe walkthrough's tasks in order:\n{}\n\nThe walkthrough where the player was last seen:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
                 guide.game,
+                placed_task(store, guide).map_or("none yet".into(), |at| (at + 1).to_string()),
                 rooms(store, guide).rooms.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
                 plan.join("\n"),
                 tasks(guide)
