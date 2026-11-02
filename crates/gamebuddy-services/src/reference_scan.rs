@@ -381,6 +381,20 @@ pub fn scan_with(
             }
         };
         let interval = job.interval;
+        // Saved as each sheet is answered, so a game closed mid-scan picks up
+        // where it stopped instead of starting the scan over.
+        let checkpoint = std::sync::Mutex::new(Pending {
+            source_id: job.source_id.clone(),
+            interval,
+            sheets: job.sheets.clone(),
+            subjects: job.subjects.clone(),
+        });
+        let save = |checkpoint: &Pending| {
+            let mut saved: Vec<&Pending> = left.iter().collect();
+            saved.push(checkpoint);
+            let _ = store.put(&pending_key(guide), &saved);
+        };
+        save(&checkpoint.lock().unwrap());
         let sheets = std::mem::take(&mut job.sheets);
         // Contact sheets: which sampled frames carry reference material.
         let chosen = parallel(
@@ -399,12 +413,25 @@ pub fn scan_with(
                 for path in tiles.iter().chain([&sheet_path]) {
                     let _ = std::fs::remove_file(path);
                 }
-                Ok(picked?
+                let picked: Vec<(u64, String)> = picked?
                     .into_iter()
                     .map(|(index, subject)| (chunk[index] as u64 * interval * 1000, subject))
-                    .collect())
+                    .collect();
+                let mut saved = checkpoint.lock().unwrap();
+                saved.sheets.retain(|c| c != chunk);
+                for (at, subject) in &picked {
+                    if !saved
+                        .subjects
+                        .iter()
+                        .any(|(_, s)| s.eq_ignore_ascii_case(subject))
+                    {
+                        saved.subjects.push((*at, subject.clone()));
+                    }
+                }
+                Ok(picked)
             },
             |done| {
+                save(&checkpoint.lock().unwrap());
                 status(
                     &format!(
                         "Looking for charts in the walkthrough: {done} of {} frame sheets",
