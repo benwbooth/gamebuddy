@@ -28,7 +28,7 @@ use std::{
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(30);
 /// How long a launch gets to become RetroArch before it counts as another
 /// emulator.
-const PROCESS_WAIT: Duration = Duration::from_secs(5);
+const PROCESS_WAIT: Duration = Duration::from_secs(12);
 const PORT: u16 = 55393;
 /// RetroArch's network gamepad for player 1 (`network_remote`): GameBuddy's
 /// player presses buttons through it. It only writes input; nothing is read
@@ -238,32 +238,28 @@ fn playing() -> bool {
     answer().unwrap_or(false)
 }
 
-/// The launched process or one below it: Flatpak leaves `bwrap` at the top.
-fn runs_retroarch(pid: u32) -> bool {
-    let named = std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|line| {
-        String::from_utf8_lossy(&line)
-            .to_lowercase()
-            .contains("retroarch")
-    });
-    named
-        || std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter_map(|child| child.parse().ok())
-            .any(runs_retroarch)
+/// Whether RetroArch is running. By name, not the launched process: Flatpak
+/// starts it through helpers that can leave that process's tree.
+fn retroarch_running() -> bool {
+    std::fs::read_dir("/proc").is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            std::fs::read_to_string(entry.path().join("comm"))
+                .is_ok_and(|name| name.trim() == "retroarch")
+        })
+    })
 }
 
 /// As `frame`, but a game in RetroArch waits here for its first clean frame
 /// rather than start on the shaded window, bezel and all. Anything that keeps
 /// that frame from coming ends the wait, and the window is captured instead.
-pub fn first_frame(root: &Path, out: &Path, pid: u32) -> Result<Option<PathBuf>> {
+pub fn first_frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
     static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
     let started = *STARTED.lock().unwrap().get_or_insert_with(Instant::now);
     loop {
         let frame = frame(root, out)?;
         if frame.is_some()
             || disabled(root)
-            || (started.elapsed() > PROCESS_WAIT && !runs_retroarch(pid))
+            || (started.elapsed() > PROCESS_WAIT && !retroarch_running())
             || started.elapsed() > FIRST_FRAME_WAIT
         {
             return Ok(frame);

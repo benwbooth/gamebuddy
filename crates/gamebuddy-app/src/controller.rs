@@ -885,7 +885,7 @@ impl ffi::Buddy {
                         // The unfiltered frame from RetroArch when it answers;
                         // otherwise the game window as the player sees it.
                         let raw = root.join("captures").join(format!("game-{pid}-raw.png"));
-                        if let Ok(Some(raw)) = services::retroarch::first_frame(&root, &raw, pid) {
+                        if let Ok(Some(raw)) = services::retroarch::first_frame(&root, &raw) {
                             return Ok(raw);
                         }
                         #[cfg(target_os = "linux")]
