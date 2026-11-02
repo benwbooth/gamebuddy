@@ -1620,7 +1620,9 @@ impl ffi::Buddy {
                         return services::screen::seen::image(&s, &id);
                     }
                     let guide = guide.as_ref().context("No guide loaded")?;
-                    if let Some(room) = id.strip_prefix("spatial:") {
+                    if let Some(room) = id.strip_prefix("room:") {
+                        services::watch::room_image(&s, guide, room)
+                    } else if let Some(room) = id.strip_prefix("spatial:") {
                         services::spatial::preview(&s, guide, room)
                     } else {
                         services::navigation::cached_preview(&s, guide, &id)
