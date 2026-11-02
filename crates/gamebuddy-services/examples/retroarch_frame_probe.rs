@@ -1,5 +1,6 @@
 //! retroarch_frame_probe config <root>  → writes and prints the RetroArch config
 //! retroarch_frame_probe grab <root>    → asks for five frames and times them
+//! retroarch_frame_probe first <root> <pid> → times the wait for the first frame
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let root = std::path::PathBuf::from(&args[2]);
@@ -7,6 +8,17 @@ fn main() -> anyhow::Result<()> {
         println!(
             "{}",
             gamebuddy_services::retroarch::write_config(&root)?.display()
+        );
+        return Ok(());
+    }
+    if args[1] == "first" {
+        let started = std::time::Instant::now();
+        let out = root.join("first.png");
+        let got = gamebuddy_services::retroarch::first_frame(&root, &out, args[3].parse()?)?;
+        println!(
+            "first frame: {:?} in {} ms",
+            got.map(|p| image::image_dimensions(p).ok()),
+            started.elapsed().as_millis()
         );
         return Ok(());
     }

@@ -25,7 +25,11 @@ use std::{
 
 /// RetroArch's command port while GameBuddy runs (not its 55355 default, so
 /// it never collides with a port the player set up for something else).
-pub const PORT: u16 = 55393;
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(30);
+/// How long a launch gets to become RetroArch before it counts as another
+/// emulator.
+const PROCESS_WAIT: Duration = Duration::from_secs(5);
+const PORT: u16 = 55393;
 /// RetroArch's network gamepad for player 1 (`network_remote`): GameBuddy's
 /// player presses buttons through it. It only writes input; nothing is read
 /// back from the emulator.
@@ -220,6 +224,54 @@ fn start_follower(root: &Path, file: &Path) -> Result<Child> {
         .context("ffmpeg is needed to follow RetroArch's recording")
 }
 
+/// Whether RetroArch has a game running. It ignores commands until it does,
+/// and a toggle sent too early cost eight seconds of the shaded picture.
+fn playing() -> bool {
+    let answer = || -> Result<bool> {
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+        socket.send_to(b"GET_STATUS", ("127.0.0.1", PORT))?;
+        let mut reply = [0; 256];
+        let size = socket.recv(&mut reply)?;
+        Ok(String::from_utf8_lossy(&reply[..size]).contains("PLAYING"))
+    };
+    answer().unwrap_or(false)
+}
+
+/// The launched process or one below it: Flatpak leaves `bwrap` at the top.
+fn runs_retroarch(pid: u32) -> bool {
+    let named = std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|line| {
+        String::from_utf8_lossy(&line)
+            .to_lowercase()
+            .contains("retroarch")
+    });
+    named
+        || std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|child| child.parse().ok())
+            .any(runs_retroarch)
+}
+
+/// As `frame`, but a game in RetroArch waits here for its first clean frame
+/// rather than start on the shaded window, bezel and all. Anything that keeps
+/// that frame from coming ends the wait, and the window is captured instead.
+pub fn first_frame(root: &Path, out: &Path, pid: u32) -> Result<Option<PathBuf>> {
+    static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+    let started = *STARTED.lock().unwrap().get_or_insert_with(Instant::now);
+    loop {
+        let frame = frame(root, out)?;
+        if frame.is_some()
+            || disabled(root)
+            || (started.elapsed() > PROCESS_WAIT && !runs_retroarch(pid))
+            || started.elapsed() > FIRST_FRAME_WAIT
+        {
+            return Ok(frame);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// The newest unfiltered frame, copied to `out`. `None` while the recording
 /// is not up yet (RetroArch still starting, another emulator, raw frames
 /// turned off): the caller then captures the window. Once frames flow, the
@@ -268,6 +320,7 @@ pub fn frame(root: &Path, out: &Path) -> Result<Option<PathBuf>> {
                 if state
                     .last_toggle
                     .is_none_or(|t| now.duration_since(t) > Duration::from_secs(8))
+                    && playing()
                 {
                     toggle_recording(&mut state)?;
                 }
