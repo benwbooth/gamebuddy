@@ -276,6 +276,52 @@ pub fn tasks(guide: &Guide) -> Vec<&gamebuddy_core::Step> {
         .collect()
 }
 
+/// Move the walkthrough's cursor to the placed task's first action, so the
+/// outline and the Now card show where the player really is. Actions passed
+/// on the way are passed, not completed; a placing further back undoes that.
+fn follow(store: &Store, guide: &Guide, task: &str) -> Result<()> {
+    let outline = gamebuddy_core::player_outline(guide);
+    let within = |id: &str| {
+        let mut at = Some(id);
+        while let Some(step) = at {
+            if step == task {
+                return true;
+            }
+            at = guide.step(step).and_then(|s| s.parent_id.as_deref());
+        }
+        false
+    };
+    let Some(target) = outline.iter().position(|s| within(&s.id)) else {
+        return Ok(());
+    };
+    let progress = store.progress(guide)?;
+    let current = progress
+        .current_step
+        .as_deref()
+        .and_then(|id| outline.iter().position(|s| s.id == id))
+        .unwrap_or(0);
+    if current == target {
+        return Ok(());
+    }
+    let id = outline[target].id.clone();
+    if target > current {
+        let passed: Vec<String> = outline[current..target]
+            .iter()
+            .map(|s| s.id.clone())
+            .filter(|s| !gamebuddy_core::step_complete(guide, &progress, s))
+            .collect();
+        store.observed_arrival(guide, progress.epoch, &id, &passed, "companion")?;
+    } else {
+        let unpass: Vec<String> = outline[target..current]
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        store.observed_return(guide, progress.epoch, &id, &unpass)?;
+    }
+    crate::flight::event("walkthrough_cursor", json!({"step_id": id}));
+    Ok(())
+}
+
 /// The index in `tasks` where the watcher last placed the player.
 pub(crate) fn placed_task(store: &Store, guide: &Guide) -> Option<usize> {
     let placed: Value = store.get(&task_key(guide)).ok()??;
@@ -537,6 +583,9 @@ pub(crate) fn apply(
             &task_key(guide),
             &json!({"step_id": task, "at_ms": screen::now_ms()}),
         )?;
+        if let Err(error) = follow(store, guide, &task) {
+            eprintln!("Walkthrough cursor: {error:#}");
+        }
     }
     if !look.place.trim().is_empty() {
         visit(store, guide, look.place.trim(), snapshot)?;
