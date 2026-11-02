@@ -17,7 +17,7 @@ use std::{
     sync::{Mutex, OnceLock, mpsc},
 };
 
-const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. Your folder holds walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video), narration.txt (the walkthrough video's narrator, word for word with times), video/ (full frames from the walkthrough video around the task the player is on and the next two, named by task number and video time: when the text does not say which door, exit or object, Read the frames just before the new room or result appears and find where the video's cursor or character was, such as the exit picked on a map or the door walked through, then match it to the player's screen; the video may label rooms by name), frames/ (recent screens) and notes.md (your own notes). Read notes.md first when you start. Keep notes.md current with Edit or Write: what the player carries, rooms seen and how they connect, what they have done and solved, deaths and their causes, anything the player told you (their corrections always win), the walkthrough task they are on and your plan. Keep it under 60 short lines: rewrite entries as things change rather than adding a line per screen, and update it whenever something changes. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) from the walkthrough, the narration and the video frames, and write it in your notes, so that a question about it can be answered at once. Use Grep and Read on walkthrough.md and narration.txt to check facts before telling the player anything; exact commands and solutions come only from those files or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen now and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
+const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. Your folder holds walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video), narration.txt (the walkthrough video's narrator, word for word with times), video/ (full frames from the walkthrough video from the task before the player's to two tasks after it, named by task number and video time: when the text does not say which door, exit or object, Read the frames just before the new room or result appears and find where the video's cursor or character was, such as the exit picked on a map or the door walked through, then match it to the player's screen; the video may label rooms by name), frames/ (recent screens) and notes.md (your own notes). Read notes.md first when you start. Keep notes.md current with Edit or Write: what the player carries, rooms seen and how they connect, what they have done and solved, deaths and their causes, anything the player told you (their corrections always win), the walkthrough task they are on and your plan. Keep it under 60 short lines: rewrite entries as things change rather than adding a line per screen, and update it whenever something changes. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) from the walkthrough, the narration and the video frames, and write it in your notes, so that a question about it can be answered at once. Use Grep and Read on walkthrough.md and narration.txt to check facts before telling the player anything; exact commands and solutions come only from those files or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen now and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
 
 /// After this many looks the session starts over from its notes, so the
 /// conversation (a picture each look) never grows past what fits.
@@ -128,10 +128,21 @@ fn run(
                 session = Some(start(&folder(&store, &job.guide), &config)?);
             }
             let session = session.as_mut().unwrap();
-            if let Err(error) = video_frames(&store, &job.guide, &mut video) {
-                eprintln!("Companion video frames: {error:#}");
+            let fresh_video = match video_frames(&store, &job.guide, &mut video) {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    eprintln!("Companion video frames: {error:#}");
+                    false
+                }
+            };
+            let mut message = message(&store, &job, since_ms, &mut heard)?;
+            if fresh_video {
+                let text = &mut message["message"]["content"][0]["text"];
+                *text = json!(format!(
+                    "video/ now holds walkthrough video frames from the task before the player's to two after it; use them for anything your notes call unknown.\n\n{}",
+                    text.as_str().unwrap_or_default()
+                ));
             }
-            let message = message(&store, &job, since_ms, &mut heard)?;
             let reply = turn(session, message)?;
             since_ms = job.snapshot.captured_at_ms;
             watch::apply(&store, &job.guide, &job.snapshot, &reply)
@@ -259,20 +270,23 @@ fn clock(ms: u64) -> String {
 /// next two, every two seconds from a little before each starts: the
 /// walkthrough's text often leaves out which door or object was clicked,
 /// and the video shows it.
-fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Result<()> {
-    let Some(at) = watch::placed_task(store, guide) else {
-        return Ok(());
+fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Result<bool> {
+    let Some(at) = watch::last_task(store, guide) else {
+        return Ok(false);
     };
     if *shown == Some(at) {
-        return Ok(());
+        return Ok(false);
     }
     let Some(media) = guide.sources.iter().find_map(|s| s.media_path.clone()) else {
-        return Ok(());
+        return Ok(false);
     };
     let directory = folder(store, guide).join("video");
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory)?;
-    for (offset, task) in watch::tasks(guide).iter().enumerate().skip(at).take(3) {
+    // From the task before: how the player got here is often the question
+    // (which door led in), and it is shown at the end of the previous task.
+    let first = at.saturating_sub(1);
+    for (offset, task) in watch::tasks(guide).iter().enumerate().skip(first).take(4) {
         let Some(start) = task.anchors.first().and_then(|a| a.start_ms) else {
             continue;
         };
@@ -280,13 +294,9 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
             .end_ms
             .unwrap_or(start + 30_000)
             .min(start + 30_000);
-        let mut ms = start.saturating_sub(8_000);
+        let mut ms = start.saturating_sub(12_000);
         while ms <= end {
-            let name = format!(
-                "task{}-{}.jpg",
-                at + offset + 1,
-                clock(ms).replace(':', "m")
-            );
+            let name = format!("task{}-{}.jpg", offset + 1, clock(ms).replace(':', "m"));
             let _ = Command::new("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-ss"])
                 .arg(format!("{:.1}", ms as f64 / 1000.0))
@@ -300,7 +310,7 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
         }
     }
     *shown = Some(at);
-    Ok(())
+    Ok(true)
 }
 
 /// What happened since the last look, what the player said, and the screen.

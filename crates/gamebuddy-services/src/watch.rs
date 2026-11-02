@@ -322,6 +322,14 @@ fn follow(store: &Store, guide: &Guide, task: &str) -> Result<()> {
     Ok(())
 }
 
+/// The index in `tasks` where the player was last placed, however long ago:
+/// a new session starts where the last one left off.
+pub(crate) fn last_task(store: &Store, guide: &Guide) -> Option<usize> {
+    let placed: Value = store.get(&task_key(guide)).ok()??;
+    let id = placed["step_id"].as_str()?;
+    tasks(guide).iter().position(|s| s.id == id)
+}
+
 /// The index in `tasks` where the watcher last placed the player.
 pub(crate) fn placed_task(store: &Store, guide: &Guide) -> Option<usize> {
     let placed: Value = store.get(&task_key(guide)).ok()??;
