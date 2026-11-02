@@ -16,6 +16,7 @@ fn main() -> Result<()> {
     let provider = HttpProvider::new(settings.reasoning)?;
     grounded::warm(&provider);
     store.put("active_guide", &guide.id)?;
+    gamebuddy_services::recover_captions(&store, &guide)?;
     let ticket = screen::start(&store, &guide.game, true)?;
     for (index, frame) in frames.iter().enumerate() {
         screen::publish(&store, &ticket, frame, "replay")?;

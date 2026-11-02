@@ -74,6 +74,79 @@ pub fn import_video(game: &str, path: &Path, title: Option<&str>) -> Result<Guid
     Ok(guide)
 }
 
+/// Download a video's English captions. Asking for several tracks at once
+/// made a rate limit on the last one fail the whole download and throw away
+/// the track already saved, so each is asked for in turn, and a saved file
+/// counts whatever yt-dlp reports. `en-orig` is YouTube's own transcript;
+/// `en` is often a translation of it, and limited first.
+pub fn fetch_captions(media_dir: &Path, url: &str) -> Result<String> {
+    let mut failure = anyhow::anyhow!("No English captions were available");
+    for (attempt, track) in ["en-orig", "en", "en-orig", "en"].into_iter().enumerate() {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        let result = run(
+            Command::new("yt-dlp")
+                .args([
+                    "--no-playlist",
+                    "--skip-download",
+                    "--write-subs",
+                    "--write-auto-subs",
+                    "--sub-format",
+                    "json3",
+                    "--sub-langs",
+                    track,
+                    "--socket-timeout",
+                    "20",
+                    "--retries",
+                    "1",
+                    "-o",
+                ])
+                .arg(media_dir.join("source.%(ext)s"))
+                .args(["--", url]),
+            "yt-dlp captions",
+        );
+        let saved = media_dir.join(format!("source.{track}.json3"));
+        if saved.is_file() {
+            let cues =
+                crate::captions::parse_json3(&serde_json::from_slice(&std::fs::read(saved)?)?)?;
+            let path = media_dir.join("captions.json");
+            std::fs::write(&path, serde_json::to_vec(&cues)?)?;
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        if let Err(error) = result {
+            failure = error;
+        }
+    }
+    Err(failure)
+}
+
+/// A guide's captions: those it was imported with, or those fetched since,
+/// for a guide whose import lost them.
+pub fn captions_of(store: &Store, guide: &Guide) -> Option<String> {
+    guide.sources.iter().find_map(|source| {
+        source.captions_path.clone().or_else(|| {
+            let id = youtube_id(source.url.as_deref()?).ok()?;
+            let path = store.root.join("media").join(id).join("captions.json");
+            path.is_file().then(|| path.to_string_lossy().into_owned())
+        })
+    })
+}
+
+/// Fetch captions for a guide imported without them.
+pub fn recover_captions(store: &Store, guide: &Guide) -> Result<()> {
+    if captions_of(store, guide).is_some() {
+        return Ok(());
+    }
+    for url in guide.sources.iter().filter_map(|s| s.url.as_deref()) {
+        let Ok(id) = youtube_id(url) else { continue };
+        let media_dir = store.root.join("media").join(id);
+        std::fs::create_dir_all(&media_dir)?;
+        fetch_captions(&media_dir, url)?;
+    }
+    Ok(())
+}
+
 pub fn import_youtube(
     store: &Store,
     game: &str,
@@ -141,40 +214,7 @@ pub fn import_youtube(
     progress("Importing available English captions…".into());
     // Caption availability is independent of the media download. Missing or
     // rate-limited subtitles do not erase a usable video reference.
-    let caption_result = (|| -> Result<String> {
-        run(
-            Command::new("yt-dlp")
-                .args([
-                    "--no-playlist",
-                    "--skip-download",
-                    "--write-subs",
-                    "--write-auto-subs",
-                    "--sub-format",
-                    "json3",
-                    "--sub-langs",
-                    "en,en-orig",
-                    "--socket-timeout",
-                    "20",
-                    "--retries",
-                    "1",
-                    "-o",
-                ])
-                .arg(media_dir.join("source.%(ext)s"))
-                .args(["--", guide.sources[0].url.as_deref().unwrap()]),
-            "yt-dlp captions",
-        )?;
-        let path = [
-            media_dir.join("source.en.json3"),
-            media_dir.join("source.en-orig.json3"),
-        ]
-        .into_iter()
-        .find(|p| p.is_file())
-        .context("No English captions were available")?;
-        let cues = crate::captions::parse_json3(&serde_json::from_slice(&std::fs::read(path)?)?)?;
-        let path = media_dir.join("captions.json");
-        std::fs::write(&path, serde_json::to_vec(&cues)?)?;
-        Ok(path.to_string_lossy().into_owned())
-    })();
+    let caption_result = fetch_captions(&media_dir, guide.sources[0].url.as_deref().unwrap());
     match caption_result {
         Ok(path) => guide.sources[0].captions_path = Some(path),
         Err(error) => guide.coverage_notes.push(format!("Captions unavailable: {error}. Video frame sampling alone may miss spoken instructions.")),

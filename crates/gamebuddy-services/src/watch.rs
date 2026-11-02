@@ -64,6 +64,7 @@ struct Job {
     read_at: u64,
     looked_at: u64,
     scene: Option<Vec<u8>>,
+    captions_tried: bool,
 }
 
 static JOBS: OnceLock<Mutex<HashMap<PathBuf, Job>>> = OnceLock::new();
@@ -159,6 +160,9 @@ pub fn steps_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
         .filter(|(score, _)| *score >= 3)
         .collect();
     scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    let narration = scored
+        .first()
+        .and_then(|(_, step)| narrated(store, guide, step));
     scored
         .into_iter()
         .take(4)
@@ -166,7 +170,20 @@ pub fn steps_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
             let body: String = s.instructions.chars().take(420).collect();
             format!("{}: {body}", s.title)
         })
+        .chain(narration)
         .collect()
+}
+
+/// What the walkthrough's narrator says over this step, word for word.
+fn narrated(store: &Store, guide: &Guide, step: &gamebuddy_core::Step) -> Option<String> {
+    let path = crate::media::captions_of(store, guide)?;
+    let anchor = step.anchors.first()?;
+    let start = anchor.start_ms?.saturating_sub(15_000);
+    let end = anchor.end_ms.unwrap_or(start + 60_000) + 15_000;
+    let cues = crate::captions::excerpt(&path, start, end).ok()?;
+    let words: Vec<_> = cues.iter().map(|c| c.text.as_str()).collect();
+    let words: String = words.join(" ").chars().take(1500).collect();
+    (!words.is_empty()).then(|| format!("The narrator, word for word: {words}"))
 }
 
 /// Called with each new frame. Reading and looking run behind it.
@@ -182,6 +199,17 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     };
     if !changed && since < REREAD_MS {
         return;
+    }
+    if !job.captions_tried {
+        job.captions_tried = true;
+        let (root, guide) = (store.root.clone(), guide.clone());
+        std::thread::spawn(move || {
+            let recovered =
+                Store::open(&root).and_then(|store| crate::media::recover_captions(&store, &guide));
+            if let Err(error) = recovered {
+                eprintln!("Walkthrough captions: {error:#}");
+            }
+        });
     }
     job.running = true;
     job.read_at = snapshot.captured_at_ms;
