@@ -504,6 +504,15 @@ pub fn watch(
     store.put(&key(guide), &log)?;
     // The last seen screen widget shows what the watcher last looked at.
     screen::seen::record(store, snapshot, "observer")?;
+    // A rebuilt walkthrough starts a new progress record at the beginning;
+    // put the cursor back where the player was placed without waiting for
+    // the next look.
+    if let Some(at) = placed_task(store, guide)
+        && let Some(task) = tasks(guide).get(at).map(|s| s.id.clone())
+        && let Err(error) = follow(store, guide, &task)
+    {
+        eprintln!("Walkthrough cursor: {error:#}");
+    }
     if !news || !may_look || on_this_computer(&settings.reasoning) {
         return Ok(false);
     }
