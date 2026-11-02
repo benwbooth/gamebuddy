@@ -14,7 +14,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
+pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". task is the number of the walkthrough task the player is on now, the first one not yet done, judged from the screen, what they carry and the log; 0 if unclear. Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
 
 const LOG_LIMIT: usize = 30;
 /// How far back the log counts as what just happened.
@@ -45,6 +45,7 @@ pub struct Entry {
 struct Look {
     happening: String,
     place: String,
+    task: usize,
     say: String,
     urgency: String,
 }
@@ -54,6 +55,7 @@ impl Default for Look {
         Self {
             happening: String::new(),
             place: String::new(),
+            task: 0,
             say: String::new(),
             urgency: "none".into(),
         }
@@ -233,6 +235,88 @@ pub fn lines(store: &Store, guide: &Guide) -> Vec<String> {
         .collect()
 }
 
+fn task_key(guide: &Guide) -> String {
+    format!("watch-task:{}", guide.id)
+}
+
+fn depth(guide: &Guide, step: &gamebuddy_core::Step) -> usize {
+    let mut depth = 0;
+    let mut parent = step.parent_id.as_deref();
+    while let Some(id) = parent.filter(|_| depth < 8) {
+        depth += 1;
+        parent = guide.step(id).and_then(|s| s.parent_id.as_deref());
+    }
+    depth
+}
+
+fn placeholder(step: &gamebuddy_core::Step) -> bool {
+    [
+        "Reference reviewed",
+        "Chapter supplied",
+        "Detailed tasks below",
+    ]
+    .iter()
+    .any(|p| step.instructions.starts_with(p))
+}
+
+/// The walkthrough as a list of tasks to place the player in: its second
+/// level (a chapter's part's tasks), or its deepest level when shallower.
+pub fn tasks(guide: &Guide) -> Vec<&gamebuddy_core::Step> {
+    let deepest = guide
+        .steps
+        .iter()
+        .map(|s| depth(guide, s))
+        .max()
+        .unwrap_or(0);
+    let level = deepest.min(2);
+    guide
+        .steps
+        .iter()
+        .filter(|s| depth(guide, s) == level && !placeholder(s))
+        .collect()
+}
+
+/// The walkthrough from where the watcher last placed the player: that task
+/// with its detailed actions, then the tasks after it. Without a placing,
+/// the steps that match what was seen and said.
+pub fn guide_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
+    let placed: Option<Value> = store.get(&task_key(guide)).ok().flatten();
+    let placed = placed
+        .filter(|p| screen::now_ms().saturating_sub(p["at_ms"].as_u64().unwrap_or(0)) < LOG_MS)
+        .and_then(|p| p["step_id"].as_str().map(str::to_owned));
+    let list = tasks(guide);
+    let Some(at) = placed.and_then(|id| list.iter().position(|s| s.id == id)) else {
+        return steps_here(store, guide, question);
+    };
+    let clip = |text: &str, limit: usize| text.chars().take(limit).collect::<String>();
+    let task = list[at];
+    let mut lines = vec![format!(
+        "The player is on this task: {}: {}",
+        task.title,
+        clip(&task.instructions, 500)
+    )];
+    for child in guide
+        .steps
+        .iter()
+        .filter(|s| s.parent_id.as_deref() == Some(task.id.as_str()) && !placeholder(s))
+    {
+        lines.push(format!(
+            "  In detail: {}: {}",
+            child.title,
+            clip(&child.instructions, 300)
+        ));
+    }
+    for next in list.iter().skip(at + 1).take(3) {
+        lines.push(format!(
+            "Then: {}: {}",
+            next.title,
+            clip(&next.instructions, 300)
+        ));
+    }
+    lines.extend(narrated(store, guide, task));
+    lines
+}
+
 /// The walkthrough steps about this moment, wherever the plan thinks the
 /// player is: matched on what the watcher last saw and what was just said.
 pub fn steps_here(store: &Store, guide: &Guide, question: &str) -> Vec<String> {
@@ -387,11 +471,17 @@ fn look(
         ModelRequest {
             system: LOOK.into(),
             prompt: format!(
-                "Game: {}\n\nRooms seen so far (use the same name again for the same room): {}\n\nWhat the guide knows:\n{}\n\nWalkthrough steps for this moment:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
+                "Game: {}\n\nRooms seen so far (use the same name again for the same room): {}\n\nWhat the guide knows:\n{}\n\nThe walkthrough's tasks in order:\n{}\n\nThe walkthrough where the player was last seen:\n{}\n\nWhat just happened, oldest first:\n{}\n\nThe image is the screen now.",
                 guide.game,
                 rooms(store, guide).rooms.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
                 plan.join("\n"),
-                steps_here(store, guide, "").join("\n"),
+                tasks(guide)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, step)| format!("{}. {}", i + 1, step.title))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                guide_here(store, guide, "").join("\n"),
                 lines(store, guide).join("\n"),
             ),
             images: vec![snapshot.jpeg.clone()],
@@ -417,6 +507,16 @@ fn look(
     let excess = log.len().saturating_sub(LOG_LIMIT);
     log.drain(..excess);
     store.put(&key(guide), &log)?;
+    if let Some(task) = look
+        .task
+        .checked_sub(1)
+        .and_then(|i| tasks(guide).get(i).map(|s| s.id.clone()))
+    {
+        store.put(
+            &task_key(guide),
+            &json!({"step_id": task, "at_ms": screen::now_ms()}),
+        )?;
+    }
     if !look.place.trim().is_empty() {
         visit(store, guide, look.place.trim(), snapshot)?;
         store.put(
