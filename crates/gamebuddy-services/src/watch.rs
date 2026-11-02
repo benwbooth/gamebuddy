@@ -14,7 +14,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
+pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words, or empty if unclear\", \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
 
 const LOG_LIMIT: usize = 30;
 /// How far back the log counts as what just happened.
@@ -44,6 +44,7 @@ pub struct Entry {
 #[serde(default)]
 struct Look {
     happening: String,
+    place: String,
     say: String,
     urgency: String,
 }
@@ -52,6 +53,7 @@ impl Default for Look {
     fn default() -> Self {
         Self {
             happening: String::new(),
+            place: String::new(),
             say: String::new(),
             urgency: "none".into(),
         }
@@ -71,6 +73,18 @@ static JOBS: OnceLock<Mutex<HashMap<PathBuf, Job>>> = OnceLock::new();
 
 fn key(guide: &Guide) -> String {
     format!("watch-log:{}", guide.id)
+}
+
+fn place_key(guide: &Guide) -> String {
+    format!("watch-place:{}", guide.id)
+}
+
+/// Where the watcher last saw the player, for games with no map to place
+/// them on.
+pub fn place(store: &Store, guide: &Guide) -> Option<String> {
+    let seen: Value = store.get(&place_key(guide)).ok()??;
+    (screen::now_ms().saturating_sub(seen["at_ms"].as_u64()?) < LOG_MS)
+        .then(|| seen["place"].as_str().map(str::to_owned))?
 }
 
 fn normalized(text: &str) -> String {
@@ -261,6 +275,8 @@ pub fn watch(
     }
     let news = record(&mut log, entry, changed);
     store.put(&key(guide), &log)?;
+    // The last seen screen widget shows what the watcher last looked at.
+    screen::seen::record(store, snapshot, "observer")?;
     if !news || !may_look || on_this_computer(&settings.reasoning) {
         return Ok(false);
     }
@@ -309,9 +325,15 @@ fn look(
     let excess = log.len().saturating_sub(LOG_LIMIT);
     log.drain(..excess);
     store.put(&key(guide), &log)?;
+    if !look.place.trim().is_empty() {
+        store.put(
+            &place_key(guide),
+            &json!({"place": look.place.trim(), "at_ms": screen::now_ms()}),
+        )?;
+    }
     crate::flight::event(
         "watch",
-        json!({"happening": look.happening, "say": say, "urgency": look.urgency}),
+        json!({"happening": look.happening, "place": look.place, "say": say, "urgency": look.urgency}),
     );
     if !say.is_empty() {
         offer(store, guide, snapshot, say, &look.urgency)?;

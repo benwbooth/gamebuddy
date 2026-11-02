@@ -897,7 +897,10 @@ pub fn answer(
     let frame = sees
         .then(|| crate::screen::snapshot(store).ok())
         .flatten()
-        .map(|snapshot| snapshot.jpeg);
+        .map(|snapshot| {
+            let _ = crate::screen::seen::record(store, &snapshot, "assistant");
+            snapshot.jpeg
+        });
     let request = ModelRequest {
         system: if frame.is_some() { EXPERT } else { SPEAK }.into(),
         prompt: format!(
