@@ -123,7 +123,7 @@ elif model.endswith(".orpheus"):
             headers={"Content-Type": "application/json"},
         )
         written, codes, windows, pending = "", [], 0, []
-        target = 8
+        target = 12
 
         def flush(more):
             nonlocal pending
@@ -155,11 +155,12 @@ elif model.endswith(".orpheus"):
                     end = 28 + 7 * windows
                     pending.append(decode(codes[end - 28:end])[0, 0, 2048:4096].float().cpu().numpy())
                     windows += 1
-                    # Pieces grow (0.7, 1, then 1.5 s of audio) so each is written
-                    # before the one before it finishes playing.
+                    # Pieces grow (1, 1.5, then 2 s of audio): each is written
+                    # well before the one before it finishes, with room to
+                    # spare when the GPU is shared.
                     if len(pending) >= target:
                         flush(True)
-                        target = 12 if target == 8 else 18
+                        target = 18 if target == 12 else 24
         flush(False)
 
     def synthesize(text, wav):

@@ -55,8 +55,11 @@ pub fn busy(store: &Store, guide: &Guide) -> bool {
         .get()
         .and_then(|running| {
             let running = running.lock().ok()?;
-            let entry = running.get(&(store.root.clone(), guide.id.clone()))?;
-            Some(entry.busy.load(std::sync::atomic::Ordering::Acquire))
+            Some(["watch", "ask"].iter().any(|role| {
+                running
+                    .get(&(store.root.clone(), format!("{}#{role}", guide.id)))
+                    .is_some_and(|e| e.busy.load(std::sync::atomic::Ordering::Acquire))
+            }))
         })
         .unwrap_or(false)
 }
@@ -81,7 +84,7 @@ pub fn observe(
 ) -> bool {
     use std::sync::atomic::Ordering;
     let mut running = RUNNING.get_or_init(Default::default).lock().unwrap();
-    let entry = entry(&mut running, store, guide, settings);
+    let entry = entry(&mut running, store, guide, settings, "watch");
     if entry.busy.load(Ordering::Acquire) {
         return false;
     }
@@ -100,20 +103,25 @@ pub fn observe(
     sent
 }
 
+/// The companion runs as two Claude sessions over the same folder: one
+/// watching, one answering, so a question never waits behind a look (that
+/// made answers take half a minute).
 fn entry<'a>(
     running: &'a mut HashMap<(PathBuf, String), Running>,
     store: &Store,
     guide: &Guide,
     settings: &Settings,
+    role: &str,
 ) -> &'a Running {
     running
-        .entry((store.root.clone(), guide.id.clone()))
+        .entry((store.root.clone(), format!("{}#{role}", guide.id)))
         .or_insert_with(|| {
             let (sender, receiver) = mpsc::sync_channel::<Job>(1);
             let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (root, config, flag) =
                 (store.root.clone(), settings.reasoning.clone(), busy.clone());
-            std::thread::spawn(move || run(root, config, receiver, flag));
+            let watching = role == "watch";
+            std::thread::spawn(move || run(root, config, receiver, flag, watching));
             Running { sender, busy }
         })
 }
@@ -130,12 +138,22 @@ pub fn ask(
 ) -> Option<String> {
     use std::sync::atomic::Ordering;
     let started = std::time::Instant::now();
-    let snapshot = screen::snapshot(store).ok()?;
+    // Right after launch the screen can be a moment from its first fresh
+    // frame; wait for it rather than give up at once.
+    let snapshot = loop {
+        match screen::snapshot(store) {
+            Ok(snapshot) => break snapshot,
+            Err(_) if started.elapsed() < std::time::Duration::from_secs(5) => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return None,
+        }
+    };
     let (answer, reply) = mpsc::channel();
     loop {
         {
             let mut running = RUNNING.get_or_init(Default::default).lock().unwrap();
-            let entry = entry(&mut running, store, guide, settings);
+            let entry = entry(&mut running, store, guide, settings, "ask");
             if !entry.busy.swap(true, Ordering::AcqRel) {
                 let job = Job {
                     guide: guide.clone(),
@@ -179,6 +197,7 @@ fn run(
     config: crate::ProviderConfig,
     jobs: mpsc::Receiver<Job>,
     busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    watching: bool,
 ) {
     let mut session: Option<Session> = None;
     let mut since_ms = 0;
@@ -195,13 +214,12 @@ fn run(
                 session = Some(start(&folder(&store, &job.guide), &config)?);
             }
             let session = session.as_mut().unwrap();
-            let fresh_video = match video_frames(&store, &job.guide, &mut video) {
-                Ok(fresh) => fresh,
-                Err(error) => {
+            // The watching session cuts the frames around the task; both read them.
+            let fresh_video = watching
+                && video_frames(&store, &job.guide, &mut video).unwrap_or_else(|error| {
                     eprintln!("Companion video frames: {error:#}");
                     false
-                }
-            };
+                });
             let mut message = message(&store, &job, since_ms, &mut heard)?;
             if fresh_video {
                 let text = &mut message["message"]["content"][0]["text"];

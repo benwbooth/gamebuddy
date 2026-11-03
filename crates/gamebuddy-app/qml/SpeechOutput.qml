@@ -55,23 +55,46 @@ Item {
     function stop() {
         neural.stop()
         neuralActive = false
-        chunks = ({}); nextIndex = 0; lastIndex = -1; spoken = ""
+        chunks = ({}); nextIndex = 0; lastIndex = -1; spoken = ""; lastText = ""; loaded = -1; current = 0
         player.stop()
+        spare.stop()
         system.stop()
     }
+    // Streamed speech arrives in short pieces. Two players take turns, the
+    // idle one loaded with the next piece, so one starts the moment the other
+    // ends; a single player reloading between pieces made the voice stutter.
+    property int current: 0
+    property int loaded: -1
+    function playing(p) { return p.playbackState === MediaPlayer.PlayingState }
     function playNext() {
+        const now = current === 0 ? player : spare
+        const next = current === 0 ? spare : player
+        if (playing(now)) {
+            const chunk = chunks[nextIndex]
+            if (chunk && loaded !== nextIndex) { next.source = chunk.url; loaded = nextIndex }
+            return
+        }
         const chunk = chunks[nextIndex]
         if (!chunk) {
             // Sentences can finish synthesizing out of order.
             if (lastIndex >= 0 && nextIndex > lastIndex) neuralActive = false
             return
         }
-        if (player.playbackState === MediaPlayer.PlayingState) return
+        const start = loaded === nextIndex ? next : now
+        if (start === now) now.source = chunk.url
+        current = start === player ? 0 : 1
+        loaded = -1
         nextIndex++
-        spoken += (spoken.length ? " " : "") + chunk.text
-        player.source = chunk.url
-        player.play()
+        if (chunk.text !== lastText) spoken += (spoken.length ? " " : "") + chunk.text
+        lastText = chunk.text
+        start.play()
+        const following = chunks[nextIndex]
+        if (following) {
+            (start === player ? spare : player).source = following.url
+            loaded = nextIndex
+        }
     }
+    property string lastText: ""
     function fallBack(error) {
         if (trace) console.warn("GAMEBUDDY_NEURAL_SPEECH_ERROR " + error)
         // Finish the reply with the system voice from where neural audio stopped.
@@ -99,6 +122,12 @@ Item {
     MediaPlayer {
         id: player
         objectName: "speechPlayer"
+        audioOutput: AudioOutput {}
+        onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && output.neuralActive) output.playNext()
+        onErrorOccurred: (error, message) => { if (output.neuralActive) output.fallBack(message) }
+    }
+    MediaPlayer {
+        id: spare
         audioOutput: AudioOutput {}
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && output.neuralActive) output.playNext()
         onErrorOccurred: (error, message) => { if (output.neuralActive) output.fallBack(message) }
