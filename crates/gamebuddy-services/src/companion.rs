@@ -377,7 +377,8 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
             .end_ms
             .unwrap_or(start + 30_000)
             .min(start + 30_000);
-        // Every half second over the moments before the task starts, where
+        // Every half second from shortly before the task starts until just after
+        // (its start time is only roughly where the step begins), where
         // the click that led here happens (two seconds apart missed it, and
         // a cursor passing over another exit looked like the choice), then
         // every two seconds.
@@ -398,7 +399,7 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
                 .arg(directory.join(name))
                 .stdin(Stdio::null())
                 .status();
-            ms += if ms + 2_000 < start { 500 } else { 2_000 };
+            ms += if ms < start + 6_000 { 500 } else { 2_000 };
         }
     }
     *shown = Some(at);
