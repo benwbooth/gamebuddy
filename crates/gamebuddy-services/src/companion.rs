@@ -17,7 +17,7 @@ use std::{
     sync::{Mutex, OnceLock, mpsc},
 };
 
-const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. Your folder holds walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video), narration.txt (the walkthrough video's narrator, word for word with times), video/ (full frames from the walkthrough video from the task before the player's to two tasks after it, named by task number and video time: when the text does not say which door, exit or object, Read the frames just before the new room or result appears (they are half a second apart there) and find where the video's cursor or character was in the very last frame before the change, not where it passed earlier, such as the exit picked on a map or the door walked through, then match it to the player's screen; the video may label rooms by name), frames/ (recent screens) and notes.md (your own notes). Read notes.md first when you start. Keep notes.md current with Edit or Write: what the player carries, rooms seen and how they connect, what they have done and solved, deaths and their causes, anything the player told you (their corrections always win), the walkthrough task they are on and your plan. Keep it under 60 short lines: rewrite entries as things change rather than adding a line per screen, and update it whenever something changes. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) from the walkthrough, the narration and the video frames, and write it in your notes, so that a question about it can be answered at once. Use Grep and Read on walkthrough.md and narration.txt to check facts before telling the player anything; exact commands and solutions come only from those files or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen now and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
+const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. You also answer the player's questions; they hear your answers spoken. Your folder holds: walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video); narration.txt (the walkthrough video's narrator, word for word with times); video/ (frames from the walkthrough video); frames/ (recent frames of the player's own game); exits.md (which exit in which room leads where); notes.md (your notes). Read notes.md and exits.md first when you start. To see any part of the walkthrough video, run ./video-frames START END STEP, for example ./video-frames 17:30 17:45 0.5, which writes frames into video/ and prints their names; then Read them. When the walkthrough does not say which door, exit or object, find the moment in the video (task times, narration times) and look at frames half a second apart just before the new room appears: where the video's cursor or character is in the very last frame before the change is the choice, not where it passed earlier; a pointing-hand cursor clicks with its fingertip, not where the hand's body sits, so count the dots or doors and say which one the fingertip touches (for example the second of three on the right). exits.md is written only from what you see the player do: when a screen shows them in a new room right after they picked an exit, record room, exit, destination. Never write a guess there. In notes.md, start every fact with [seen] (you saw it on the player's screen, the walkthrough or narrator states it, or the video shows it) or [guess]; turn a guess into seen or delete it once you know; keep it under 60 short lines, rewriting rather than adding a line per screen. Record what the player carries, rooms and what they hold, what they have done and solved, deaths and causes, anything the player told you (their word wins), the walkthrough task they are on and your plan. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) and note it. Tell the player only seen facts as facts; for anything else, find out first with your files and tools, or say plainly that you are not sure. Exact commands come only from the walkthrough, the narrator, the video or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Unless the player asked something, leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
 
 /// After this many looks the session starts over from its notes, so the
 /// conversation (a picture each look) never grows past what fits.
@@ -286,6 +286,17 @@ fn prepare(store: &Store, guide: &Guide) -> Result<()> {
             .collect();
         std::fs::write(folder.join("narration.txt"), lines.join("\n"))?;
     }
+    // The companion's way into the walkthrough video, any moment it needs.
+    if let Some(media) = guide.sources.iter().find_map(|s| s.media_path.clone()) {
+        let script = folder.join("video-frames");
+        std::fs::write(&script, video_script(&media))?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let exits = folder.join("exits.md");
+    if !exits.is_file() {
+        std::fs::write(exits, "# Exits seen\n\nroom | exit picked | led to\n")?;
+    }
     let notes = folder.join("notes.md");
     if !notes.is_file() {
         std::fs::write(
@@ -308,9 +319,9 @@ fn start(folder: &Path, config: &crate::ProviderConfig) -> Result<Session> {
             "--output-format",
             "stream-json",
             "--tools",
-            "Read,Grep,Glob,Edit,Write",
+            "Read,Grep,Glob,Edit,Write,Bash",
             "--allowedTools",
-            "Read,Grep,Glob,Edit,Write",
+            "Read,Grep,Glob,Edit,Write,Bash(./video-frames:*)",
             "--permission-mode",
             "acceptEdits",
             "--strict-mcp-config",
@@ -342,6 +353,25 @@ fn start(folder: &Path, config: &crate::ProviderConfig) -> Result<Session> {
         output,
         turns: 0,
     })
+}
+
+/// `./video-frames START END STEP`: frames of the walkthrough video between
+/// two times (m:ss or seconds), STEP seconds apart, at most 60, into video/.
+fn video_script(media: &str) -> String {
+    format!(
+        r#"#!/usr/bin/env bash
+set -eu
+seconds() {{ echo "$1" | awk -F: '{{ if (NF == 2) print $1 * 60 + $2; else print $1 }}'; }}
+start=$(seconds "$1"); end=$(seconds "$2"); step="${{3:-0.5}}"
+times=$(awk -v s="$start" -v e="$end" -v d="$step" 'BEGIN {{ if (d <= 0 || (e - s) / d > 60) exit 1; for (t = s; t <= e + 0.001; t += d) printf "%.1f\n", t }}') || {{ echo "At most 60 frames: use a shorter range or a longer step" >&2; exit 1; }}
+mkdir -p video
+for t in $times; do
+  name="video/at-$(awk -v t="$t" 'BEGIN {{ printf "%dm%04.1f", int(t / 60), t - int(t / 60) * 60 }}').jpg"
+  ffmpeg -nostdin -loglevel error -ss "$t" -i {media:?} -frames:v 1 -q:v 4 -y "$name"
+  echo "$name"
+done
+"#
+    )
 }
 
 fn clock(ms: u64) -> String {

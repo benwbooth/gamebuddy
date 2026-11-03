@@ -839,6 +839,56 @@ pub fn answer(
     let sees = !crate::providers::on_this_computer(&provider.config);
     let intent = classify(store, guide, &atlas, question, (!sees).then_some(provider));
     crate::flight::event("voice_intent", json!(intent));
+    // The companion has watched the whole game and can look things up, so it
+    // answers; a fast answer without its tools invented exits.
+    if sees && intent.kind != Kind::Repeat && crate::companion::in_charge(store) {
+        let (root, guide_copy, asked) = (store.root.clone(), guide.clone(), question.to_owned());
+        let (sender, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let found = Store::open(&root).ok().and_then(|store| {
+                let settings: crate::Settings = store.get("settings").ok()??;
+                crate::companion::ask(
+                    &store,
+                    &guide_copy,
+                    &settings,
+                    &asked,
+                    std::time::Duration::from_secs(90),
+                )
+            });
+            let _ = sender.send(found);
+        });
+        let mut first_ms = None;
+        let mut spoken = vec![];
+        let found = match answer.recv_timeout(std::time::Duration::from_secs(4)) {
+            Ok(found) => found,
+            Err(_) => {
+                let holding = "Let me check.".to_owned();
+                first_ms = Some(started.elapsed().as_millis() as u64);
+                on_sentence(holding.clone());
+                spoken.push(holding);
+                answer.recv().ok().flatten()
+            }
+        };
+        let reply = found.unwrap_or_else(|| "Sorry, I couldn't work that out just now.".into());
+        first_ms.get_or_insert(started.elapsed().as_millis() as u64);
+        on_sentence(reply.clone());
+        spoken.push(reply);
+        let turn = Turn {
+            reply: spoken.join(" "),
+            intent,
+            facts: vec![],
+            grounded: true,
+            templated: false,
+            ms: started.elapsed().as_millis() as u64,
+            first_sentence_ms: first_ms,
+        };
+        crate::flight::event(
+            "talk",
+            json!({"ms": turn.ms, "first_sentence_ms": turn.first_sentence_ms, "chars": turn.reply.len(),
+                "intent": turn.intent.kind, "by": "companion"}),
+        );
+        return Ok(turn);
+    }
     if intent.kind == Kind::Repeat {
         let last = talk::recent_turns(store, &guide.game)
             .into_iter()
