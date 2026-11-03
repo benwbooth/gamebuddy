@@ -22,7 +22,7 @@ fn main() -> Result<()> {
         screen::publish(&store, &ticket, frame, "replay")?;
         let snapshot = screen::snapshot(&store)?;
         let started = std::time::Instant::now();
-        let looked = watch::watch(&store, &guide, &snapshot, true, true)?;
+        let looked = watch::watch(&store, &guide, &snapshot, true, true, false)?;
         while gamebuddy_services::companion::busy(&store, &guide) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

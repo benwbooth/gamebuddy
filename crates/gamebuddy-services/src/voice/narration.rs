@@ -118,7 +118,16 @@ impl Narrator {
             && !field(coaching, "text").is_empty()
             && !self.spoken_coaching.contains(coach_id)
             && self.last_coaching.is_none_or(|t| {
-                now.duration_since(t) >= Duration::from_secs(if urgent { 12 } else { 30 })
+                // The companion paces its own remarks; it says the next
+                // step each time the player finishes one.
+                now.duration_since(t)
+                    >= Duration::from_secs(if urgent {
+                        12
+                    } else if field(coaching, "source") == "companion" {
+                        6
+                    } else {
+                        30
+                    })
             });
         let urgent_coaching = can_coach && urgent;
         let urgent_event = (fast_event && matches!(field(fast, "event"), "death" | "danger"))

@@ -91,6 +91,10 @@ impl ffi::NeuralVoice {
         let text = text.to_string();
         let done = Arc::new(move |index: usize, result: anyhow::Result<_>| {
             let event = match result.and_then(|chunk: gamebuddy_services::voice::speech::Chunk| {
+                // Orpheus plays on its own stream: only say it is speaking.
+                if let Some(until) = chunk.played_until {
+                    return Ok(json!({"kind":"played","sequence":sequence,"index":chunk.index,"last":chunk.last,"text":chunk.text,"until_ms":(until * 1000.0) as u64}));
+                }
                 let path = output.join(format!("{}.wav", chunk.key));
                 if !path.is_file() {
                     let wav = cached(&chunk.key).ok_or_else(|| anyhow::anyhow!("Synthesized audio expired"))?;

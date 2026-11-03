@@ -55,6 +55,7 @@ Item {
     function stop() {
         neural.stop()
         neuralActive = false
+        streamEnd.stop()
         chunks = ({}); nextIndex = 0; lastIndex = -1; spoken = ""; lastText = ""; loaded = -1; current = 0
         player.stop()
         spare.stop()
@@ -111,6 +112,16 @@ Item {
             const event = JSON.parse(event_json)
             if (!output.neuralActive) return
             if (event.kind === "error") { output.fallBack(event.error); return }
+            // Already playing on the voice's own stream: show it as speaking
+            // until its sound ends.
+            if (event.kind === "played") {
+                output.spoken += (output.spoken.length ? " " : "") + event.text
+                if (event.last) {
+                    streamEnd.interval = Math.max(1, event.until_ms - Date.now() + 150)
+                    streamEnd.restart()
+                }
+                return
+            }
             const next = Object.assign({}, output.chunks)
             next[event.index] = event
             output.chunks = next
@@ -126,6 +137,7 @@ Item {
         onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia && output.neuralActive) output.playNext()
         onErrorOccurred: (error, message) => { if (output.neuralActive) output.fallBack(message) }
     }
+    Timer { id: streamEnd; repeat: false; onTriggered: output.neuralActive = false }
     MediaPlayer {
         id: spare
         audioOutput: AudioOutput {}

@@ -99,7 +99,7 @@ struct Worker {
     /// speaking speed: it gets longer to load and to answer.
     slow: bool,
     child: Child,
-    input: ChildStdin,
+    input: Arc<Mutex<ChildStdin>>,
     output: mpsc::Receiver<Result<Value>>,
 }
 impl Drop for Worker {
@@ -150,7 +150,7 @@ impl Worker {
         let worker = Self {
             slow: config.model.extension().is_some_and(|e| e == "orpheus"),
             child,
-            input,
+            input: Arc::new(Mutex::new(input)),
             output: rx,
         };
         let value = worker
@@ -161,9 +161,7 @@ impl Worker {
         Ok(worker)
     }
     fn synthesize(&mut self, text: &str) -> Result<Vec<u8>> {
-        serde_json::to_writer(&mut self.input, &json!({"text":text}))?;
-        self.input.write_all(b"\n")?;
-        self.input.flush()?;
+        send(&self.input, &json!({"text":text}))?;
         let result = self
             .output
             .recv_timeout(Duration::from_secs(if self.slow { 40 } else { 15 }))
@@ -181,33 +179,30 @@ impl Worker {
     }
 }
 
+fn send(input: &Mutex<ChildStdin>, value: &Value) -> Result<()> {
+    let mut input = input.lock().unwrap();
+    serde_json::to_writer(&mut *input, value)?;
+    input.write_all(b"\n")?;
+    input.flush()?;
+    Ok(())
+}
+
 impl Worker {
-    /// Orpheus sends its audio in pieces as it writes it; each is handed on
-    /// at once, the last with `more` false.
-    fn stream(&mut self, text: &str, piece: &mut dyn FnMut(Vec<u8>, bool)) -> Result<()> {
-        serde_json::to_writer(&mut self.input, &json!({"text":text,"stream":true}))?;
-        self.input.write_all(b"\n")?;
-        self.input.flush()?;
-        loop {
-            let result = self
-                .output
-                .recv_timeout(Duration::from_secs(40))
-                .context("Speech synthesis timed out")??;
-            let wav = STANDARD.decode(
-                result["wav"]
-                    .as_str()
-                    .with_context(|| format!("Speech synthesis: {}", result["error"]))?,
-            )?;
-            ensure!(
-                wav.starts_with(b"RIFF") && wav.len() > 44,
-                "Invalid synthesized audio"
-            );
-            let more = result["more"] == true;
-            piece(wav, more);
-            if !more {
-                return Ok(());
-            }
-        }
+    /// Orpheus speaks the sentence itself, onto one continuous playback
+    /// stream, as it writes the audio. The time its sound ends, or `None`
+    /// when it was stopped first.
+    fn play(&mut self, text: &str) -> Result<Option<f64>> {
+        send(&self.input, &json!({"text":text,"play":true}))?;
+        let result = self
+            .output
+            .recv_timeout(Duration::from_secs(60))
+            .context("Speech synthesis timed out")??;
+        ensure!(
+            result["error"].is_null(),
+            "Speech synthesis: {}",
+            result["error"]
+        );
+        Ok(result["ends_at"].as_f64())
     }
 }
 
@@ -218,6 +213,9 @@ pub struct Chunk {
     pub index: usize,
     pub last: bool,
     pub answer: Option<String>,
+    /// Already playing on the worker's own stream, until this time (Unix
+    /// seconds); there is no audio file to play.
+    pub played_until: Option<f64>,
 }
 type Completed = Arc<dyn Fn(usize, Result<Chunk>) + Send + Sync>;
 struct Job {
@@ -260,14 +258,21 @@ struct Queue {
 pub struct Speech {
     queue: Arc<(Mutex<Queue>, Condvar)>,
     config: Config,
+    /// The worker's input, to stop speech it is already playing.
+    stopper: Arc<Mutex<Option<Arc<Mutex<ChildStdin>>>>>,
 }
 impl Speech {
     pub fn start(root: PathBuf, config: Config) -> Self {
         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
         let shared = queue.clone();
         let worker_config = config.clone();
+        let stopper: Arc<Mutex<Option<Arc<Mutex<ChildStdin>>>>> = Arc::default();
+        let stop_handle = stopper.clone();
         std::thread::spawn(move || {
             let mut worker = Worker::start(&root, &worker_config).ok();
+            if let Some(started) = &worker {
+                *stopper.lock().unwrap() = Some(started.input.clone());
+            }
             loop {
                 let job = {
                     let (lock, wake) = &*shared;
@@ -285,45 +290,39 @@ impl Speech {
                 };
                 let id = key(&worker_config, &job.text);
                 let started = Instant::now();
-                if let (Some(pieces), Some(done)) = (&job.pieces, &job.done) {
+                if let (Some(_), Some(done)) = (&job.pieces, &job.done) {
                     SYNTHESIZING.store(true, std::sync::atomic::Ordering::Release);
-                    let streamed = (|| -> Result<()> {
+                    let played = (|| -> Result<Option<f64>> {
                         if worker.is_none() {
-                            worker = Some(Worker::start(&root, &worker_config)?);
+                            let started = Worker::start(&root, &worker_config)?;
+                            *stopper.lock().unwrap() = Some(started.input.clone());
+                            worker = Some(started);
                         }
-                        let mut first = true;
-                        worker
-                            .as_mut()
-                            .unwrap()
-                            .stream(&job.text, &mut |wav, more| {
-                                let index =
-                                    pieces.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                                let key = format!("{id}~{index}");
-                                save(key.clone(), wav);
-                                done(
-                                    index,
-                                    Ok(Chunk {
-                                        key,
-                                        text: job.text.clone(),
-                                        index,
-                                        last: job.last && !more,
-                                        answer: job.answer.clone().filter(|_| first),
-                                    }),
-                                );
-                                first = false;
-                            })
+                        worker.as_mut().unwrap().play(&job.text)
                     })();
                     SYNTHESIZING.store(false, std::sync::atomic::Ordering::Release);
-                    if let Err(error) = streamed {
-                        worker = None;
-                        done(
-                            pieces.load(std::sync::atomic::Ordering::Acquire),
-                            Err(error),
-                        );
+                    match played {
+                        Ok(Some(until)) => done(
+                            job.index,
+                            Ok(Chunk {
+                                key: String::new(),
+                                text: job.text.clone(),
+                                index: job.index,
+                                last: job.last,
+                                answer: job.answer.clone(),
+                                played_until: Some(until),
+                            }),
+                        ),
+                        // Stopped: the reply was replaced or interrupted.
+                        Ok(None) => {}
+                        Err(error) => {
+                            worker = None;
+                            done(job.index, Err(error));
+                        }
                     }
                     if std::env::args().any(|a| a == "--voice-trace") {
                         eprintln!(
-                            "GAMEBUDDY_STREAMED_SPEECH elapsed_ms={}",
+                            "GAMEBUDDY_PLAYED_SPEECH elapsed_ms={}",
                             started.elapsed().as_millis()
                         );
                     }
@@ -361,12 +360,17 @@ impl Speech {
                             index: job.index,
                             last: job.last,
                             answer: job.answer,
+                            played_until: None,
                         }),
                     );
                 }
             }
         });
-        Self { queue, config }
+        Self {
+            queue,
+            config,
+            stopper: stop_handle,
+        }
     }
     pub fn prepare(&self, phrases: Vec<String>) {
         // A slow voice writing a phrase ahead holds up the answer the player
@@ -443,6 +447,7 @@ impl Speech {
                     index,
                     last,
                     answer,
+                    played_until: None,
                 });
             } else {
                 q.foreground.push_back(Job {
@@ -463,6 +468,11 @@ impl Speech {
     }
     pub fn cancel(&self) {
         self.queue.0.lock().unwrap().foreground.clear();
+        if slow(&self.config)
+            && let Some(input) = self.stopper.lock().unwrap().as_ref()
+        {
+            let _ = send(input, &json!({"stop": true}));
+        }
     }
 }
 

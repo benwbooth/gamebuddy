@@ -227,20 +227,96 @@ else:
     def synthesize(text, wav):
         voice.synthesize_wav(text, wav)
 
+class Player:
+    """One continuous PipeWire playback stream for spoken replies. Playing
+    each short piece as its own clip clipped and stuttered between pieces."""
+
+    def __init__(self):
+        import threading
+        self.process = None
+        self.lock = threading.Lock()
+        self.ends = 0.0
+
+    def write(self, wav_bytes):
+        import subprocess
+        import time
+        with wave.open(io.BytesIO(wav_bytes)) as source:
+            rate, pcm = source.getframerate(), source.readframes(source.getnframes())
+        with self.lock:
+            if self.process is None or self.process.poll() is not None:
+                self.process = subprocess.Popen(
+                    ["pw-cat", "--playback", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.ends = 0.0
+            process = self.process
+            self.ends = max(self.ends, time.time()) + len(pcm) / (2 * rate)
+        process.stdin.write(pcm)
+        process.stdin.flush()
+
+    def stop(self):
+        with self.lock:
+            if self.process is not None:
+                self.process.kill()
+                self.process = None
+            self.ends = 0.0
+
+
+def serve():
+    import queue
+    import threading
+    player = Player()
+    requests = queue.Queue()
+    cancelled = threading.Event()
+
+    def read():
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except ValueError:
+                continue
+            if request.get("stop"):
+                cancelled.set()
+                player.stop()
+                continue
+            requests.put(request)
+        requests.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    while (request := requests.get()) is not None:
+        try:
+            handle(request, player, cancelled)
+        except Exception as error:
+            print(json.dumps({"error": str(error)}), flush=True)
+
+
+def handle(request, player, cancelled):
+    text = request["text"]
+    if not isinstance(text, str) or not text.strip() or len(text) > 4000:
+        raise ValueError("Speech must contain between 1 and 4000 characters")
+    if request.get("play") and "stream" in globals():
+        cancelled.clear()
+
+        def piece(wav, more):
+            if cancelled.is_set():
+                raise InterruptedError
+            player.write(wav)
+
+        try:
+            stream(text, piece)
+        except (InterruptedError, BrokenPipeError, OSError):
+            print(json.dumps({"cancelled": True}), flush=True)
+            return
+        print(json.dumps({"played": True, "ends_at": player.ends}), flush=True)
+        return
+    if request.get("stream") and "stream" in globals():
+        stream(text, lambda wav, more: print(json.dumps(
+            {"wav": base64.b64encode(wav).decode("ascii"), "more": more}), flush=True))
+        return
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        synthesize(text, wav)
+    print(json.dumps({"wav": base64.b64encode(output.getvalue()).decode("ascii")}), flush=True)
+
+
 print(json.dumps({"ready": True}), flush=True)
-for line in sys.stdin:
-    try:
-        request = json.loads(line)
-        text = request["text"]
-        if not isinstance(text, str) or not text.strip() or len(text) > 4000:
-            raise ValueError("Speech must contain between 1 and 4000 characters")
-        if request.get("stream") and "stream" in globals():
-            stream(text, lambda wav, more: print(json.dumps(
-                {"wav": base64.b64encode(wav).decode("ascii"), "more": more}), flush=True))
-            continue
-        output = io.BytesIO()
-        with wave.open(output, "wb") as wav:
-            synthesize(text, wav)
-        print(json.dumps({"wav": base64.b64encode(output.getvalue()).decode("ascii")}), flush=True)
-    except Exception as error:
-        print(json.dumps({"error": str(error)}), flush=True)
+serve()

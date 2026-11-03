@@ -13,13 +13,23 @@ fn main() -> anyhow::Result<()> {
     speech.speak(
         text,
         std::sync::Arc::new(move |_, chunk| {
-            let _ = tx.send(chunk.map(|c| (c.key, c.text, c.last)));
+            let _ = tx.send(chunk.map(|c| (c.key, c.text, c.last, c.played_until)));
         }),
     );
     loop {
-        let (key, text, last) = rx
+        let (key, text, last, played) = rx
             .recv_timeout(std::time::Duration::from_secs(180))?
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        if let Some(until) = played {
+            println!(
+                "{:.2} s: played {text} (sound until {until:.1})",
+                started.elapsed().as_secs_f64()
+            );
+            if last {
+                return Ok(());
+            }
+            continue;
+        }
         let wav = gamebuddy_services::voice::speech::cached(&key).context("No audio")?;
         let path = out.join(format!("{key}.wav"));
         std::fs::write(&path, wav.as_slice())?;

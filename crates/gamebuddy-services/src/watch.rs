@@ -24,6 +24,7 @@ const READ_MS: u64 = 1_500;
 /// is too small a change to count as a new scene.
 const REREAD_MS: u64 = 5_000;
 const LOOK_MS: u64 = 15_000;
+const IDLE_LOOK_MS: u64 = 25_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -497,13 +498,22 @@ pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
     job.running = true;
     job.read_at = snapshot.captured_at_ms;
     job.scene = Some(signature);
-    let may_look = snapshot.captured_at_ms.saturating_sub(job.looked_at) >= LOOK_MS;
+    let since_look = snapshot.captured_at_ms.saturating_sub(job.looked_at);
+    // A look on any change, and every so often even without one: a player
+    // standing still may be stuck and need telling what to do.
+    let may_look = if since_look >= IDLE_LOOK_MS {
+        Some(true)
+    } else {
+        (since_look >= LOOK_MS).then_some(false)
+    };
     let root = store.root.clone();
     let guide = guide.clone();
     let snapshot = snapshot.clone();
     std::thread::spawn(move || {
-        let looked = Store::open(&root)
-            .and_then(|store| watch(&store, &guide, &snapshot, changed, may_look));
+        let looked = Store::open(&root).and_then(|store| match may_look {
+            Some(idle) => watch(&store, &guide, &snapshot, changed, true, idle),
+            None => watch(&store, &guide, &snapshot, changed, false, false),
+        });
         if let Err(error) = &looked {
             eprintln!("Watching: {error:#}");
         }
@@ -523,6 +533,7 @@ pub fn watch(
     snapshot: &screen::Snapshot,
     changed: bool,
     may_look: bool,
+    idle: bool,
 ) -> Result<bool> {
     let settings: Settings = store.get("settings")?.unwrap_or_default();
     let mut log: Vec<Entry> = store.get(&key(guide))?.unwrap_or_default();
@@ -555,7 +566,7 @@ pub fn watch(
     {
         eprintln!("Walkthrough cursor: {error:#}");
     }
-    if !news || !may_look || on_this_computer(&settings.reasoning) {
+    if !(news || idle) || !may_look || on_this_computer(&settings.reasoning) {
         return Ok(false);
     }
     if settings.reasoning.kind == crate::ProviderKind::ClaudeCode {
@@ -681,12 +692,16 @@ fn offer(
     };
     let latest = screen::snapshot(store)?;
     let current = signature(&latest)?;
-    if !screen::same_scene(&signature(seen)?, &current) {
+    // A warning about a moment that has passed is dropped; the next step
+    // still stands after the screen moves on (most of them do, as the
+    // player acts while the companion thinks).
+    if urgency == "danger" && !screen::same_scene(&signature(seen)?, &current) {
         return Ok(());
     }
     let progress = store.progress(guide)?;
     let cue: Value = json!({
         "kind": if urgency == "danger" { "danger" } else { "strategy" },
+        "source": "companion",
         "step_id": "",
         "text": text,
         "evidence": "Seen on screen by the watcher.",
