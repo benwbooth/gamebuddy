@@ -420,8 +420,10 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 32
             z: 25
-            text: root.geminiEnabled ? liveVoice.captionText : realtimeVoice.captionText
-            active: root.geminiEnabled ? liveVoice.captionStreaming || liveVoice.assistantSpeaking : realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking
+            // Local spoken answers play through SpeechOutput, not the voice
+            // page, so its words caption them while it talks.
+            text: speech.speaking ? speech.text : root.geminiEnabled ? liveVoice.captionText : realtimeVoice.captionText
+            active: speech.speaking || (root.geminiEnabled ? liveVoice.captionStreaming || liveVoice.assistantSpeaking : realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking)
         }
         WebEngineView {
             id: widgetView
