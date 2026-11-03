@@ -214,7 +214,9 @@ fn run(
                 .is_none_or(|s| s.turns >= TURNS_PER_SESSION)
             {
                 session = None;
+                set_status(&store, &job.guide, "Getting ready: loading the walkthrough and notes");
                 prepare(&store, &job.guide)?;
+                set_status(&store, &job.guide, "Starting up its watching session");
                 session = Some(start(&folder(&store, &job.guide), &config)?);
             }
             let session = session.as_mut().unwrap();
@@ -263,15 +265,18 @@ fn run(
                     set_status(&store, &job.guide, &text);
                 }
             });
-            set_status(&store, &job.guide, "Watching");
             // The watching session cuts the frames around the task, after its
             // look so the look is not kept waiting; both sessions read them.
             if watching {
+                if watch::last_task(&store, &job.guide) != video {
+                    set_status(&store, &job.guide, "Pulling walkthrough video for the next steps");
+                }
                 fresh_video = video_frames(&store, &job.guide, &mut video).unwrap_or_else(|error| {
                     eprintln!("Companion video frames: {error:#}");
                     false
                 });
             }
+            set_status(&store, &job.guide, "Watching");
             let reply = reply?;
             since_ms = job.snapshot.captured_at_ms;
             let Some((_, answer)) = &job.question else {
@@ -573,11 +578,23 @@ fn set_status(store: &Store, guide: &Guide, text: &str) {
     );
 }
 
-/// What the companion is doing, for the line beside GameBuddy's icon.
+/// What the companion is doing, for the line beside GameBuddy's icon, with
+/// how long it has been at it once that is long enough to wonder about.
 pub fn status(store: &Store, guide: &Guide) -> Option<String> {
     let saved: Value = store.get(&status_key(guide)).ok()??;
-    (screen::now_ms().saturating_sub(saved["at_ms"].as_u64()?) < 120_000)
-        .then(|| saved["text"].as_str().map(str::to_owned))?
+    let elapsed = screen::now_ms().saturating_sub(saved["at_ms"].as_u64()?);
+    let text = saved["text"].as_str()?;
+    if text == "Watching" {
+        return Some(text.to_owned());
+    }
+    if elapsed >= 120_000 {
+        return None;
+    }
+    Some(if elapsed >= 3_000 {
+        format!("{text} · {} s", elapsed / 1000)
+    } else {
+        text.to_owned()
+    })
 }
 
 /// A tool call, said as what the companion is doing.

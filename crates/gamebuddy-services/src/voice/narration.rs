@@ -237,9 +237,11 @@ impl Narrator {
                 && !field(context, "companion_last").is_empty()
             {
                 format!(
-                    "Picking up where you left off. {}",
+                    "Picking up where you left off. {} I'll take a proper look at your screen now; that takes about half a minute.",
                     field(context, "companion_last")
                 )
+            } else if context["companion"] == true {
+                "I'm taking a first look at your screen; give me about half a minute, then I'll tell you what to do.".into()
             } else if ready && !field(action, "id").is_empty() {
                 self.spoken_actions.insert(action_key);
                 cue(context)
