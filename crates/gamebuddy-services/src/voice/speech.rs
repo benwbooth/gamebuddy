@@ -207,6 +207,43 @@ fn sentences(text: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+/// Orpheus writes audio only a little faster than it is spoken and must
+/// finish a piece before it plays, so a long first sentence kept the player
+/// waiting ten seconds. Long sentences are spoken in clauses: the first plays
+/// within a couple of seconds, and the rest are written while it plays.
+fn clauses(sentence: &str) -> Vec<String> {
+    const LONG: usize = 60;
+    const SHORT: usize = 25;
+    if sentence.len() <= LONG {
+        return vec![sentence.to_owned()];
+    }
+    let mut pieces: Vec<String> = vec![];
+    let mut current = String::new();
+    for word in sentence.split_inclusive(' ') {
+        current.push_str(word);
+        let word = word.trim_end();
+        let ends_clause = [",", ";", ":", "—"].iter().any(|p| word.ends_with(p));
+        if ends_clause && current.trim().len() >= SHORT {
+            pieces.push(current.trim().to_owned());
+            current.clear();
+        }
+    }
+    if !current.trim().is_empty() {
+        match pieces.last_mut() {
+            Some(last) if current.trim().len() < SHORT => {
+                last.push(' ');
+                last.push_str(current.trim());
+            }
+            _ => pieces.push(current.trim().to_owned()),
+        }
+    }
+    pieces
+}
+
+fn slow(config: &Config) -> bool {
+    config.model.extension().is_some_and(|e| e == "orpheus")
+}
+
 #[derive(Default)]
 struct Queue {
     foreground: VecDeque<Job>,
@@ -301,7 +338,10 @@ impl Speech {
         wake.notify_one();
     }
     pub fn speak(&self, text: String, done: Completed) {
-        let parts = sentences(&text);
+        let mut parts = sentences(&text);
+        if slow(&self.config) {
+            parts = parts.iter().flat_map(|s| clauses(s)).collect();
+        }
         let (lock, wake) = &*self.queue;
         let mut q = lock.lock().unwrap();
         // Obsolete speech must never wait behind older requests.
@@ -362,6 +402,17 @@ impl Drop for Speech {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn long_sentences_are_spoken_in_clauses() {
+        let parts = clauses(
+            "Pick TAKE and click the capped spray bottle on the bottom shelf, then use EXAM on the boxes to find the one covered in teeth marks; that's the No Ghost.",
+        );
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].ends_with("shelf,"));
+        assert!(parts[1].ends_with("No Ghost."));
+        assert_eq!(clauses("Okay, go left."), vec!["Okay, go left."]);
+    }
+
     #[test]
     fn sentence_chunks_preserve_numbers_unicode_and_the_final_instruction() {
         let input = "Use 1.5 meters of rope. Then enter the door!\nDo not jump… wait.";
