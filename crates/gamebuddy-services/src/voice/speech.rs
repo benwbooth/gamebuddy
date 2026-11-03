@@ -181,6 +181,36 @@ impl Worker {
     }
 }
 
+impl Worker {
+    /// Orpheus sends its audio in pieces as it writes it; each is handed on
+    /// at once, the last with `more` false.
+    fn stream(&mut self, text: &str, piece: &mut dyn FnMut(Vec<u8>, bool)) -> Result<()> {
+        serde_json::to_writer(&mut self.input, &json!({"text":text,"stream":true}))?;
+        self.input.write_all(b"\n")?;
+        self.input.flush()?;
+        loop {
+            let result = self
+                .output
+                .recv_timeout(Duration::from_secs(40))
+                .context("Speech synthesis timed out")??;
+            let wav = STANDARD.decode(
+                result["wav"]
+                    .as_str()
+                    .with_context(|| format!("Speech synthesis: {}", result["error"]))?,
+            )?;
+            ensure!(
+                wav.starts_with(b"RIFF") && wav.len() > 44,
+                "Invalid synthesized audio"
+            );
+            let more = result["more"] == true;
+            piece(wav, more);
+            if !more {
+                return Ok(());
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Chunk {
     pub key: String,
@@ -196,6 +226,8 @@ struct Job {
     last: bool,
     answer: Option<String>,
     done: Option<Completed>,
+    /// Streamed speech: each piece takes the next number of the reply.
+    pieces: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// Unicode sentence boundaries preserve decimals and avoid cutting words or
@@ -213,39 +245,6 @@ static SYNTHESIZING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// waits: the voice is barely faster than real time and slows when shared.
 pub fn synthesizing() -> bool {
     SYNTHESIZING.load(std::sync::atomic::Ordering::Acquire)
-}
-
-/// Orpheus writes audio only a little faster than it is spoken and must
-/// finish a piece before it plays, so a long first sentence kept the player
-/// waiting ten seconds. Long sentences are spoken in clauses: the first plays
-/// within a couple of seconds, and the rest are written while it plays.
-fn clauses(sentence: &str) -> Vec<String> {
-    const LONG: usize = 60;
-    const SHORT: usize = 25;
-    if sentence.len() <= LONG {
-        return vec![sentence.to_owned()];
-    }
-    let mut pieces: Vec<String> = vec![];
-    let mut current = String::new();
-    for word in sentence.split_inclusive(' ') {
-        current.push_str(word);
-        let word = word.trim_end();
-        let ends_clause = [",", ";", ":", "—"].iter().any(|p| word.ends_with(p));
-        if ends_clause && current.trim().len() >= SHORT {
-            pieces.push(current.trim().to_owned());
-            current.clear();
-        }
-    }
-    if !current.trim().is_empty() {
-        match pieces.last_mut() {
-            Some(last) if current.trim().len() < SHORT => {
-                last.push(' ');
-                last.push_str(current.trim());
-            }
-            _ => pieces.push(current.trim().to_owned()),
-        }
-    }
-    pieces
 }
 
 fn slow(config: &Config) -> bool {
@@ -286,6 +285,50 @@ impl Speech {
                 };
                 let id = key(&worker_config, &job.text);
                 let started = Instant::now();
+                if let (Some(pieces), Some(done)) = (&job.pieces, &job.done) {
+                    SYNTHESIZING.store(true, std::sync::atomic::Ordering::Release);
+                    let streamed = (|| -> Result<()> {
+                        if worker.is_none() {
+                            worker = Some(Worker::start(&root, &worker_config)?);
+                        }
+                        let mut first = true;
+                        worker
+                            .as_mut()
+                            .unwrap()
+                            .stream(&job.text, &mut |wav, more| {
+                                let index =
+                                    pieces.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                                let key = format!("{id}~{index}");
+                                save(key.clone(), wav);
+                                done(
+                                    index,
+                                    Ok(Chunk {
+                                        key,
+                                        text: job.text.clone(),
+                                        index,
+                                        last: job.last && !more,
+                                        answer: job.answer.clone().filter(|_| first),
+                                    }),
+                                );
+                                first = false;
+                            })
+                    })();
+                    SYNTHESIZING.store(false, std::sync::atomic::Ordering::Release);
+                    if let Err(error) = streamed {
+                        worker = None;
+                        done(
+                            pieces.load(std::sync::atomic::Ordering::Acquire),
+                            Err(error),
+                        );
+                    }
+                    if std::env::args().any(|a| a == "--voice-trace") {
+                        eprintln!(
+                            "GAMEBUDDY_STREAMED_SPEECH elapsed_ms={}",
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    continue;
+                }
                 let spoken_now = job.done.is_some();
                 SYNTHESIZING.store(spoken_now, std::sync::atomic::Ordering::Release);
                 let result = (|| -> Result<String> {
@@ -348,20 +391,35 @@ impl Speech {
                     last: true,
                     answer: None,
                     done: None,
+                    pieces: None,
                 });
             }
         }
         wake.notify_one();
     }
     pub fn speak(&self, text: String, done: Completed) {
-        let mut parts = sentences(&text);
-        if slow(&self.config) {
-            parts = parts.iter().flat_map(|s| clauses(s)).collect();
-        }
+        let parts = sentences(&text);
         let (lock, wake) = &*self.queue;
         let mut q = lock.lock().unwrap();
         // Obsolete speech must never wait behind older requests.
         q.foreground.clear();
+        if slow(&self.config) && !parts.is_empty() && parts.len() <= 128 && text.len() <= 16000 {
+            let pieces = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = parts.len();
+            for (index, part) in parts.into_iter().enumerate() {
+                q.foreground.push_back(Job {
+                    text: part,
+                    index,
+                    last: index + 1 == count,
+                    answer: (index == 0).then(|| text.clone()),
+                    done: Some(done.clone()),
+                    pieces: Some(pieces.clone()),
+                });
+            }
+            drop(q);
+            wake.notify_one();
+            return;
+        }
         if parts.is_empty() || parts.len() > 128 || text.len() > 16000 {
             drop(q);
             done(
@@ -393,6 +451,7 @@ impl Speech {
                     last,
                     answer,
                     done: Some(done.clone()),
+                    pieces: None,
                 });
             }
         }
@@ -418,17 +477,6 @@ impl Drop for Speech {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn long_sentences_are_spoken_in_clauses() {
-        let parts = clauses(
-            "Pick TAKE and click the capped spray bottle on the bottom shelf, then use EXAM on the boxes to find the one covered in teeth marks; that's the No Ghost.",
-        );
-        assert_eq!(parts.len(), 2);
-        assert!(parts[0].ends_with("shelf,"));
-        assert!(parts[1].ends_with("No Ghost."));
-        assert_eq!(clauses("Okay, go left."), vec!["Okay, go left."]);
-    }
-
     #[test]
     fn sentence_chunks_preserve_numbers_unicode_and_the_final_instruction() {
         let input = "Use 1.5 meters of rope. Then enter the door!\nDo not jump… wait.";

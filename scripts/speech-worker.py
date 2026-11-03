@@ -112,6 +112,56 @@ elif model.endswith(".orpheus"):
             layers[2].extend([f[2], f[3], f[5], f[6]])
         return snac.decode([torch.tensor(l, device=device).unsqueeze(0) for l in layers])
 
+    def stream(text, emit):
+        """Speak as the codes arrive: a short first piece, then about a second
+        and a half at a time, so playback starts before the sentence is
+        written (Orpheus writes only about 1.4 times faster than speech)."""
+        request = urllib.request.Request(
+            base + "/v1/completions",
+            data=json.dumps({"prompt": f"<|audio|>{voice_name}: {text}<|eot_id|>", "max_tokens": 2400, "stream": True,
+                             "temperature": 0.6, "top_p": 0.9, "repeat_penalty": 1.1}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        written, codes, windows, pending = "", [], 0, []
+        target = 8
+
+        def flush(more):
+            nonlocal pending
+            samples = numpy.concatenate(pending) if pending else numpy.zeros(1, dtype=numpy.float32)
+            pending = []
+            output = io.BytesIO()
+            with wave.open(output, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(24000)
+                wav.writeframes((numpy.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+            emit(output.getvalue(), more)
+
+        with urllib.request.urlopen(request, timeout=120) as reply, torch.inference_mode():
+            for raw in reply:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:") or line == "data: [DONE]":
+                    continue
+                try:
+                    written += json.loads(line[5:])["choices"][0].get("text", "")
+                except (ValueError, KeyError, IndexError):
+                    continue
+                codes = []
+                for number in re.findall(r"<custom_token_(\d+)>", written):
+                    code = int(number) - 10 - ((len(codes) % 7) * 4096)
+                    if 0 < code <= 4096:
+                        codes.append(code)
+                while 28 + 7 * windows <= len(codes):
+                    end = 28 + 7 * windows
+                    pending.append(decode(codes[end - 28:end])[0, 0, 2048:4096].float().cpu().numpy())
+                    windows += 1
+                    # Pieces grow (0.7, 1, then 1.5 s of audio) so each is written
+                    # before the one before it finishes playing.
+                    if len(pending) >= target:
+                        flush(True)
+                        target = 12 if target == 8 else 18
+        flush(False)
+
     def synthesize(text, wav):
         codes = audio_codes(text)
         pieces = []
@@ -179,9 +229,14 @@ else:
 print(json.dumps({"ready": True}), flush=True)
 for line in sys.stdin:
     try:
-        text = json.loads(line)["text"]
+        request = json.loads(line)
+        text = request["text"]
         if not isinstance(text, str) or not text.strip() or len(text) > 4000:
             raise ValueError("Speech must contain between 1 and 4000 characters")
+        if request.get("stream") and "stream" in globals():
+            stream(text, lambda wav, more: print(json.dumps(
+                {"wav": base64.b64encode(wav).decode("ascii"), "more": more}), flush=True))
+            continue
         output = io.BytesIO()
         with wave.open(output, "wb") as wav:
             synthesize(text, wav)
