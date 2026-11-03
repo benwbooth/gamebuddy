@@ -463,10 +463,17 @@ fn message(store: &Store, job: &Job, since_ms: u64, heard: &mut Option<i64>) -> 
             said.join("\n")
         },
     );
-    Ok(json!({"type":"user","message":{"role":"user","content":[
-        {"type":"text","text":text},
-        {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":job.snapshot.jpeg}}
-    ]}}))
+    let mut content = vec![
+        json!({"type":"text","text":text}),
+        json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":job.snapshot.jpeg}}),
+    ];
+    // The clean frame can be seconds old on a still screen: the window as it
+    // is this moment comes after it.
+    if let Some(live) = screen::live_jpeg() {
+        content.push(json!({"type":"text","text":"And the screen this moment, as the player sees it (with any display filter):"}));
+        content.push(json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":live}}));
+    }
+    Ok(json!({"type":"user","message":{"role":"user","content":content}}))
 }
 
 fn turn(session: &mut Session, message: Value) -> Result<String> {

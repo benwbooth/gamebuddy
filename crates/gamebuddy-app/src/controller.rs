@@ -315,6 +315,14 @@ impl ffi::Buddy {
                 .or_else(|| guides.iter().find(|g| g.game.eq_ignore_ascii_case(&game)))
                 .cloned();
             let capture = services::screen::start(&store, &game, argument("--game-pid").is_some())?;
+            #[cfg(target_os = "linux")]
+            if let Some(pid) = argument("--game-pid").and_then(|v| v.parse::<u32>().ok()) {
+                let path = root.join("captures").join(format!("live-{pid}.png"));
+                services::screen::set_live_capture(Box::new(move || {
+                    gamebuddy_overlay::x11::capture_game(pid, &path)?;
+                    Ok(path.clone())
+                }));
+            }
             Ok((root, settings, guide, game, capture.session))
         })();
         match result {

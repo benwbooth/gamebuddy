@@ -509,6 +509,31 @@ pub fn scene_change(store: &Store, previous: Option<&[u8]>) -> Result<(Vec<u8>, 
     Ok((signature, changed))
 }
 
+/// Takes the game's window as the player sees it now, into a PNG. The app
+/// sets it; the clean frames from RetroArch's recording can be seconds old
+/// on a still screen, too old for "I'm in the closet now".
+type LiveCapture = Box<dyn Fn() -> Result<std::path::PathBuf> + Send + Sync>;
+static LIVE: std::sync::OnceLock<LiveCapture> = std::sync::OnceLock::new();
+
+pub fn set_live_capture(capture: LiveCapture) {
+    let _ = LIVE.set(capture);
+}
+
+/// The screen right now as a JPEG, display filter and all, when the app can
+/// take one.
+pub fn live_jpeg() -> Option<String> {
+    let path = LIVE.get()?().ok()?;
+    let image = image::open(path).ok()?;
+    let image = image
+        .thumbnail(image.width().min(1280), image.height().min(960))
+        .to_rgb8();
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85)
+        .encode_image(&image)
+        .ok()?;
+    Some(STANDARD.encode(bytes))
+}
+
 pub fn snapshot(store: &Store) -> Result<Snapshot> {
     snapshot_at(store, now_ms())
 }
