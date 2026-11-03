@@ -207,6 +207,14 @@ fn sentences(text: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+static SYNTHESIZING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a reply is being turned into speech right now. Other GPU work
+/// waits: the voice is barely faster than real time and slows when shared.
+pub fn synthesizing() -> bool {
+    SYNTHESIZING.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Orpheus writes audio only a little faster than it is spoken and must
 /// finish a piece before it plays, so a long first sentence kept the player
 /// waiting ten seconds. Long sentences are spoken in clauses: the first plays
@@ -278,6 +286,8 @@ impl Speech {
                 };
                 let id = key(&worker_config, &job.text);
                 let started = Instant::now();
+                let spoken_now = job.done.is_some();
+                SYNTHESIZING.store(spoken_now, std::sync::atomic::Ordering::Release);
                 let result = (|| -> Result<String> {
                     if cached(&id).is_none() {
                         if worker.is_none() {
@@ -295,6 +305,7 @@ impl Speech {
                         result.is_ok()
                     );
                 }
+                SYNTHESIZING.store(false, std::sync::atomic::Ordering::Release);
                 if result.is_err() {
                     worker = None;
                 }
@@ -315,6 +326,11 @@ impl Speech {
         Self { queue, config }
     }
     pub fn prepare(&self, phrases: Vec<String>) {
+        // A slow voice writing a phrase ahead holds up the answer the player
+        // is waiting for: it cannot be interrupted once started.
+        if slow(&self.config) {
+            return;
+        }
         let (lock, wake) = &*self.queue;
         let mut q = lock.lock().unwrap();
         q.background.clear();

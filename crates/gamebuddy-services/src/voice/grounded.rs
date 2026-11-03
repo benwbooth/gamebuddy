@@ -866,7 +866,13 @@ pub fn answer(
         }
     }
     let watched = crate::watch::lines(store, guide);
-    if settled && let Some(line) = template {
+    // A model that sees the game answers for itself: the route code's
+    // ready-made lines ("I don't know the way through these rooms yet")
+    // know less than it does.
+    if settled
+        && !sees
+        && let Some(line) = template
+    {
         on_sentence(line.clone());
         crate::flight::event(
             "talk",

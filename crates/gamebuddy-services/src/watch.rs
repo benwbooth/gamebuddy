@@ -437,6 +437,10 @@ fn narrated(store: &Store, guide: &Guide, step: &gamebuddy_core::Step) -> Option
 
 /// Called with each new frame. Reading and looking run behind it.
 pub fn schedule(store: &Store, guide: &Guide, snapshot: &screen::Snapshot) {
+    // The screen reader shares the GPU with the voice; a spoken answer goes first.
+    if crate::voice::speech::synthesizing() {
+        return;
+    }
     let mut jobs = JOBS.get_or_init(Default::default).lock().unwrap();
     let job = jobs.entry(store.root.clone()).or_default();
     let since = snapshot.captured_at_ms.saturating_sub(job.read_at);
