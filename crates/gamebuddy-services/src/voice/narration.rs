@@ -233,7 +233,14 @@ impl Narrator {
             } else {
                 "Hey, I'm GameBuddy."
             };
-            let next = if ready && !field(action, "id").is_empty() {
+            let next = if context["companion"] == true
+                && !field(context, "companion_last").is_empty()
+            {
+                format!(
+                    "Picking up where you left off. {}",
+                    field(context, "companion_last")
+                )
+            } else if ready && !field(action, "id").is_empty() {
                 self.spoken_actions.insert(action_key);
                 cue(context)
             } else if context["new_game"] == true && context["preparation_status"] == "running" {

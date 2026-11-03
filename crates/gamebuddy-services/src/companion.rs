@@ -205,6 +205,8 @@ fn run(
     let mut since_ms = 0;
     let mut heard = None;
     let mut video = None;
+    // New video frames, announced in the next message.
+    let mut fresh_video = false;
     while let Ok(job) = jobs.recv() {
         let result = Store::open(&root).and_then(|store| {
             if session
@@ -216,14 +218,24 @@ fn run(
                 session = Some(start(&folder(&store, &job.guide), &config)?);
             }
             let session = session.as_mut().unwrap();
-            // The watching session cuts the frames around the task; both read them.
-            let fresh_video = watching
-                && video_frames(&store, &job.guide, &mut video).unwrap_or_else(|error| {
-                    eprintln!("Companion video frames: {error:#}");
-                    false
-                });
+            let first = session.turns == 0;
             let mut message = message(&store, &job, since_ms, &mut heard)?;
-            if fresh_video {
+            // A new session starts with its notes in hand, and speaks at once:
+            // the player was told GameBuddy would talk them through, and the
+            // first look used to take most of a minute (reading files, cutting
+            // video frames) while they waited in silence.
+            if first {
+                let folder = folder(&store, &job.guide);
+                let read = |name: &str| std::fs::read_to_string(folder.join(name)).unwrap_or_default();
+                let text = &mut message["message"]["content"][0]["text"];
+                *text = json!(format!(
+                    "The player has just started playing. Here are notes.md and exits.md, so you need not read them now.\n\n{}\n\n{}\n\nAnswer quickly this time: put where they are and the very next thing to do in say (urgency tip), from your notes and the screen.\n\n{}",
+                    read("notes.md"),
+                    read("exits.md"),
+                    text.as_str().unwrap_or_default()
+                ));
+            }
+            if std::mem::take(&mut fresh_video) {
                 let text = &mut message["message"]["content"][0]["text"];
                 *text = json!(format!(
                     "video/ now holds walkthrough video frames from the task before the player's to two after it; use them for anything your notes call unknown.\n\n{}",
@@ -252,6 +264,14 @@ fn run(
                 }
             });
             set_status(&store, &job.guide, "Watching");
+            // The watching session cuts the frames around the task, after its
+            // look so the look is not kept waiting; both sessions read them.
+            if watching {
+                fresh_video = video_frames(&store, &job.guide, &mut video).unwrap_or_else(|error| {
+                    eprintln!("Companion video frames: {error:#}");
+                    false
+                });
+            }
             let reply = reply?;
             since_ms = job.snapshot.captured_at_ms;
             let Some((_, answer)) = &job.question else {

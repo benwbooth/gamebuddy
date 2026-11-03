@@ -93,7 +93,7 @@ WebEngineView {
     }
     function context() {
         return JSON.stringify({game:session.game, screen:session.screen, current:session.current, cursor:session.navigation?.cursor, location:session.navigation?.location, location_status:session.navigation?.location?.status,
-            guidance:session.navigation?.guidance, plan_recovery:session.navigation?.recovery, journal:session.journal, spatial:session.navigation?.spatial, coaching:session.navigation?.coaching, companion:session.navigation?.companion===true, guide_id:session.guide?.id, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
+            guidance:session.navigation?.guidance, plan_recovery:session.navigation?.recovery, journal:session.journal, spatial:session.navigation?.spatial, coaching:session.navigation?.coaching, companion:session.navigation?.companion===true, companion_last:session.navigation?.companion_last||"", guide_id:session.guide?.id, current_place:session.navigation?.map?.current_place, target_place:session.navigation?.map?.target_place,
             goals:session.guide?.goals || [], coverage_notes:(session.guide?.coverage_notes || []).slice(-6),
             preparing:buddy.preparing, new_game:preparationReport()?.new_game===true, preparation_status:preparationReport()?.status||"", gathered:preparationReport()?.gathered||[], guide_ready:!!session.guide && session.reference_count>0, guide_revision:session.guide?.revision, progress_epoch:session.progress?.epoch, microphone_active:voice.active, returning_player:returningPlayer,
             conversation_active:conversationActive || localConversationActive || voice.speaking || buddy.busy,

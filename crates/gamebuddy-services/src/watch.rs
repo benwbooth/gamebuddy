@@ -88,6 +88,22 @@ fn heading_key(guide: &Guide) -> String {
     format!("watch-heading:{}", guide.id)
 }
 
+/// The companion's last next move, however long ago, for the greeting at
+/// the start of a session: the first fresh look takes a while.
+pub fn last_next(store: &Store, guide: &Guide) -> Option<String> {
+    let saved: Value = store.get(&heading_key(guide)).ok()??;
+    let next = saved["next"].as_str()?.trim();
+    let heading = saved["heading"].as_str().unwrap_or_default().trim();
+    if next.is_empty() {
+        return None;
+    }
+    Some(if heading.is_empty() {
+        format!("{next}.")
+    } else {
+        format!("Head for {heading}: {next}.")
+    })
+}
+
 /// Where the companion last said the player should head and the next move,
 /// for the card over the game: (heading, next, direction).
 pub fn heading(
