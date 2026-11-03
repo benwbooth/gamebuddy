@@ -32,6 +32,8 @@
       else startPrepared();
     };
     source.start();
+    // Each spoken sentence is captioned as it starts, whatever the level meter does.
+    if(text)emit('caption',text);
     if(answer)emit('prepared-start',answer);
   }
   async function queuePrepared(key,text,meta={}){

@@ -146,7 +146,11 @@ impl Narrator {
             .as_str()
             .zip(context["target_place"]["id"].as_str())
             .is_some_and(|(current, target)| current != target);
-        let ready = !place_conflict
+        // With the companion watching, it says what to do when it matters;
+        // reading out each walkthrough step as the cursor moved repeated
+        // "Enter the storage closet" to a player already inside.
+        let ready = context["companion"] != true
+            && !place_conflict
             && !self
                 .acknowledged_actions
                 .contains(field(&guidance["now"], "id"))
