@@ -15,17 +15,28 @@ Item {
     property int lastIndex: -1
     property string text: ""
     property string spoken: ""
-    // When this reply's sound started, roughly, for the captions to follow.
-    property double startedAt: 0
     // The sentence being heard: its words and when its sound starts and
     // ends, reported by the voice as it plays.
     property string sentence: ""
     property double sentenceStart: 0
     property double sentenceEnd: 0
+    // How much of `text` has been heard, for the captions; -1 when this
+    // voice does not report its timing (the whole text is shown).
+    property int spokenChars: -1
+    // Set once the voice has reported a sentence start: it streams, so a
+    // caption waits for the sound instead of showing the whole reply first.
+    property bool reportsTiming: false
+    Timer {
+        interval: 100; repeat: true; running: output.speaking
+        onTriggered: {
+            const at = output.position(Date.now())
+            output.spokenChars = at >= 0 ? at : (output.reportsTiming ? 0 : -1)
+        }
+    }
     // How far into `text` the voice is at `now`, in characters; -1 when not
     // known.
     function position(now) {
-        if (!sentence.length || !sentenceStart) return -1
+        if (!sentence.length || !sentenceStart || now < sentenceStart) return reportsTiming ? Math.max(0, text.indexOf(sentence)) : -1
         const offset = text.indexOf(sentence)
         if (offset < 0) return -1
         const fraction = sentenceEnd > sentenceStart
@@ -59,7 +70,6 @@ Item {
         if (!keepQueue) queued = []
         stop()
         text = value
-        startedAt = Date.now() + 700
         if (directory.length && neural.configure(directory) && neural.speak(value)) {
             neuralActive = true
             return
@@ -75,7 +85,7 @@ Item {
         neural.stop()
         neuralActive = false
         streamEnd.stop()
-        sentence = ""; sentenceStart = 0; sentenceEnd = 0
+        sentence = ""; sentenceStart = 0; sentenceEnd = 0; spokenChars = -1
         chunks = ({}); nextIndex = 0; lastIndex = -1; spoken = ""; lastText = ""; loaded = -1; current = 0
         player.stop()
         spare.stop()
@@ -135,6 +145,7 @@ Item {
             // Already playing on the voice's own stream: show it as speaking
             // until its sound ends.
             if (event.kind === "started") {
+                output.reportsTiming = true
                 output.sentence = event.text
                 output.sentenceStart = event.at_ms
                 output.sentenceEnd = 0
