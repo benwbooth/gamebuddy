@@ -217,6 +217,13 @@ fn run(
                 set_status(&store, &job.guide, "Getting ready: loading the walkthrough and notes");
                 prepare(&store, &job.guide)?;
                 set_status(&store, &job.guide, "Starting up its watching session");
+                // Watching runs at low effort: a look every few seconds of
+                // play matters more than depth, and medium took 10 to 60 s.
+                // Answers keep the chosen effort.
+                let mut config = config.clone();
+                if watching {
+                    config.reasoning_effort = "low".into();
+                }
                 session = Some(start(&folder(&store, &job.guide), &config)?);
             }
             let session = session.as_mut().unwrap();
@@ -425,13 +432,55 @@ seconds() {{ echo "$1" | awk -F: '{{ if (NF == 2) print $1 * 60 + $2; else print
 start=$(seconds "$1"); end=$(seconds "$2"); step="${{3:-0.5}}"
 times=$(awk -v s="$start" -v e="$end" -v d="$step" 'BEGIN {{ if (d <= 0 || (e - s) / d > 60) exit 1; for (t = s; t <= e + 0.001; t += d) printf "%.1f\n", t }}') || {{ echo "At most 60 frames: use a shorter range or a longer step" >&2; exit 1; }}
 mkdir -p video
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+# One decoding pass for the whole range: a run per frame took ten times as long.
+ffmpeg -nostdin -loglevel error -ss "$start" -t "$(awk -v s="$start" -v e="$end" -v d="$step" 'BEGIN {{ print e - s + d / 2 }}')" -i {media:?} -vf "fps=1/$step" -q:v 4 -y "$scratch/%04d.jpg"
+i=1
 for t in $times; do
   name="video/at-$(awk -v t="$t" 'BEGIN {{ printf "%dm%04.1f", int(t / 60), t - int(t / 60) * 60 }}').jpg"
-  ffmpeg -nostdin -loglevel error -ss "$t" -i {media:?} -frames:v 1 -q:v 4 -y "$name"
-  echo "$name"
+  frame="$scratch/$(printf '%04d' "$i").jpg"
+  [ -f "$frame" ] && mv "$frame" "$name" && echo "$name"
+  i=$((i + 1))
 done
 "#
     )
+}
+
+/// Frames of a video from `from` to `to`, `step` apart, in one decoding
+/// pass: one ffmpeg run per frame took ten times as long, seeking each time.
+fn cut(media: &str, from: u64, to: u64, step: u64, name: &dyn Fn(u64) -> PathBuf) -> Result<()> {
+    let scratch = tempfile::tempdir()?;
+    Command::new("ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-ss"])
+        .arg(format!("{:.3}", from as f64 / 1000.0))
+        .arg("-t")
+        .arg(format!(
+            "{:.3}",
+            (to.saturating_sub(from) + step / 2) as f64 / 1000.0
+        ))
+        .arg("-i")
+        .arg(media)
+        .arg("-vf")
+        .arg(format!("fps={}", 1000.0 / step as f64))
+        .args(["-q:v", "4", "-y"])
+        .arg(scratch.path().join("%04d.jpg"))
+        .stdin(Stdio::null())
+        .status()
+        .context("ffmpeg is needed to read the walkthrough video")?;
+    let mut frames: Vec<_> = std::fs::read_dir(scratch.path())?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    frames.sort();
+    for (index, frame) in frames.into_iter().enumerate() {
+        let at = from + index as u64 * step;
+        if at <= to {
+            std::fs::rename(&frame, name(at))
+                .or_else(|_| std::fs::copy(&frame, name(at)).map(|_| ()))?;
+        }
+    }
+    Ok(())
 }
 
 fn clock(ms: u64) -> String {
@@ -472,24 +521,18 @@ fn video_frames(store: &Store, guide: &Guide, shown: &mut Option<usize>) -> Resu
         // the click that led here happens (two seconds apart missed it, and
         // a cursor passing over another exit looked like the choice), then
         // every two seconds.
-        let mut ms = start.saturating_sub(16_000);
-        while ms <= end {
-            let name = format!(
+        let name = |ms: u64| {
+            directory.join(format!(
                 "task{}-{}m{:04.1}.jpg",
                 offset + 1,
                 ms / 60_000,
                 (ms % 60_000) as f64 / 1000.0
-            );
-            let _ = Command::new("ffmpeg")
-                .args(["-nostdin", "-loglevel", "error", "-ss"])
-                .arg(format!("{:.1}", ms as f64 / 1000.0))
-                .arg("-i")
-                .arg(&media)
-                .args(["-frames:v", "1", "-q:v", "4", "-y"])
-                .arg(directory.join(name))
-                .stdin(Stdio::null())
-                .status();
-            ms += if ms < start + 6_000 { 500 } else { 2_000 };
+            ))
+        };
+        let dense = start.saturating_sub(16_000);
+        cut(&media, dense, start + 6_000, 500, &name)?;
+        if end > start + 6_000 {
+            cut(&media, start + 6_000, end, 2_000, &name)?;
         }
     }
     *shown = Some(at);
@@ -560,7 +603,9 @@ fn message(store: &Store, job: &Job, since_ms: u64, heard: &mut Option<i64>) -> 
     ];
     // The clean frame can be seconds old on a still screen: the window as it
     // is this moment comes after it.
-    if let Some(live) = screen::live_jpeg() {
+    if job.question.is_some()
+        && let Some(live) = screen::live_jpeg()
+    {
         content.push(json!({"type":"text","text":"And the screen this moment, as the player sees it (with any display filter):"}));
         content.push(json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":live}}));
     }
