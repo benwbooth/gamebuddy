@@ -110,6 +110,8 @@ pub mod ffi {
         #[qinvokable]
         fn voice_path(self: &Buddy) -> QString;
         #[qinvokable]
+        fn companion_status(self: &Buddy) -> QString;
+        #[qinvokable]
         fn voice_directory(self: &Buddy) -> QString;
         #[qinvokable]
         fn voice_turn(self: Pin<&mut Buddy>, path: QString);
@@ -1650,6 +1652,17 @@ impl ffi::Buddy {
                 }
             });
         });
+    }
+    /// What the companion is doing, read fresh for the line beside the icon.
+    pub fn companion_status(&self) -> QString {
+        let Some(guide) = self.rust().guide.as_ref() else {
+            return QString::default();
+        };
+        Store::open(&self.rust().root)
+            .ok()
+            .and_then(|store| services::companion::status(&store, guide))
+            .map(|text| q(text))
+            .unwrap_or_default()
     }
     pub fn poll_widgets(mut self: Pin<&mut Self>) {
         if self.rust().root.as_os_str().is_empty() || self.rust().poll_inflight {

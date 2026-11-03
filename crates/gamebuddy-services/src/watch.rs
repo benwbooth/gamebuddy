@@ -14,7 +14,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". task is the number of the first walkthrough task the player has not done yet: judge it by their progress, mostly what they carry (a task that gives an item they lack is not done) and what the log shows they did, not by the room they stand in, since players wander ahead and back. 0 if unclear. It is usually the task you gave last time or a later one. Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
+pub const LOOK: &str = "You are an expert at this game, sitting beside the player and watching them play. You see the screen as it is now, and a log of what happened. Reply with JSON only: {\"happening\": \"one plain sentence on what is going on in the game\", \"place\": \"the room or area the player is in, in a few words; empty on title screens, menus, or if unclear\", \"task\": 0, \"heading\": \"\", \"next\": \"\", \"direction\": \"\", \"say\": \"\", \"urgency\": \"none\"}. heading is the room or place to head for next, or empty; next is the very next action in at most eight words when known; direction is left, right, up, down, up_left, up_right, down_left or down_right when that move is a direction on screen, else empty. Leave say empty unless a friend who knows this game well would speak up now: a danger or time limit the player may not have noticed, a mistake about to cost them, a death (what killed them and how to avoid it), a sign they are stuck or repeating themselves, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming the on-screen option rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". task is the number of the first walkthrough task the player has not done yet: judge it by their progress, mostly what they carry (a task that gives an item they lack is not done) and what the log shows they did, not by the room they stand in, since players wander ahead and back. 0 if unclear. It is usually the task you gave last time or a later one. Exact commands come only from the walkthrough steps you are given: what a menu word does differs from game to game, so never work one out from its name or from memory. If the steps do not make the command clear, name the goal and say you are not sure of the command. Most of the time say nothing. Never describe what they can already see, never repeat what you already told them, and stay quiet on title screens, menus before the game starts, and intro text that is still playing.";
 
 const LOG_LIMIT: usize = 30;
 /// How far back the log counts as what just happened.
@@ -46,6 +46,9 @@ struct Look {
     happening: String,
     place: String,
     task: usize,
+    heading: String,
+    next: String,
+    direction: String,
     say: String,
     urgency: String,
 }
@@ -56,6 +59,9 @@ impl Default for Look {
             happening: String::new(),
             place: String::new(),
             task: 0,
+            heading: String::new(),
+            next: String::new(),
+            direction: String::new(),
             say: String::new(),
             urgency: "none".into(),
         }
@@ -75,6 +81,30 @@ static JOBS: OnceLock<Mutex<HashMap<PathBuf, Job>>> = OnceLock::new();
 
 pub(crate) fn key(guide: &Guide) -> String {
     format!("watch-log:{}", guide.id)
+}
+
+fn heading_key(guide: &Guide) -> String {
+    format!("watch-heading:{}", guide.id)
+}
+
+/// Where the companion last said the player should head and the next move,
+/// for the card over the game: (heading, next, direction).
+pub fn heading(
+    store: &Store,
+    guide: &Guide,
+) -> Option<(
+    String,
+    String,
+    Option<gamebuddy_core::navigation::direction::ScreenDirection>,
+)> {
+    let saved: Value = store.get(&heading_key(guide)).ok()??;
+    if screen::now_ms().saturating_sub(saved["at_ms"].as_u64()?) >= LOG_MS {
+        return None;
+    }
+    let text = |field: &str| saved[field].as_str().unwrap_or_default().to_owned();
+    let direction = serde_json::from_value(saved["direction"].clone()).ok();
+    (!text("heading").is_empty() || !text("next").is_empty())
+        .then(|| (text("heading"), text("next"), direction))
 }
 
 fn place_key(guide: &Guide) -> String {
@@ -608,6 +638,11 @@ pub(crate) fn apply(
             eprintln!("Walkthrough cursor: {error:#}");
         }
     }
+    store.put(
+        &heading_key(guide),
+        &json!({"heading": look.heading.trim(), "next": look.next.trim(),
+            "direction": look.direction.trim(), "at_ms": screen::now_ms()}),
+    )?;
     if !look.place.trim().is_empty() {
         visit(store, guide, look.place.trim(), snapshot)?;
         store.put(

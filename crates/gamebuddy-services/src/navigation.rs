@@ -1013,6 +1013,32 @@ pub fn context(
             target: Some(goal.label.clone()),
         });
     }
+    // With the companion watching, the card over the game shows its heading
+    // and next move; the route code's goal (set once from "where's the
+    // storage closet?") stayed up long after the player got there.
+    if crate::companion::in_charge(store) {
+        let companion = crate::watch::heading(store, guide);
+        travel = companion
+            .as_ref()
+            .map_or(Value::Null, |(heading, next, _)| {
+                if heading.is_empty() {
+                    json!({"goal": next, "next_area": Value::Null, "route": Value::Null})
+                } else {
+                    json!({"goal": heading, "next_area": next, "route": Value::Null})
+                }
+            });
+        direction = companion.and_then(|(heading, next, direction)| {
+            Some(gamebuddy_core::navigation::direction::DirectionCue {
+                direction: direction?,
+                step_id: String::new(),
+                label: next.clone(),
+                instruction: next,
+                valid_until_ms: now.saturating_add(15_000),
+                source: "companion",
+                target: Some(heading).filter(|h| !h.is_empty()),
+            })
+        });
+    }
     // A fused estimate that is sure of its map outranks guesses from the plan.
     let selected_map = location_estimate
         .map_id
@@ -1072,7 +1098,7 @@ pub fn context(
         json!({"next_step_id":now.id,"steps":trace.step_ids.iter().filter_map(|id| guide.step(id)).map(|s| json!({"id":s.id,"title":s.title,"anchors":s.anchors})).collect::<Vec<_>>(),"stop":trace.stop,"choices":trace.choices,
             "instruction":"Follow these authored steps in order. Later steps are previews, not eligible immediate actions. Preserve required pickups and return-visit identity. Only confirmed progress, explicit current task reports, or supported optional/conditional bypasses change this sequence. This is objective order, not a verified physical path."})
     });
-    let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"location_estimate":location_estimate,"cursor":cursor,"guidance":advice,"direction":direction,"travel":travel,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"companion":crate::companion::in_charge(store),"map":{"watched_place":crate::watch::place(store, guide),"room_flow":crate::watch::rooms(store, guide),"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"position":location_estimate.position,"estimate_status":location_estimate.status,"estimate_confidence":location_estimate.confidence,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
+    let mut value = json!({"off_route":follow::off_route(store, guide)?.map(|o| json!({"area":o.map_title,"seen_step":o.seen_step_title,"seen_step_id":o.seen_step_id,"route_step":o.route_step_title,"route_step_id":o.route_step_id,"instruction":"The screen matches an earlier part of the walkthrough (seen_step), away from the route step (for example after a death or a detour). Start advice from where the player is: what they need here (keys, items, healing) and how to get back to the route step."})),"authored_route":authored_route,"recovery":crate::plan::recovery::context(store,guide)?,"planning":crate::outcomes::context(store,guide,progress)?,"location":tracker,"location_estimate":location_estimate,"cursor":cursor,"guidance":advice,"direction":direction,"travel":travel,"coaching":coaching,"recommendation":recommendation.as_ref().map(advice::public),"spatial":spatial,"companion":crate::companion::in_charge(store),"companion_status":crate::companion::status(store, guide),"map":{"watched_place":crate::watch::place(store, guide),"room_flow":crate::watch::rooms(store, guide),"locations":locations,"spatial":spatial,"geometric_marker":geometric_marker,"position":location_estimate.position,"estimate_status":location_estimate.status,"estimate_confidence":location_estimate.confidence,"updating_camera_area":display_marker,"status":atlas.status,"maps":maps,"places":atlas.places,"bindings":atlas.bindings,"current_place":current_place,"target_place":target_place,"selected_map_id":selected_map,"area_reference":area_reference,"marker":marker,"marker_status":placement.as_ref().map(|p|&p.status),"route_places":route_places,"reviewed_steps":atlas.reviewed_steps.len(),"notes":atlas.notes,"precision":"room_estimate"}});
     // Away from the route (a death, a detour): guide the player back along
     // the walkthrough's own path from where the screen shows them.
     if let Some(off) = follow::off_route(store, guide)?

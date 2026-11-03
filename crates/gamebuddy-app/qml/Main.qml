@@ -266,6 +266,7 @@ ApplicationWindow {
         startup: JSON.parse(buddy.startup_json)
         preparation: JSON.parse(buddy.preparation_json)
         tokenAlert: root.tokenAlert
+        activity: speech.speaking ? "Speaking" : root.companionStatus
         onTokenAlertDismissed: root.tokenAlert = ""
         onPreparationRetryRequested: buddy.prepare_game()
         x: compositor.active ? 36 : 0
@@ -309,6 +310,8 @@ ApplicationWindow {
         trace: root.appArguments.indexOf("--voice-trace") >= 0
     }
     Timer { interval: 2000; repeat: true; running: true; onTriggered: buddy.poll_widgets() }
+    property string companionStatus: ""
+    Timer { interval: 700; repeat: true; running: compositor.active; onTriggered: root.companionStatus = buddy.companion_status() }
     // A companion launched for a game quits when that game exits; otherwise
     // it lingers with an old build alongside the next launch's GameBuddy.
     Timer {

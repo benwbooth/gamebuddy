@@ -537,6 +537,22 @@ pub fn live_jpeg() -> Option<String> {
 pub fn snapshot(store: &Store) -> Result<Snapshot> {
     snapshot_at(store, now_ms())
 }
+/// The last captured frame even when it is no longer fresh (a still screen,
+/// a pause): better than nothing for answering a question about it.
+pub fn last_frame(store: &Store) -> Result<Snapshot> {
+    let c = store
+        .get::<Capture>(KEY)?
+        .context("No game capture session")?;
+    ensure!(!c.jpeg.is_empty(), "Nothing captured yet");
+    let meta = metadata(&c, now_ms());
+    Ok(Snapshot {
+        ticket: c.ticket,
+        captured_at_ms: c.captured_at_ms,
+        jpeg: c.jpeg,
+        metadata: meta,
+    })
+}
+
 fn snapshot_at(store: &Store, now: u64) -> Result<Snapshot> {
     let c = store.get::<Capture>(KEY)?.context(
         "No game capture session. Launch a game with GameBuddy or share the game window.",

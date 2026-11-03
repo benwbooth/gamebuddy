@@ -17,7 +17,7 @@ use std::{
     sync::{Mutex, OnceLock, mpsc},
 };
 
-const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. You also answer the player's questions; they hear your answers spoken. Your folder holds: walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video); narration.txt (the walkthrough video's narrator, word for word with times); video/ (frames from the walkthrough video); frames/ (recent frames of the player's own game); exits.md (which exit in which room leads where); notes.md (your notes). Read notes.md and exits.md first when you start. To see any part of the walkthrough video, run ./video-frames START END STEP, for example ./video-frames 17:30 17:45 0.5, which writes frames into video/ and prints their names; then Read them. When the walkthrough does not say which door, exit or object, find the moment in the video (task times, narration times) and look at frames half a second apart just before the new room appears: where the video's cursor or character is in the very last frame before the change is the choice, not where it passed earlier; a pointing-hand cursor clicks with its fingertip, not where the hand's body sits, so count the dots or doors and say which one the fingertip touches (for example the second of three on the right). exits.md is written only from what you see the player do: when a screen shows them in a new room right after they picked an exit, record room, exit, destination. Never write a guess there. In notes.md, start every fact with [seen] (you saw it on the player's screen, the walkthrough or narrator states it, or the video shows it) or [guess]; turn a guess into seen or delete it once you know; keep it under 60 short lines, rewriting rather than adding a line per screen. Record what the player carries, rooms and what they hold, what they have done and solved, deaths and causes, anything the player told you (their word wins), the walkthrough task they are on and your plan. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) and note it. Tell the player only seen facts as facts; for anything else, find out first with your files and tools, or say plainly that you are not sure. Exact commands come only from the walkthrough, the narrator, the video or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"say\": \"\", \"urgency\": \"none\"}. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Unless the player asked something, leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
+const SYSTEM: &str = "You are GameBuddy's companion: an expert at this game, sitting beside the player and watching them play the whole time, like a friend who has beaten it many times. You also answer the player's questions; they hear your answers spoken. Your folder holds: walkthrough.md (the walkthrough, every task numbered in order with its detailed actions and its time in the walkthrough video); narration.txt (the walkthrough video's narrator, word for word with times); video/ (frames from the walkthrough video); frames/ (recent frames of the player's own game); exits.md (which exit in which room leads where); notes.md (your notes). Read notes.md and exits.md first when you start. To see any part of the walkthrough video, run ./video-frames START END STEP, for example ./video-frames 17:30 17:45 0.5, which writes frames into video/ and prints their names; then Read them. When the walkthrough does not say which door, exit or object, find the moment in the video (task times, narration times) and look at frames half a second apart just before the new room appears: where the video's cursor or character is in the very last frame before the change is the choice, not where it passed earlier; a pointing-hand cursor clicks with its fingertip, not where the hand's body sits, so count the dots or doors and say which one the fingertip touches (for example the second of three on the right). exits.md is written only from what you see the player do: when a screen shows them in a new room right after they picked an exit, record room, exit, destination. Never write a guess there. In notes.md, start every fact with [seen] (you saw it on the player's screen, the walkthrough or narrator states it, or the video shows it) or [guess]; turn a guess into seen or delete it once you know; keep it under 60 short lines, rewriting rather than adding a line per screen. Record what the player carries, rooms and what they hold, what they have done and solved, deaths and causes, anything the player told you (their word wins), the walkthrough task they are on and your plan. Work out ahead what the current task needs on screen (which door, exit, object or menu choice) and note it. Tell the player only seen facts as facts; for anything else, find out first with your files and tools, or say plainly that you are not sure. Exact commands come only from the walkthrough, the narrator, the video or the player, never from a menu word's name or from memory, because what a command does differs from game to game. Each message shows the screen and what happened since your last look. Reply to each with JSON only, no other text: {\"happening\": \"one plain sentence on what is going on\", \"place\": \"the room or area, a few words, the same name as in your notes for the same room; empty on title screens and menus\", \"task\": 0, \"heading\": \"\", \"next\": \"\", \"direction\": \"\", \"say\": \"\", \"urgency\": \"none\"}. heading is the room or place the player should head for next, a few words, or empty; next is the very next action in at most eight words, such as MOVE, second dot on the right, said only when you know it; direction is left, right, up, down, up_left, up_right, down_left or down_right when that next move is a direction on the screen, otherwise empty. task is the number in walkthrough.md of the first task the player has not done, judged by their progress (what they carry, what they did), not the room they stand in; 0 if unclear. Unless the player asked something, leave say empty unless a friend who knows the game would speak up now: a danger or time limit, a mistake about to cost them, a death (what caused it and how to avoid it), signs they are stuck or going in circles, or something useful they are missing. Then say is one or two short spoken sentences telling them exactly what to do on this screen, naming on-screen options rather than buttons, and urgency is \"danger\" if waiting would cost them, otherwise \"tip\". Most of the time say nothing; never repeat yourself, and stay quiet on title screens and intro text that is still playing.";
 
 /// After this many looks the session starts over from its notes, so the
 /// conversation (a picture each look) never grows past what fits.
@@ -143,10 +143,12 @@ pub fn ask(
     let snapshot = loop {
         match screen::snapshot(store) {
             Ok(snapshot) => break snapshot,
-            Err(_) if started.elapsed() < std::time::Duration::from_secs(5) => {
+            Err(_) if started.elapsed() < std::time::Duration::from_secs(3) => {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            Err(_) => return None,
+            // A still screen stops counting as fresh; its last frame (and
+            // the live window grab) still show it.
+            Err(_) => break screen::last_frame(store).ok()?,
         }
     };
     let (answer, reply) = mpsc::channel();
@@ -235,7 +237,22 @@ fn run(
                     text.as_str().unwrap_or_default()
                 ));
             }
-            let reply = turn(session, message)?;
+            set_status(
+                &store,
+                &job.guide,
+                if job.question.is_some() {
+                    "Working on your question"
+                } else {
+                    "Looking at the screen"
+                },
+            );
+            let reply = turn(session, message, &mut |tool| {
+                if let Some(text) = doing(tool) {
+                    set_status(&store, &job.guide, &text);
+                }
+            });
+            set_status(&store, &job.guide, "Watching");
+            let reply = reply?;
             since_ms = job.snapshot.captured_at_ms;
             let Some((_, answer)) = &job.question else {
                 return watch::apply(&store, &job.guide, &job.snapshot, &reply);
@@ -525,7 +542,59 @@ fn message(store: &Store, job: &Job, since_ms: u64, heard: &mut Option<i64>) -> 
     Ok(json!({"type":"user","message":{"role":"user","content":content}}))
 }
 
-fn turn(session: &mut Session, message: Value) -> Result<String> {
+fn status_key(guide: &Guide) -> String {
+    format!("companion-status:{}", guide.id)
+}
+
+fn set_status(store: &Store, guide: &Guide, text: &str) {
+    let _ = store.put(
+        &status_key(guide),
+        &json!({"text": text, "at_ms": screen::now_ms()}),
+    );
+}
+
+/// What the companion is doing, for the line beside GameBuddy's icon.
+pub fn status(store: &Store, guide: &Guide) -> Option<String> {
+    let saved: Value = store.get(&status_key(guide)).ok()??;
+    (screen::now_ms().saturating_sub(saved["at_ms"].as_u64()?) < 120_000)
+        .then(|| saved["text"].as_str().map(str::to_owned))?
+}
+
+/// A tool call, said as what the companion is doing.
+fn doing(tool: &Value) -> Option<String> {
+    let input = &tool["input"];
+    let path = input["file_path"]
+        .as_str()
+        .or(input["path"].as_str())
+        .unwrap_or_default();
+    let about = |path: &str| {
+        if path.contains("walkthrough") {
+            "the walkthrough"
+        } else if path.contains("narration") {
+            "the narrator's words"
+        } else if path.contains("video") {
+            "the walkthrough video"
+        } else if path.contains("frames") {
+            "your recent screens"
+        } else {
+            "its notes"
+        }
+    };
+    Some(match tool["name"].as_str()? {
+        "Read" => format!("Reading {}", about(path)),
+        "Grep" | "Glob" => format!("Searching {}", about(path)),
+        "Edit" | "Write" => "Updating its notes".into(),
+        "Bash" => {
+            let command = input["command"].as_str().unwrap_or_default();
+            let rest = command.trim().strip_prefix("./video-frames")?;
+            let times: Vec<&str> = rest.split_whitespace().take(2).collect();
+            format!("Watching the walkthrough video at {}", times.join("–"))
+        }
+        _ => return None,
+    })
+}
+
+fn turn(session: &mut Session, message: Value, on_tool: &mut dyn FnMut(&Value)) -> Result<String> {
     serde_json::to_writer(&mut session.input, &message)?;
     session.input.write_all(b"\n")?;
     session.input.flush()?;
@@ -540,6 +609,13 @@ fn turn(session: &mut Session, message: Value) -> Result<String> {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if value["type"] == "assistant" {
+            for part in value["message"]["content"].as_array().into_iter().flatten() {
+                if part["type"] == "tool_use" {
+                    on_tool(part);
+                }
+            }
+        }
         if value["type"] == "result" {
             let text = value["result"].as_str().unwrap_or_default().to_owned();
             if value["is_error"] == true && crate::providers::is_quota_error(&text) {

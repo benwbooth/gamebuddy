@@ -19,6 +19,8 @@ Item {
     readonly property bool welcoming: newGameSeen && !welcomeDismissed
     onPreparationChanged: if (preparation?.new_game && preparation?.status === "running") newGameSeen = true
     property string tokenAlert: ""
+    // What GameBuddy is doing right now, beside its icon.
+    property string activity: ""
     property bool liveCommentary: false
     signal tokenAlertDismissed()
     property bool expanded: false
@@ -254,6 +256,14 @@ Item {
             anchors.centerIn: parent; spacing: 10
             Text { text: "Shift+Tab"; color: "#a5f2dd"; font.pixelSize: 14; font.weight: Font.DemiBold }
             Text { text: "Interact"; color: "#e6f1f6"; font.pixelSize: 14 }
+            Rectangle { visible: companion.activity.length > 0; width: 1; height: 16; color: "#547f91a1"; anchors.verticalCenter: parent.verticalCenter }
+            Text {
+                visible: companion.activity.length > 0
+                text: companion.activity
+                color: "#c9d8df"; font.pixelSize: 14; font.italic: true
+                elide: Text.ElideRight
+                width: Math.min(implicitWidth, 360)
+            }
         }
         Accessible.role: Accessible.Button
         Accessible.name: "Interact with GameBuddy (Shift+Tab)"
