@@ -13,13 +13,20 @@ fn main() -> anyhow::Result<()> {
     speech.speak(
         text,
         std::sync::Arc::new(move |_, chunk| {
-            let _ = tx.send(chunk.map(|c| (c.key, c.text, c.last, c.played_until)));
+            let _ = tx.send(chunk.map(|c| (c.key, c.text, c.last, c.played_until, c.started_at)));
         }),
     );
     loop {
-        let (key, text, last, played) = rx
+        let (key, text, last, played, starts) = rx
             .recv_timeout(std::time::Duration::from_secs(180))?
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        if let Some(at) = starts {
+            println!(
+                "{:.2} s: sound starts at {at:.2}: {text}",
+                started.elapsed().as_secs_f64()
+            );
+            continue;
+        }
         if let Some(until) = played {
             println!(
                 "{:.2} s: played {text} (sound until {until:.1})",

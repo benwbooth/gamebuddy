@@ -249,9 +249,11 @@ class Player:
                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.ends = 0.0
             process = self.process
-            self.ends = max(self.ends, time.time()) + len(pcm) / (2 * rate)
+            starts = max(self.ends, time.time())
+            self.ends = starts + len(pcm) / (2 * rate)
         process.stdin.write(pcm)
         process.stdin.flush()
+        return starts
 
     def stop(self):
         with self.lock:
@@ -296,10 +298,17 @@ def handle(request, player, cancelled):
     if request.get("play") and "stream" in globals():
         cancelled.clear()
 
+        started = False
+
         def piece(wav, more):
+            nonlocal started
             if cancelled.is_set():
                 raise InterruptedError
-            player.write(wav)
+            starts = player.write(wav)
+            # When this sentence's sound begins, for captions to follow it.
+            if not started:
+                started = True
+                print(json.dumps({"started": starts}), flush=True)
 
         try:
             stream(text, piece)

@@ -191,18 +191,24 @@ impl Worker {
     /// Orpheus speaks the sentence itself, onto one continuous playback
     /// stream, as it writes the audio. The time its sound ends, or `None`
     /// when it was stopped first.
-    fn play(&mut self, text: &str) -> Result<Option<f64>> {
+    fn play(&mut self, text: &str, on_start: &mut dyn FnMut(f64)) -> Result<Option<f64>> {
         send(&self.input, &json!({"text":text,"play":true}))?;
-        let result = self
-            .output
-            .recv_timeout(Duration::from_secs(60))
-            .context("Speech synthesis timed out")??;
-        ensure!(
-            result["error"].is_null(),
-            "Speech synthesis: {}",
-            result["error"]
-        );
-        Ok(result["ends_at"].as_f64())
+        loop {
+            let result = self
+                .output
+                .recv_timeout(Duration::from_secs(60))
+                .context("Speech synthesis timed out")??;
+            ensure!(
+                result["error"].is_null(),
+                "Speech synthesis: {}",
+                result["error"]
+            );
+            if let Some(at) = result["started"].as_f64() {
+                on_start(at);
+                continue;
+            }
+            return Ok(result["ends_at"].as_f64());
+        }
     }
 }
 
@@ -216,6 +222,8 @@ pub struct Chunk {
     /// Already playing on the worker's own stream, until this time (Unix
     /// seconds); there is no audio file to play.
     pub played_until: Option<f64>,
+    /// When this sentence's sound starts on that stream (Unix seconds).
+    pub started_at: Option<f64>,
 }
 type Completed = Arc<dyn Fn(usize, Result<Chunk>) + Send + Sync>;
 struct Job {
@@ -298,7 +306,20 @@ impl Speech {
                             *stopper.lock().unwrap() = Some(started.input.clone());
                             worker = Some(started);
                         }
-                        worker.as_mut().unwrap().play(&job.text)
+                        worker.as_mut().unwrap().play(&job.text, &mut |at| {
+                            done(
+                                job.index,
+                                Ok(Chunk {
+                                    key: String::new(),
+                                    text: job.text.clone(),
+                                    index: job.index,
+                                    last: false,
+                                    answer: None,
+                                    played_until: None,
+                                    started_at: Some(at),
+                                }),
+                            )
+                        })
                     })();
                     SYNTHESIZING.store(false, std::sync::atomic::Ordering::Release);
                     match played {
@@ -311,6 +332,7 @@ impl Speech {
                                 last: job.last,
                                 answer: job.answer.clone(),
                                 played_until: Some(until),
+                                started_at: None,
                             }),
                         ),
                         // Stopped: the reply was replaced or interrupted.
@@ -361,6 +383,7 @@ impl Speech {
                             last: job.last,
                             answer: job.answer,
                             played_until: None,
+                            started_at: None,
                         }),
                     );
                 }
@@ -448,6 +471,7 @@ impl Speech {
                     last,
                     answer,
                     played_until: None,
+                    started_at: None,
                 });
             } else {
                 q.foreground.push_back(Job {

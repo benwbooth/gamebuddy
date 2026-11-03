@@ -17,6 +17,22 @@ Item {
     property string spoken: ""
     // When this reply's sound started, roughly, for the captions to follow.
     property double startedAt: 0
+    // The sentence being heard: its words and when its sound starts and
+    // ends, reported by the voice as it plays.
+    property string sentence: ""
+    property double sentenceStart: 0
+    property double sentenceEnd: 0
+    // How far into `text` the voice is at `now`, in characters; -1 when not
+    // known.
+    function position(now) {
+        if (!sentence.length || !sentenceStart) return -1
+        const offset = text.indexOf(sentence)
+        if (offset < 0) return -1
+        const fraction = sentenceEnd > sentenceStart
+            ? (now - sentenceStart) / (sentenceEnd - sentenceStart)
+            : (now - sentenceStart) / 1000 * 15 / sentence.length
+        return offset + Math.round(Math.max(0, Math.min(1, fraction)) * sentence.length)
+    }
     readonly property bool neuralAvailable: neural.available
     readonly property bool speaking: neuralActive || system.state === TextToSpeech.Speaking
     readonly property bool busy: neuralActive || (system.state !== TextToSpeech.Ready && system.state !== TextToSpeech.Error)
@@ -59,6 +75,7 @@ Item {
         neural.stop()
         neuralActive = false
         streamEnd.stop()
+        sentence = ""; sentenceStart = 0; sentenceEnd = 0
         chunks = ({}); nextIndex = 0; lastIndex = -1; spoken = ""; lastText = ""; loaded = -1; current = 0
         player.stop()
         spare.stop()
@@ -117,7 +134,14 @@ Item {
             if (event.kind === "error") { output.fallBack(event.error); return }
             // Already playing on the voice's own stream: show it as speaking
             // until its sound ends.
+            if (event.kind === "started") {
+                output.sentence = event.text
+                output.sentenceStart = event.at_ms
+                output.sentenceEnd = 0
+                return
+            }
             if (event.kind === "played") {
+                if (event.text === output.sentence) output.sentenceEnd = event.until_ms
                 output.spoken += (output.spoken.length ? " " : "") + event.text
                 if (event.last) {
                     streamEnd.interval = Math.max(1, event.until_ms - Date.now() + 150)

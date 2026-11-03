@@ -92,6 +92,9 @@ impl ffi::NeuralVoice {
         let done = Arc::new(move |index: usize, result: anyhow::Result<_>| {
             let event = match result.and_then(|chunk: gamebuddy_services::voice::speech::Chunk| {
                 // Orpheus plays on its own stream: only say it is speaking.
+                if let Some(at) = chunk.started_at {
+                    return Ok(json!({"kind":"started","sequence":sequence,"index":chunk.index,"text":chunk.text,"at_ms":(at * 1000.0) as u64}));
+                }
                 if let Some(until) = chunk.played_until {
                     return Ok(json!({"kind":"played","sequence":sequence,"index":chunk.index,"last":chunk.last,"text":chunk.text,"until_ms":(until * 1000.0) as u64}));
                 }

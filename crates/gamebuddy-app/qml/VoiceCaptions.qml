@@ -10,13 +10,17 @@ Rectangle {
     // speaks; otherwise it keeps the newest words of a streaming caption.
     property double startedAt: 0
     property real charsPerSecond: 15
+    // Where the voice is in `text`, reported by the speech output; -1 when
+    // it is not known and the pace estimate stands in.
+    property var positionAt: null
     property double now: Date.now()
-    Timer { interval: 200; repeat: true; running: captions.startedAt > 0 && captions.visible; onTriggered: captions.now = Date.now() }
+    Timer { interval: 150; repeat: true; running: captions.startedAt > 0 && captions.visible; onTriggered: captions.now = Date.now() }
     readonly property string excerpt: {
         if (text.length <= 240) return text
         let end = text.length
         if (startedAt > 0) {
-            const spoken = Math.max(0, (now - startedAt) / 1000 * charsPerSecond)
+            const reported = positionAt ? positionAt(now) : -1
+            const spoken = reported >= 0 ? reported : Math.max(0, (now - startedAt) / 1000 * charsPerSecond)
             end = Math.min(text.length, Math.max(240, Math.round(spoken) + 120))
             const stop = text.indexOf(" ", end)
             if (end < text.length && stop >= 0) end = stop
