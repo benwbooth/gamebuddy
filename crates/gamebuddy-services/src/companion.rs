@@ -39,6 +39,16 @@ struct Running {
 
 static RUNNING: OnceLock<Mutex<HashMap<(PathBuf, String), Running>>> = OnceLock::new();
 
+/// Whether the companion places the player in the walkthrough (the Claude
+/// login), so other guesses at where they are stand down.
+pub fn in_charge(store: &Store) -> bool {
+    store
+        .get::<Settings>("settings")
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.reasoning.kind == crate::ProviderKind::ClaudeCode)
+}
+
 /// Whether the companion is still thinking about a screen.
 pub fn busy(store: &Store, guide: &Guide) -> bool {
     RUNNING

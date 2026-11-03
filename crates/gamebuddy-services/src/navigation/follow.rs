@@ -160,6 +160,13 @@ pub fn report_return(store: &Store, guide: &Guide, seen_step: &str, area: &str) 
 }
 
 pub fn off_route(store: &Store, guide: &Guide) -> Result<Option<OffRoute>> {
+    // The companion places the player itself. Matching the screen against
+    // the video often hits an earlier visit to the same room, which read as
+    // "you're back in an earlier area" while the player was where they
+    // should be.
+    if crate::companion::in_charge(store) {
+        return Ok(None);
+    }
     let session = capture_session(store);
     Ok(store
         .get::<Option<OffRoute>>(&format!("off-route:{}", guide.id))?
@@ -194,6 +201,9 @@ pub fn observed(
     map_title: Option<&str>,
     at_ms: u64,
 ) -> Result<Option<Value>> {
+    if crate::companion::in_charge(store) {
+        return Ok(None);
+    }
     let progress = store.progress(guide)?;
     let (Some(current), Some(best)) = (
         progress.current_step.clone(),
