@@ -5,11 +5,26 @@ Rectangle {
     property string text: ""
     property bool active: false
     property bool lingering: false
-    // Keep a readable moving window while the complete answer stays in chat.
+    // When the words being spoken are known (local speech gives the whole
+    // reply at once), the window follows the voice at about the pace it
+    // speaks; otherwise it keeps the newest words of a streaming caption.
+    property double startedAt: 0
+    property real charsPerSecond: 15
+    property double now: Date.now()
+    Timer { interval: 200; repeat: true; running: captions.startedAt > 0 && captions.visible; onTriggered: captions.now = Date.now() }
     readonly property string excerpt: {
         if (text.length <= 240) return text
-        const tail = text.slice(-240), space = tail.indexOf(" ")
-        return "… " + (space >= 0 ? tail.slice(space + 1) : tail)
+        let end = text.length
+        if (startedAt > 0) {
+            const spoken = Math.max(0, (now - startedAt) / 1000 * charsPerSecond)
+            end = Math.min(text.length, Math.max(240, Math.round(spoken) + 120))
+            const stop = text.indexOf(" ", end)
+            if (end < text.length && stop >= 0) end = stop
+        }
+        const shown = text.slice(Math.max(0, end - 240), end)
+        if (end - 240 <= 0) return shown + (end < text.length ? " …" : "")
+        const space = shown.indexOf(" ")
+        return "… " + (space >= 0 ? shown.slice(space + 1) : shown) + (end < text.length ? " …" : "")
     }
     visible: text.length > 0 && (active || lingering)
     width: parent ? Math.min(parent.width - 48, Math.max(780, Math.min(1280, parent.width * 0.55))) : 780

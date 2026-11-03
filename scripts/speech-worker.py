@@ -245,7 +245,7 @@ class Player:
         with self.lock:
             if self.process is None or self.process.poll() is not None:
                 self.process = subprocess.Popen(
-                    ["pw-cat", "--playback", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"],
+                    ["pw-cat", "--playback", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"],
                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.ends = 0.0
             process = self.process
@@ -303,8 +303,14 @@ def handle(request, player, cancelled):
 
         try:
             stream(text, piece)
-        except (InterruptedError, BrokenPipeError, OSError):
-            print(json.dumps({"cancelled": True}), flush=True)
+        except (InterruptedError, BrokenPipeError, OSError) as error:
+            # Stopped on purpose, or the player could not play: the second
+            # is an error, so GameBuddy speaks some other way instead of
+            # staying silent.
+            if cancelled.is_set():
+                print(json.dumps({"cancelled": True}), flush=True)
+            else:
+                print(json.dumps({"error": f"Playback failed: {error}"}), flush=True)
             return
         print(json.dumps({"played": True, "ends_at": player.ends}), flush=True)
         return

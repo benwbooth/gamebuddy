@@ -15,6 +15,8 @@ Item {
     property int lastIndex: -1
     property string text: ""
     property string spoken: ""
+    // When this reply's sound started, roughly, for the captions to follow.
+    property double startedAt: 0
     readonly property bool neuralAvailable: neural.available
     readonly property bool speaking: neuralActive || system.state === TextToSpeech.Speaking
     readonly property bool busy: neuralActive || (system.state !== TextToSpeech.Ready && system.state !== TextToSpeech.Error)
@@ -41,6 +43,7 @@ Item {
         if (!keepQueue) queued = []
         stop()
         text = value
+        startedAt = Date.now() + 700
         if (directory.length && neural.configure(directory) && neural.speak(value)) {
             neuralActive = true
             return

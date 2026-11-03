@@ -426,6 +426,7 @@ ApplicationWindow {
             // Local spoken answers play through SpeechOutput, not the voice
             // page, so its words caption them while it talks.
             text: speech.speaking ? speech.text : root.geminiEnabled ? liveVoice.captionText : realtimeVoice.captionText
+            startedAt: speech.speaking ? speech.startedAt : 0
             active: speech.speaking || (root.geminiEnabled ? liveVoice.captionStreaming || liveVoice.assistantSpeaking : realtimeVoice.captionStreaming || realtimeVoice.assistantSpeaking)
         }
         WebEngineView {
